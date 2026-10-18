@@ -1,0 +1,31 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Runtime data: server-side secret store, logs, cached models
+.data/
+secrets.json
+*.log
+
+# Model weights / large binaries must never be committed
+*.gguf
+*.gguf.part
+*.tar.gz
+*.zip
+*.bin
+models/
+llama-server
+cloudflared
+
+# Local environment / editor state
+.env
+.env.local
+.idea/
+.vscode/
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
