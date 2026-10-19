@@ -1,0 +1,16 @@
+{
+  "tested": [
+    "GitHub Actions, ubuntu-latest (Linux x64), Node.js 22, Python 3.11",
+    "npm run typecheck, npm run lint and npm test (the vitest suite of the client, the server and the shared code)",
+    "npm run build (the production build of the client and the bundled backend)",
+    "npm run check:integration (the built application against a mock upstream on loopback)",
+    "python3 -m unittest discover -s notebooks -p 'test_*.py' (the tests of the Kaggle deployment script, with stubs and a local mock server)"
+  ],
+  "notTested": [
+    "the Kaggle GPU runtime, the real model download and the real llama.cpp inference",
+    "the Cloudflare Quick Tunnel, the public endpoint and the download of the model from the public URL",
+    "the behaviour of the browser interface in a real browser (the component tests run in jsdom, not in a browser)",
+    "the measured effect of the multi token prediction option on the answer quality and the speed",
+    "the behaviour of the deployment script on a machine without the tools of the Kaggle image"
+  ]
+}

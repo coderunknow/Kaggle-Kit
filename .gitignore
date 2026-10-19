@@ -19,10 +19,11 @@ models/
 llama-server
 cloudflared
 
-# Staged release artifacts (built by .github/workflows/release.yml)
-release/
-downloaded/
-checks.json
+# Staged release artifacts (built by .github/workflows/release.yml).
+# The rule is anchored to the root: docs/release/ holds a tracked file.
+/release/
+/downloaded/
+/checks.json
 
 # Local environment / editor state
 .env

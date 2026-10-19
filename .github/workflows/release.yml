@@ -209,15 +209,17 @@ jobs:
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
         run: |
           set -euo pipefail
-          cd release
 
           # The release notes are a template: the commit of the release is
-          # written into them before they are published.
+          # written into them before they are published. This happens before
+          # the change into the directory of the assets.
           sed "s/{{SOURCE_SHA}}/$SOURCE_SHA/g" "docs/release-notes/$VERSION.md" > release-notes.md
           if ! grep -q "$SOURCE_SHA" release-notes.md; then
             echo "The rendered release notes do not contain the commit $SOURCE_SHA." >&2
             exit 1
           fi
+
+          cd release
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
@@ -234,7 +236,7 @@ jobs:
               --target "$SOURCE_SHA" \
               --title "$TAG" \
               --prerelease \
-              --notes-file release-notes.md
+              --notes-file ../release-notes.md
             echo "The prerelease $TAG was created."
           fi
 

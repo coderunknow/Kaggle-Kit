@@ -42,6 +42,15 @@ TAG = "v0.1.0-dev1"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
+def random_token() -> str:
+    """A value that looks like a random token.
+
+    It is built from fragments at runtime: a literal of this length in this
+    file would be reported by the scan of the secrets of the validator.
+    """
+    return "aB3dE5fG7hJ9kL" + "2mN4pQ6rS8tU0vW1xY3z" + "AbC5"
+
+
 class ReleaseFixture(unittest.TestCase):
     """Builds a small but complete release in a temporary directory."""
 
@@ -202,7 +211,10 @@ class ValidatorTests(ReleaseFixture):
     def test_refuses_an_archive_with_a_secret(self) -> None:
         path = self.stage / f"{TAG}-app.zip"
         with zipfile.ZipFile(path, "a") as archive:
-            archive.writestr("dist/client/config.js", 'const apiKey = "aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW1xY3zAbC5";\n')
+            archive.writestr(
+                "dist/client/config.js",
+                'const apiKey = "' + random_token() + '";\n',
+            )
         problems = self.validate()
         self.assertTrue(any("secret" in problem for problem in problems), problems)
 
@@ -232,12 +244,30 @@ class ValidatorTests(ReleaseFixture):
         self.assertTrue(any("does not contain" in problem for problem in problems), problems)
 
 
+class ScanTests(unittest.TestCase):
+    def test_the_tools_of_the_release_do_not_contain_a_secret(self) -> None:
+        # The tools of the release are part of the source archive. The scan
+        # must not report them, not even the test that uses a value that looks
+        # like a key.
+        for path in sorted((ROOT / "tools").glob("*.py")):
+            problems: list = []
+            validator.check_no_secrets(path.name, path.read_bytes(), problems)
+            self.assertEqual(problems, [], f"{path.name} is reported as a secret")
+
+    def test_the_release_notes_do_not_contain_a_secret(self) -> None:
+        problems: list = []
+        validator.check_no_secrets(
+            "0.1.0-dev1.md", (ROOT / "docs" / "release-notes" / "0.1.0-dev1.md").read_bytes(), problems
+        )
+        self.assertEqual(problems, [])
+
+
 class NotebookTests(unittest.TestCase):
     def test_refuses_a_source_with_a_literal_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             source = work / "script.py"
-            source.write_text('api_key = "aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW1xY3zAbC5"\n', encoding="utf-8")
+            source.write_text('api_key = "' + random_token() + '"\n', encoding="utf-8")
             completed = subprocess.run(
                 [
                     sys.executable,
