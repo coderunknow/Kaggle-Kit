@@ -17,6 +17,22 @@ export function titleFromMessage(text: string): string {
   return cleaned.length > 60 ? `${cleaned.slice(0, 57)}...` : cleaned;
 }
 
+/** Clock time for a message (with the date when it is not today). */
+export function formatMessageTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = new Date().toDateString() === date.toDateString();
+  if (today) {
+    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 /** Format an ISO timestamp for the chat list. */
 export function formatTimestamp(iso: string): string {
   const date = new Date(iso);

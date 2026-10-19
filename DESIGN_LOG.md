@@ -655,3 +655,122 @@ with the real download of the model, with a real llama.cpp inference, with a
 real Cloudflare Quick Tunnel and in a real browser. The checks above run
 against stubs, a mock upstream and jsdom. The measured effect of the multi
 token prediction option is not known either.
+
+---
+
+## 2026-10-19 – v0.1.0-dev2: the chat workspace
+
+### Scope
+
+`dev2` is a focused evolution of `dev1`, not a rewrite. The deployment
+notebook, the request contract, the storage keys and the proxy security
+defaults are unchanged. The work was (1) to make the client a chat workspace
+that can compete with the mainstream tools, (2) to audit the whole repository
+for demonstrable defects and fix them without widening the scope and (3) to
+ship the result through the existing release automation.
+
+### Decision 1 – the sidebar owns the history, not a modal
+
+The audit of `dev1` showed that the settings dialog was the only way to switch
+a profile while the conversation list was a narrow column with no structure.
+The new layout gives the sidebar the history (grouped by date, searchable,
+inline rename, two-step delete) and the active connection, so the most common
+navigation actions no longer open a dialog. The dialog stays for configuration
+only. This follows the pattern of mature chat clients without copying any of
+their assets or their visual identity.
+
+### Decision 2 – a conversation does not exist before its first message
+
+On the landing view the composer owns the draft and the provider creates the
+conversation on send. The first message is queued in a ref (`queuedMessage`,
+`queuedFor`) and sent once the conversation appears in state. Creating an
+empty conversation on mount, the obvious alternative, leaves empty rows in the
+history when the user only looks around.
+
+### Decision 3 – drafts are per conversation and persisted
+
+`useDraft` keeps a text per conversation id in
+`localStorage` (`kaggle-kit.drafts.v1`), throttled, bounded to 50 drafts of
+20 000 characters. The composer is controlled by the caller. The text is
+removed on send and when a conversation is deleted. A reload restores the text
+of the conversation the user returns to, which was not possible with the
+single `useState` of `dev1`.
+
+### Decision 4 – truthful state beats optimistic state
+
+A stream without a finish reason, an error event in the middle of a stream and
+a connection that breaks mid-answer all end the message as *failed*, while the
+text that arrived is kept. `finish_reason: "length"` and `"content_filter"`
+are surfaced. Token counts only appear when the server sent a `usage` object.
+The streaming fallback (proxy answers `409` because the transport was not
+verified in this session) only retries when no token arrived, so an answer can
+never be duplicated. These rules are encoded in `gateway.test.ts` and the
+stream tests of the backend, not in UI copy alone.
+
+### Decision 5 – the capability cache belongs to endpoint *and* credential
+
+`dev1` cached `streamingVerified`, `reasoningEffortSupported` and the `/props`
+result under the base URL alone. Replacing the key of a profile, or adding a
+second profile on the same host with a different key, could therefore inherit a
+verification made with another credential. The cache key is now the SHA-256 of
+the key plus the normalized base URL (the key itself is never stored), the
+entry is bounded to 32 entries and the tests in `server/proxy.test.ts` prove
+that a second key gets its own detection. The probe TTL stays at ten minutes.
+
+### Decision 6 – rendering cost follows the reader
+
+Code blocks are highlighted when a message is complete, not on every streamed
+delta; the value of a per-token highlight is negative once the block is large.
+Deltas are collected for 40 ms before a dispatch. The transcript follows new
+tokens only while the reader is at the bottom and offers *Jump to latest*
+otherwise. The message log is not a live region (it would read every token);
+a visually hidden `role="status"` announces the state transitions instead.
+
+### Decision 7 – no new dependency and no second source of truth
+
+The new components reuse the existing design tokens, the existing
+`react-markdown` and `highlight.js` and the existing `ui.tsx`. The export, the
+clipboard wrapper, the focus trap and the media query hook are small local
+modules. There is one request builder, one gateway and one configuration
+store, as before. The settings drawer reads and writes through the provider;
+the profile editor is the only writer of credentials.
+
+### What the audit changed outside the client
+
+* `/api/health` no longer returns the configured allow list. It returns
+  `{ok, name}`; the status pill needs nothing more.
+* Test/Discover no longer write a typed key to the server secret store before
+  Save. The proxy receives the typed key for that request and stores nothing
+  unless the profile is saved with the server credential mode.
+* Editing a profile no longer changes the active profile; only creating one
+  does. This was a silent data-flow bug, not a preference.
+* The keyboard shortcut for a new conversation moved from Ctrl+Shift+O to
+  Alt+Shift+N because Chromium reserves Ctrl+Shift+O for the bookmark manager.
+  The preference tab and the sidebar hint show the new combination.
+* The status pill collapses to its dot below 560 px, and its name and model
+  strings can shrink (`min-width: 0`), so the title keeps its space at 360 px.
+* `--focus-ring` was defined but never used; the rule was removed instead of
+  inventing a second focus style. The outline-based focus indicator stays.
+
+### Validation of the release
+
+* `npm run typecheck`, `npm run lint`: clean.
+* `npm test`: 24 files, 202 tests, all passed.
+* `npm run build`: client and `dist/server/index.js` (56.4 kb) built.
+* `npm run check:integration`: 14 of 14 against the mock upstream.
+* Notebook tests: 39 (7 skipped). Release tools: 15.
+* `tools/release-dry-run.sh 0.1.0-dev2`: the staged release validates, the
+  notebook is one code cell, the app bundle contains the four expected files
+  and the source archive is prefixed with `kaggle-kit-0.1.0-dev2/`.
+
+### Open items and limits
+
+* The UI was validated in jsdom and by unit/component tests only. No Chromium
+  or Firefox binary and no Playwright download were available in the build
+  environment (missing `libnss3`, no package index, CDN unreachable), so the
+  visual result, the real scroll behaviour and the rendering of the new layout
+  in a browser are **not** verified here. This is stated in the release notes.
+* The Kaggle GPU, the real model, a real inference and a real Quick Tunnel are
+  not exercised by the automated checks.
+* DNS rebinding and the unencrypted secret file remain documented limits, not
+  new bugs.

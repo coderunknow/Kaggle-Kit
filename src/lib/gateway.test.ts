@@ -97,4 +97,63 @@ describe('the browser gateway', () => {
     expect(call[0]).not.toContain('secret-key');
     expect(call[0].startsWith('/api/')).toBe(true);
   });
+
+  it('raises the error event of the proxy instead of returning a truncated answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        eventStream(
+          [
+            'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+            'event: error\ndata: {"error":{"message":"upstream connection lost"}}\n\n',
+          ],
+          { close: true },
+        ),
+      ),
+    );
+
+    const deltas: string[] = [];
+    const error = await gateway
+      .chat(REQUEST, { callbacks: { onDelta: (delta) => deltas.push(delta.content ?? '') } })
+      .catch((caught: unknown) => caught);
+
+    expect(deltas.join('')).toBe('partial');
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).kind).toBe('inference');
+    expect((error as ApiError).message).toContain('upstream connection lost');
+  });
+
+  it('treats a stream that ends without a finish reason as incomplete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        eventStream(['data: {"choices":[{"delta":{"content":"half an ans"}}]}\n\n'], {
+          close: true,
+        }),
+      ),
+    );
+
+    const error = await gateway.chat(REQUEST).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).kind).toBe('inference');
+    expect((error as ApiError).message).toMatch(/before the model marked the answer as complete/i);
+  });
+
+  it('accepts a stream whose last chunk carries a finish reason without [DONE]', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        eventStream(
+          [
+            'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
+          ],
+          { close: true },
+        ),
+      ),
+    );
+
+    const result = await gateway.chat(REQUEST);
+    expect(result.content).toBe('done');
+    expect(result.finishReason).toBe('stop');
+  });
 });

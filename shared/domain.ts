@@ -51,6 +51,18 @@ export interface ChatMessage {
   errorHint?: string;
   /** Chain-of-thought text, when the server returns it separately. */
   reasoning?: string;
+  /** Finish reason reported by the server, for example `length`. */
+  finishReason?: string;
+  /**
+   * How the answer actually arrived. Only set once the request finished, so
+   * the interface never claims a stream that did not happen.
+   */
+  transport?: 'stream' | 'complete';
+  /**
+   * True when streaming was requested but the proxy had not verified it, and
+   * the answer was fetched with a regular request instead.
+   */
+  streamFellBack?: boolean;
 }
 
 export interface Conversation {
@@ -62,10 +74,13 @@ export interface Conversation {
   updatedAt: string;
 }
 
+export const THEMES = ['system', 'light', 'dark'] as const;
+export type Theme = (typeof THEMES)[number];
+
 export interface UiPreferences {
   activeProfileId: string | null;
   activeConversationId: string | null;
-  theme: 'system' | 'light' | 'dark';
+  theme: Theme;
   sendOnEnter: boolean;
 }
 

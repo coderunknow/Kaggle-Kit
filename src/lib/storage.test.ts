@@ -7,10 +7,13 @@ import {
   clearAllStoredData,
   loadBrowserKeys,
   loadConversations,
+  loadDrafts,
   loadPreferences,
   loadProfiles,
+  removeDraft,
   saveBrowserKeys,
   saveConversations,
+  saveDrafts,
   savePreferences,
   saveProfiles,
 } from './storage';
@@ -87,5 +90,39 @@ describe('browser storage', () => {
 
     expect(loadProfiles()).toEqual([]);
     expect(loadConversations()).toEqual([]);
+  });
+
+  it('round trips drafts and drops empty ones', () => {
+    saveDrafts({ 'conv-1': 'half a sentence', 'conv-2': '   ', 'conv-3': 'second draft' });
+
+    expect(loadDrafts()).toEqual({ 'conv-1': 'half a sentence', 'conv-3': 'second draft' });
+
+    removeDraft('conv-1');
+    expect(loadDrafts()['conv-1']).toBeUndefined();
+    expect(loadDrafts()['conv-3']).toBe('second draft');
+  });
+
+  it('caps the number and the size of stored drafts', () => {
+    const many: Record<string, string> = {};
+    for (let index = 0; index < 80; index += 1) many[`conv-${index}`] = 'text';
+    saveDrafts(many);
+    expect(Object.keys(loadDrafts())).toHaveLength(50);
+
+    saveDrafts({ long: 'x'.repeat(30_000) });
+    expect(loadDrafts().long).toHaveLength(20_000);
+  });
+
+  it('ignores malformed drafts instead of throwing', () => {
+    window.localStorage.setItem(STORAGE_KEYS.drafts, '[1, 2, 3]');
+    expect(loadDrafts()).toEqual({});
+
+    window.localStorage.setItem(STORAGE_KEYS.drafts, '{"conv-1": 12, "conv-2": "ok"}');
+    expect(loadDrafts()).toEqual({ 'conv-2': 'ok' });
+  });
+
+  it('clears drafts together with the other local data', () => {
+    saveDrafts({ 'conv-1': 'draft text' });
+    clearAllStoredData();
+    expect(loadDrafts()).toEqual({});
   });
 });

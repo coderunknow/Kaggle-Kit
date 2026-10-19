@@ -14,6 +14,8 @@
  * request.
  */
 
+import { createHash } from 'node:crypto';
+
 import { ApiError } from '../shared/api/errors';
 import { OpenAIClient } from '../shared/api/client';
 import { buildChatCompletionBody } from '../shared/api/requests';
@@ -50,6 +52,18 @@ const STREAM_PROBE_TTL_MS = 10 * 60 * 1000;
 
 export class ProxyService {
   private readonly capabilities = new Map<string, CapabilityCacheEntry>();
+  /**
+   * Capabilities belong to an endpoint *and* a credential. A server started
+   * with a rotated key can answer differently, and a streaming probe is only
+   * meaningful for the key it was made with. The key itself is never part of
+   * the cache: only its SHA-256 hash is.
+   */
+  private static readonly CAPABILITY_CACHE_LIMIT = 32;
+
+  private capabilityKey(baseUrl: string, apiKey: string | undefined): string {
+    const digest = apiKey ? createHash('sha256').update(apiKey).digest('hex') : '';
+    return `${baseUrl}\u0000${digest}`;
+  }
 
   constructor(
     private readonly config: ServerConfig,
@@ -236,7 +250,8 @@ export class ProxyService {
     apiKey: string | undefined,
     timeoutMs: number,
   ): Promise<ServerCapabilities> {
-    const cached = this.capabilities.get(baseUrl);
+    const key = this.capabilityKey(baseUrl, apiKey);
+    const cached = this.capabilities.get(key);
     const now = Date.now();
 
     if (cached && now - cached.propsCheckedAt < STREAM_PROBE_TTL_MS) {
@@ -267,7 +282,7 @@ export class ProxyService {
       notes.push(`Capability detection failed: ${toApiError(error).message}`);
     }
 
-    this.capabilities.set(baseUrl, {
+    this.storeCapability(key, {
       streamingVerified: cached?.streamingVerified ?? false,
       streamingCheckedAt: cached?.streamingCheckedAt ?? 0,
       reasoningEffortSupported,
@@ -286,7 +301,8 @@ export class ProxyService {
     options: { model?: string; timeoutMs: number },
   ): Promise<{ supported: boolean; detail: string }> {
     const { baseUrl, apiKey } = await this.resolveTarget(target);
-    const cached = this.capabilities.get(baseUrl);
+    const key = this.capabilityKey(baseUrl, apiKey);
+    const cached = this.capabilities.get(key);
 
     if (cached?.streamingVerified) {
       return { supported: true, detail: 'Streaming was verified for this endpoint earlier.' };
@@ -324,7 +340,7 @@ export class ProxyService {
       });
 
       if ([301, 302, 303, 307, 308].includes(response.status)) {
-        this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
         return {
           supported: false,
           detail: `The endpoint answered the streaming probe with a redirect (HTTP ${response.status}).`,
@@ -333,13 +349,13 @@ export class ProxyService {
 
       if (!response.ok) {
         const detail = `The streaming probe returned HTTP ${response.status}.`;
-        this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
         return { supported: false, detail };
       }
 
       const contentType = response.headers.get('content-type') ?? '';
       if (!contentType.toLowerCase().includes('text/event-stream')) {
-        this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
         return {
           supported: false,
           detail: `The endpoint answered with content type "${contentType || 'unknown'}" instead of text/event-stream.`,
@@ -347,7 +363,7 @@ export class ProxyService {
       }
 
       if (!response.body) {
-        this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
         return { supported: false, detail: 'The endpoint returned no response body.' };
       }
 
@@ -356,29 +372,34 @@ export class ProxyService {
       await reader.cancel().catch(() => undefined);
 
       if (first.done || !first.value) {
-        this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
         return { supported: false, detail: 'The event stream closed before any data arrived.' };
       }
 
-      this.storeCapability(baseUrl, { streamingVerified: true, streamingCheckedAt: Date.now() });
+      this.storeCapability(key, { streamingVerified: true, streamingCheckedAt: Date.now() });
       return { supported: true, detail: 'The endpoint delivered a text/event-stream response.' };
     } catch (error) {
       const apiError = toApiError(error);
-      this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+      this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
       return { supported: false, detail: apiError.message };
     } finally {
       clearTimeout(timer);
     }
   }
 
-  private storeCapability(baseUrl: string, update: Partial<CapabilityCacheEntry>): void {
-    const current = this.capabilities.get(baseUrl) ?? {
+  private storeCapability(key: string, update: Partial<CapabilityCacheEntry>): void {
+    const current = this.capabilities.get(key) ?? {
       streamingVerified: false,
       streamingCheckedAt: 0,
       reasoningEffortSupported: false,
       propsCheckedAt: 0,
     };
-    this.capabilities.set(baseUrl, { ...current, ...update });
+    // Bounded cache: an editor can change the key many times in one session.
+    if (this.capabilities.size >= ProxyService.CAPABILITY_CACHE_LIMIT && !this.capabilities.has(key)) {
+      const oldest = this.capabilities.keys().next().value;
+      if (oldest !== undefined) this.capabilities.delete(oldest);
+    }
+    this.capabilities.set(key, { ...current, ...update });
   }
 
   /** Build the upstream request body from the client's request. */

@@ -37,8 +37,8 @@ manifest_tool = load("build_manifest")
 notebook_tool = load("build_notebook")
 report_tool = load("build_release_report")
 
-VERSION = "0.1.0-dev1"
-TAG = "v0.1.0-dev1"
+VERSION = "0.1.0-dev2"
+TAG = "v0.1.0-dev2"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -83,7 +83,7 @@ class ReleaseFixture(unittest.TestCase):
         with zipfile.ZipFile(self.stage / f"{TAG}-app.zip", "w") as archive:
             archive.writestr("dist/client/index.html", "<!doctype html><title>Kaggle-Kit</title>")
             archive.writestr("dist/server/index.js", "console.log('backend');\n")
-            archive.writestr("package.json", '{"name":"kaggle-kit","version":"0.1.0-dev1"}')
+            archive.writestr("package.json", '{"name":"kaggle-kit","version":"0.1.0-dev2"}')
             archive.writestr("README.md", "# Kaggle-Kit\n")
             archive.writestr("LICENSE", "MIT\n")
 
@@ -257,7 +257,7 @@ class ScanTests(unittest.TestCase):
     def test_the_release_notes_do_not_contain_a_secret(self) -> None:
         problems: list = []
         validator.check_no_secrets(
-            "0.1.0-dev1.md", (ROOT / "docs" / "release-notes" / "0.1.0-dev1.md").read_bytes(), problems
+            "0.1.0-dev2.md", (ROOT / "docs" / "release-notes" / "0.1.0-dev2.md").read_bytes(), problems
         )
         self.assertEqual(problems, [])
 

@@ -99,6 +99,12 @@ export interface StreamDelta {
   content?: string;
   reasoning?: string;
   finishReason?: string;
+  /**
+   * An error that the server reported *inside* the event stream. The proxy
+   * emits such an event when an upstream stream breaks, so that a truncated
+   * answer is never mistaken for a finished one.
+   */
+  error?: string;
 }
 
 /** Extract the delta payload of an OpenAI-compatible SSE chunk. */
@@ -107,7 +113,7 @@ export function extractDelta(event: SseEvent): StreamDelta {
 
   let payload: {
     choices?: { delta?: { content?: string | null; reasoning_content?: string | null }; finish_reason?: string | null }[];
-    error?: { message?: string };
+    error?: { message?: string } | string;
   };
 
   try {
@@ -116,8 +122,11 @@ export function extractDelta(event: SseEvent): StreamDelta {
     return {};
   }
 
-  if (payload.error?.message) {
-    return { content: undefined, reasoning: undefined, finishReason: undefined };
+  const reportedError = payload.error;
+  if (typeof reportedError === 'string') {
+    if (reportedError.trim()) return { error: reportedError };
+  } else if (reportedError?.message) {
+    return { error: reportedError.message };
   }
 
   const choice = payload.choices?.[0];

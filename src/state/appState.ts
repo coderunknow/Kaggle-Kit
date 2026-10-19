@@ -7,7 +7,13 @@
  */
 
 import type { ServerCapabilities } from '../../shared/api/requests';
-import type { ApiProfile, ConnectionTestResult, Conversation, UiPreferences } from '../../shared/domain';
+import type {
+  ApiProfile,
+  ChatMessage,
+  ConnectionTestResult,
+  Conversation,
+  UiPreferences,
+} from '../../shared/domain';
 
 export interface AppState {
   profiles: ApiProfile[];
@@ -49,6 +55,8 @@ export type AppAction =
   | { type: 'conversations/patch'; id: string; changes: Partial<Omit<Conversation, 'id'>> }
   | { type: 'conversations/delete'; id: string }
   | { type: 'conversations/select'; id: string | null }
+  | { type: 'messages/patch'; conversationId: string; messageId: string; changes: Partial<ChatMessage> }
+  | { type: 'messages/append'; conversationId: string; messageId: string; content?: string; reasoning?: string }
   | { type: 'preferences/set'; preferences: Partial<UiPreferences> }
   | { type: 'keys/setSession'; profileId: string; apiKey: string }
   | { type: 'keys/clearSession'; profileId: string }
@@ -143,6 +151,52 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
     case 'conversations/select':
       return { ...state, preferences: { ...state.preferences, activeConversationId: action.id } };
+
+    case 'messages/patch': {
+      let changed = false;
+      const conversations = state.conversations.map((conversation) => {
+        if (conversation.id !== action.conversationId) return conversation;
+        let patched = false;
+        const messages = conversation.messages.map((message) => {
+          if (message.id !== action.messageId) return message;
+          patched = true;
+          return { ...message, ...action.changes };
+        });
+        // Only the conversation that really contains the message is rewritten;
+        // a patch must not reorder unrelated conversations by updating their
+        // timestamp.
+        if (!patched) return conversation;
+        changed = true;
+        return { ...conversation, messages, updatedAt: new Date().toISOString() };
+      });
+      // A conversation that was deleted while the request was running is not
+      // created again by a late answer.
+      return changed ? { ...state, conversations } : state;
+    }
+
+    case 'messages/append': {
+      let changed = false;
+      const conversations = state.conversations.map((conversation) => {
+        if (conversation.id !== action.conversationId) return conversation;
+        let patched = false;
+        const messages = conversation.messages.map((message) => {
+          if (message.id !== action.messageId) return message;
+          patched = true;
+          return {
+            ...message,
+            content: message.content + (action.content ?? ''),
+            reasoning:
+              action.reasoning === undefined
+                ? message.reasoning
+                : `${message.reasoning ?? ''}${action.reasoning}`,
+          };
+        });
+        if (!patched) return conversation;
+        changed = true;
+        return { ...conversation, messages, updatedAt: new Date().toISOString() };
+      });
+      return changed ? { ...state, conversations } : state;
+    }
 
     case 'preferences/set':
       return { ...state, preferences: { ...state.preferences, ...action.preferences } };

@@ -30,6 +30,7 @@ import {
   loadConversations,
   loadPreferences,
   loadProfiles,
+  removeDraft,
   saveBrowserKeys,
   saveConversations,
   savePreferences,
@@ -63,6 +64,9 @@ export interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+/** Minimum time between two writes of the conversation list. */
+const CONVERSATION_SAVE_INTERVAL_MS = 400;
+
 function initState(): AppState {
   return {
     ...initialState,
@@ -90,9 +94,60 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
     saveProfiles(state.profiles);
   }, [state.profiles]);
 
+  /**
+   * Conversations change with every streamed token. Writing the whole list
+   * to local storage that often is wasted work, so writes are throttled: the
+   * first change is written immediately and at most every
+   * `CONVERSATION_SAVE_INTERVAL_MS` after that. The latest state is flushed
+   * when the page is hidden or the provider unmounts, so nothing is lost.
+   */
+  const conversationsRef = useRef(state.conversations);
+  const saveTimer = useRef<number | null>(null);
+  const lastSave = useRef(0);
+
   useEffect(() => {
-    saveConversations(state.conversations);
+    conversationsRef.current = state.conversations;
+    const elapsed = Date.now() - lastSave.current;
+    const write = () => {
+      saveTimer.current = null;
+      lastSave.current = Date.now();
+      saveConversations(conversationsRef.current);
+    };
+
+    if (elapsed >= CONVERSATION_SAVE_INTERVAL_MS) {
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      write();
+      return;
+    }
+
+    if (saveTimer.current === null) {
+      saveTimer.current = window.setTimeout(write, CONVERSATION_SAVE_INTERVAL_MS - elapsed);
+    }
   }, [state.conversations]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      saveConversations(conversationsRef.current);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+      flush();
+    };
+  }, []);
 
   useEffect(() => {
     savePreferences(state.preferences);
@@ -158,6 +213,14 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
   }, []);
 
   const deleteConversation = useCallback((conversationId: string) => {
+    // Deleting a conversation must also stop a request that is still running
+    // for it, otherwise its late answer keeps working on a deleted thread.
+    const controller = abortControllers.current.get(conversationId);
+    if (controller) {
+      controller.abort();
+      abortControllers.current.delete(conversationId);
+    }
+    removeDraft(conversationId);
     dispatch({ type: 'conversations/delete', id: conversationId });
   }, []);
 
@@ -194,6 +257,8 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
   }, []);
 
   const resetEverything = useCallback(() => {
+    for (const controller of abortControllers.current.values()) controller.abort();
+    abortControllers.current.clear();
     clearAllStoredData();
     dispatch({ type: 'state/reset' });
   }, []);

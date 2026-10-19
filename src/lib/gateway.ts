@@ -195,24 +195,56 @@ export const gateway = {
     let content = '';
     let reasoning = '';
     let finishReason: string | undefined;
+    let streamError: string | undefined;
 
-    for await (const event of parseSseStream(body, options.signal)) {
-      const delta = extractDelta(event);
-      if (delta.content) {
-        content += delta.content;
-        options.callbacks?.onDelta?.({ content: delta.content });
+    try {
+      for await (const event of parseSseStream(body, options.signal)) {
+        const delta = extractDelta(event);
+        if (delta.error) {
+          // The proxy reports a broken upstream stream as an event. Stopping
+          // here is what keeps a truncated answer from being shown as complete.
+          streamError = delta.error;
+          break;
+        }
+        if (delta.content) {
+          content += delta.content;
+          options.callbacks?.onDelta?.({ content: delta.content });
+        }
+        if (delta.reasoning) {
+          reasoning += delta.reasoning;
+          options.callbacks?.onDelta?.({ reasoning: delta.reasoning });
+        }
+        if (delta.finishReason) finishReason = delta.finishReason;
       }
-      if (delta.reasoning) {
-        reasoning += delta.reasoning;
-        options.callbacks?.onDelta?.({ reasoning: delta.reasoning });
+    } catch (error) {
+      if (options.signal?.aborted) {
+        throw new ApiError('aborted', 'The request was cancelled.', { cause: error });
       }
-      if (delta.finishReason) finishReason = delta.finishReason;
+      throw new ApiError('inference', 'The connection broke while the answer was streamed.', {
+        hint: 'The partial answer was kept; retry the request.',
+        cause: error,
+      });
     }
 
     // A stream that was cancelled is not a finished answer. Reporting it as
     // complete would show a truncated answer as if the model had finished.
     if (options.signal?.aborted) {
       throw new ApiError('aborted', 'The request was cancelled.');
+    }
+
+    if (streamError) {
+      throw new ApiError('inference', streamError, {
+        hint: 'The connection broke while the answer was streamed. The partial answer was kept; retry the request.',
+      });
+    }
+
+    // Some servers close the stream without [DONE] but with a finish reason.
+    // Neither of both means that the answer was cut off and must not be
+    // presented as a finished answer.
+    if (!finishReason) {
+      throw new ApiError('inference', 'The event stream ended before the model marked the answer as complete.', {
+        hint: 'The answer may be truncated. Retry the request, or disable streaming for this endpoint.',
+      });
     }
 
     options.callbacks?.onDone?.({ finishReason });

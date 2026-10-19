@@ -115,12 +115,51 @@ A request with a body reached the API without a JSON content type. The
 browser always sends one; a script that calls the API by hand has to set the
 header.
 
-### "proxy offline" in the header
+### The interface says the proxy is offline
 
 The browser cannot reach the local backend. Start it with `npm start` (or
 `npm run dev`) and open the address it prints. The backend has to be the same
 origin as the client – the production build serves the client itself, the
-development server proxies `/api` to the backend.
+development server proxies `/api` to the backend. The state is checked every
+30 seconds and when the tab becomes visible again, so the banner clears on
+its own after a restart.
+
+### Which address belongs in the profile?
+
+Two different addresses are involved and they are easy to swap:
+
+* **Open this page at** `http://127.0.0.1:8787` – the local proxy that serves
+  the interface. In development it is `http://localhost:5173`.
+* **The model API base URL** – the address the proxy calls. For the Kaggle
+  deployment that is the `https://<random>.trycloudflare.com` URL printed by
+  the notebook (plus `/v1` if you type it by hand; the interface adds it).
+  For a local `llama-server` it is `http://127.0.0.1:8000/v1`.
+
+Never put the address of the interface into the profile: the proxy would try
+to call itself, which ends in a timeout or a 404. The connection help in the
+settings drawer and the *Connections* tab show both values.
+
+### Do I have to restart the proxy after a change?
+
+| Change | Restart needed? |
+| --- | --- |
+| Base URL, key, model, system prompt, inference settings | No |
+| `KAGGLE_KIT_ALLOWED_HOSTS`, `KAGGLE_KIT_ALLOWED_ORIGINS`, `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS` | Yes |
+| `KAGGLE_KIT_PORT`, `KAGGLE_KIT_HOST`, `KAGGLE_KIT_DATA_DIR` | Yes |
+| A new build of the client | No for the API, reload the page |
+
+The environment is read once at start-up. On Windows PowerShell:
+
+```powershell
+$env:KAGGLE_KIT_ALLOWED_HOSTS = "<random>.trycloudflare.com"
+# stop the old process with Ctrl+C, then
+npm start
+```
+
+`$env:` only affects the current window. For a permanent setting use
+`setx KAGGLE_KIT_ALLOWED_HOSTS "<random>.trycloudflare.com"` and open a new
+terminal; the running proxy must be restarted in both cases. A Quick Tunnel
+URL changes on every Kaggle run, so the allow list has to be updated with it.
 
 ### "Authentication failed"
 

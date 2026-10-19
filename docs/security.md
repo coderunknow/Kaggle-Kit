@@ -98,6 +98,54 @@ configured.
 | `KAGGLE_KIT_CLIENT_DIR` | `dist/client` | Directory with the built browser client |
 | `KAGGLE_KIT_DATA_DIR` | `.data` | Directory with the secret store |
 
+The values are read **at start-up**. After changing one of them, stop the
+proxy and start it again; changing a profile or an API key in the interface
+does not need a restart.
+
+### The two addresses
+
+The most common connection mistake is to enter the address of the interface
+where the address of the model belongs:
+
+* **This page** is served by the local proxy, normally
+  `http://127.0.0.1:8787` (development: `http://localhost:5173`).
+* **The model API** is the base URL of the profile: the short-lived
+  `https://<random>.trycloudflare.com` address that the notebook prints, or
+  `http://127.0.0.1:8000/v1` for a local `llama-server`.
+
+The proxy is the only component that talks to the model API. The settings
+drawer names both addresses and the connection help repeats the distinction.
+
+### Setting the allow list on Windows (PowerShell)
+
+```powershell
+# Only the host of your own tunnel, without a scheme or a path.
+$env:KAGGLE_KIT_ALLOWED_HOSTS = "<random>.trycloudflare.com"
+npm start
+```
+
+`$env:` sets the variable for the current PowerShell session. To keep it for
+new terminals, use `setx KAGGLE_KIT_ALLOWED_HOSTS "<random>.trycloudflare.com"`
+and open a new terminal; `setx` does not change the current session. Restart
+the proxy after either change. On macOS or Linux the equivalent is
+`KAGGLE_KIT_ALLOWED_HOSTS="<host>" npm start`.
+
+Do not add a real tunnel URL or a key to a file in this repository: the allow
+list belongs to your environment, not to the source.
+
+### What the interface stores
+
+| Data | Place | Sensitive |
+| --- | --- | --- |
+| Profiles, conversations, drafts, theme and send preference | `localStorage` of the origin | Conversations and drafts contain the text you typed |
+| Session key | Memory of the tab | Yes, never written to disk |
+| Browser key (explicit opt-in) | `localStorage`, plain text | Yes |
+| Proxy key (server mode) | `.data/secrets.json`, mode `0600` | Yes, never sent to the browser |
+
+There is no analytics, no telemetry and no third-party script. An exported
+Markdown file is written by the browser to the download directory you chose;
+the application cannot see or delete it afterwards.
+
 ## The Kaggle deployment
 
 * The key is created with `secrets.token_urlsafe(32)` when a **new** server
