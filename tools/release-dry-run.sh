@@ -86,5 +86,21 @@ python3 tools/validate_release.py \
   --tag "$TAG" \
   --source-sha "$SOURCE_SHA"
 
+echo "== render the release notes =="
+sed "s/{{SOURCE_SHA}}/$SOURCE_SHA/g" "docs/release-notes/$VERSION.md" > release-notes.md
+grep -q "$SOURCE_SHA" release-notes.md || { echo "the notes do not contain the commit" >&2; exit 1; }
+echo "the release notes contain the commit $SOURCE_SHA"
+
+echo "== verify the published assets (simulation of the last step) =="
+rm -rf downloaded
+mkdir -p downloaded
+cp "$STAGE"/* downloaded/
+python3 tools/validate_release.py \
+  --stage "$STAGE" \
+  --version "$VERSION" \
+  --tag "$TAG" \
+  --source-sha "$SOURCE_SHA" \
+  --downloaded downloaded
+
 echo "== the staged release =="
 ls -la "$STAGE"
