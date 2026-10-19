@@ -774,3 +774,76 @@ the profile editor is the only writer of credentials.
   not exercised by the automated checks.
 * DNS rebinding and the unencrypted secret file remain documented limits, not
   new bugs.
+
+---
+
+## 2026-10-19 – the published v0.1.0-dev2
+
+### The release
+
+* Release: `v0.1.0-dev2`, a **prerelease** (not a draft), published at
+  2026-10-19T10:05:47Z.
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev2>
+* Pull request: [#5](https://github.com/coderunknow/Kaggle-Kit/pull/5),
+  merged with `--merge` at 2026-10-19T10:04:48Z into the merge commit
+  `475ba25e08cf5e4b2ac2d463ff725df1022d76a2`. No branch rewrite, no
+  force-push, no manual asset upload.
+* Tag: `refs/tags/v0.1.0-dev2` -> tag object `68b315f5ca28c742a12fa1fbefbfa99ecce68023`
+  -> commit `475ba25e08cf5e4b2ac2d463ff725df1022d76a2`. The tag points at the
+  exact merged commit.
+* `v0.1.0-dev1` keeps its release (`416925851`), its assets and its tag
+  (`57b21a9` -> `04c88d2`); nothing was moved or edited.
+* The body of the release is `docs/release-notes/0.1.0-dev2.md` with
+  `{{SOURCE_SHA}}` replaced by `475ba25e08cf5e4b2ac2d463ff725df1022d76a2`.
+
+### The assets of the release
+
+| Asset | Size | SHA-256 (digest of the uploaded file) |
+| --- | --- | --- |
+| `v0.1.0-dev2-notebook.ipynb` | 83 561 | `e130a4be5558aee3232649f5cf51266314f572508148df823e32d0c8f794da2d` |
+| `v0.1.0-dev2-app.zip` | 914 010 | `9c11df5178eaf35958bcc007e09fe3c46af5ab1e3614dfa27bede5956266773d` |
+| `v0.1.0-dev2-source.zip` | 594 182 | `7e32a6e5b68f3ca9f75b5bb524cffcac772b1ca6ec58310b17c315c141bf3d36` |
+| `manifest.json` | 1 901 | `c7e78e3d92967c2e3afa89f882f40023bd301d28ef18e8d2c68149d006b58b9a` |
+| `SHA256SUMS` | 439 | `ab20d0935a4be76fe99d7687d9dcd3c309db93cb9afc3ae907da09541c6f4ab5` |
+| `verification-report.json` | 7 684 | `a6215c1b2f359b32cda21a767319e365ecfae2dd7b32583e06588388cd3dec30` |
+
+The digests are the ones GitHub reports for the uploaded assets. The last
+step of the workflow ("Verify the published release") downloaded every
+published asset and compared it with the staged artifact of the tagged
+commit; it succeeded.
+
+**The assets could not be downloaded from this sandbox.** The host
+`release-assets.githubusercontent.com` is not reachable from this
+environment, and neither is the host that serves the logs of a workflow run.
+The comparison therefore comes from the successful verification step of the
+workflow, not from a download here.
+
+### The checks of the release
+
+Run of the release workflow:
+<https://github.com/coderunknow/Kaggle-Kit/actions/runs/39234842770> - every
+step succeeded, including "Publish the GitHub prerelease" and "Verify the
+published release".
+
+* `npm run typecheck` - passed.
+* `npm run lint` - passed.
+* `npm test` - **202 tests in 24 files**, all passed.
+* `npm run build` - passed.
+* `npm run check:integration` - **14 of 14**.
+* `python3 -m unittest discover -s notebooks -p "test_*.py"` - **39 tests**
+  (7 skipped).
+* `python3 -m unittest discover -s tools -p "test_*.py"` - **15 tests**.
+* The validator accepted the staged and the published release.
+
+The continuous integration of the merge commit
+([run 39234827441](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39234827441))
+is green. The external "Kilo Code Review" check reports `action_required`
+with the message "Review could not start because the account has insufficient
+credits." - it is not a code finding and not a required check; the merge was
+not blocked.
+
+### What is still not verified
+
+The behaviour on a real Kaggle GPU, with the real model download, a real
+llama.cpp inference, a real Cloudflare Quick Tunnel and in a real browser.
+The checks run against stubs, a mock upstream and jsdom.
