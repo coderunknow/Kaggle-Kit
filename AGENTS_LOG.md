@@ -541,3 +541,76 @@ comparison of the published assets with the built ones. All passed.
   GitHub API reports for the assets.
 * Not verified: a real Kaggle GPU, the model download, real inference, a real
   Quick Tunnel and a real browser.
+
+---
+
+## 2026-10-19 – v0.1.0-dev3 on `arena/785a0566-kaggle-kit`
+
+**Task.** Ship `v0.1.0-dev3`: evidence-based connection diagnosis, one
+connection configuration for Settings and chat, and a one-command Windows
+start, without changing the Kaggle model, the notebook configuration or the
+stored profile/chat formats.
+
+**Implementation.**
+
+* New `shared/connection.ts`: credential resolution, effective URL, config
+  and credential fingerprints, `resolveConnectionView`
+  (`missing/untested/connected/failed/stale`), stage order and labels,
+  `connectionFailureResult`.
+* `shared/domain.ts`: six stages and six states; `requestedBaseUrl`,
+  `baseUrlChanged`, `testedAt`, `configFingerprint`.
+* `server/proxy.ts`: staged test with `completeStages`, real inference as the
+  only success condition, strict SSE probe. `server/app.ts`: empty model
+  resolves to the first reported model; streaming error bodies are redacted.
+* `src/state/appState.ts`: invalidation on profile/config/key changes,
+  `capabilities/clear`, `connection/invalidate`.
+* `ProfileForm`, `SettingsPanel`, `Sidebar`, `App`, `ChatView`, `useChat`,
+  `InferenceSettings`: one shared resolution; requested vs effective URL;
+  editor-local draft tests; same error labels in both surfaces.
+* `scripts/start-windows.ps1` + `tools/launcher.mjs`:
+  Node/npm/version/project checks, install only when a build is needed,
+  build only when output is missing, free-port handling, `/api/health`
+  readiness, browser, clean shutdown.
+* `tools/check-kaggle-connection.ps1`: hidden-input key, `/v1/models`, real
+  inference, real SSE, sanitized JSON.
+* Version `0.1.0-dev3`; release notes; docs; release workflow and dry-run
+  bundle the launcher.
+
+**Checks (real output).**
+
+* `npm run typecheck` – passed.
+* `npm run lint` – passed.
+* `npm test` – **26 files, 241 tests**, all passed.
+* `npm run build` – passed; `dist/server/index.js` 65.8 kB.
+* `npm run check:integration` – **14/14**.
+* Notebook tests – **39** (7 skipped). Release tools – **18**.
+* `tools/release-dry-run.sh 0.1.0-dev3` – passed on `67cc56f`; assets staged,
+  validated, release notes rendered with the commit, simulated publication
+  verified.
+* Launcher E2E on Linux: ready in <1 s, `/api/health` 200, browser skipped,
+  SIGTERM stopped the child and freed port 8787; with 8787 occupied it moved
+  to 8788; `--port 8787` exited 1 with a conflict message.
+* CI: PR run 39264877308 green; merge commit CI run 39265050445 green;
+  release run 39265201384 green, including the publication and the
+  verification of the published assets.
+
+**Publication.**
+
+* PR [#7](https://github.com/coderunknow/Kaggle-Kit/pull/7) merged with
+  `--merge` at 2026-10-19T14:00:18Z; merge commit
+  `ea4aa427367fa441b87d39c7d256ec0147b21c84`.
+* Tag `v0.1.0-dev3` points at that commit. Release
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev3> is a
+  prerelease with six assets; the digests are in `DESIGN_LOG.md`.
+
+**Not verified.**
+
+* Real Kaggle endpoint: **not run**. The sandbox blocks outbound TLS
+  (`SSL_ERROR_SYSCALL`) and the user deferred the local check, so no
+  `/v1/models`, real inference or streaming result is claimed.
+* The PowerShell scripts on a real Windows machine: only static tests were
+  possible here. The Node launcher was executed on Linux.
+* Real GPU inference, a real Quick Tunnel, a real browser.
+* Release assets could not be downloaded in this sandbox (EOF from
+  `release-assets.githubusercontent.com`); the digests come from the GitHub
+  API and the workflow's download-and-verify step.
