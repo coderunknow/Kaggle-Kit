@@ -551,3 +551,107 @@ The behaviour of the release on a real Kaggle GPU runtime, with a real model,
 a real Cloudflare Quick Tunnel and a real browser is **not** verified. The
 automated checks run against stubs, a mock upstream and jsdom. The release
 notes of the version state this for every point that is not covered.
+
+---
+
+## 2026-10-19 – The release `v0.1.0-dev1` (published)
+
+### The merge
+
+* Pull request #1 – "the Kaggle deployment and the chat interface" – was
+  merged into `main` with a merge commit on 2026-10-19 at 05:09 UTC.
+  * Merge commit: `4f5446d2f6c69826f2bb51a7706cf4d62c9b41c7`
+  * The checks of the head commit `b722bb1` were green: the job
+    `typecheck, lint, test and build` and the job `notebook tests` both
+    succeeded, the combined status was `success`. The check of the third
+    party bot `Kilo Code Review` ended in `action_required` because the bot
+    has no credits left; it is not a check of the repository and it was not
+    treated as one.
+* Pull request #3 – "fix the release automation before the prerelease is
+  published" – was merged into `main` with a merge commit on 2026-10-19 at
+  05:17 UTC.
+  * Merge commit: `04c88d2c6d7e7bbbd5c8ac4409cbb1c5941efe55`
+
+### Why the tag was moved once
+
+The tag `v0.1.0-dev1` was created on the merge commit of pull request #1
+(`4f5446d`, tag object `892f860`). The first run of the release workflow
+([run 39203053154](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39203053154))
+stopped in the step that stages the assets: the rule `release/` of the
+`.gitignore` matched `docs/release/` as well, so the file with the tested and
+the untested environments had never been committed and the report of the
+release could not be built.
+
+The workflow failed **before** it created a release: `GET /releases` returned
+an empty list, no asset existed and no upload had happened. Because the tag
+has to point at a commit that contains a working release automation, the tag
+was moved to the merge commit of pull request #3 (`04c88d2`, tag object
+`57b21a9`). The old target is written into the message of the new tag
+object, so the correction is traceable. The tag was not moved a second time.
+
+The second problem of the same step - the release notes were read after the
+change into the directory of the assets - was found while the failure was
+reproduced locally, and was fixed before the second run.
+
+### The published release
+
+* Release: `v0.1.0-dev1`, a **prerelease** (not a draft), published at
+  2026-10-19T05:18:18Z.
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev1>
+* Tag: `refs/tags/v0.1.0-dev1` -> tag object `57b21a9` -> commit
+  `04c88d2c6d7e7bbbd5c8ac4409cbb1c5941efe55`. The commit of the tag is the
+  commit the assets were built from.
+* The run of the workflow that published it:
+  [run 39203797957](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39203797957),
+  every step succeeded, including "Publish the GitHub prerelease" and
+  "Verify the published release".
+* The body of the release is the file `docs/release-notes/0.1.0-dev1.md` with
+  the placeholder `{{SOURCE_SHA}}` replaced by the commit of the release.
+
+### The assets of the release
+
+| Asset | Size | SHA-256 |
+| --- | --- | --- |
+| `v0.1.0-dev1-notebook.ipynb` | 83 561 | `c4eda3c6bc5cc557c6a5108b77f44efc1e171bf1b8f5b338a1f4f146c9f1b9d8` |
+| `v0.1.0-dev1-app.zip` | 867 555 | `081541c3f950c3d035f8d33648e3dddaa12e21765cf1d13043078affb7578d11` |
+| `v0.1.0-dev1-source.zip` | 538 355 | `d3db58e0fa124924053f6c3fcba2089418f9b9336548e1efa56f216f289318ba` |
+| `manifest.json` | 1 901 | `309830d059710fa0b0386780ed9fb2e458bd31dcea515f75bfc77891dab5f707` |
+| `SHA256SUMS` | 439 | `e5b8fc6a9b7c399d77efafde648ca91ddaf037f93b129cade1a046a7afc3debb` |
+| `verification-report.json` | 7 799 | `286533613d36aac06775c08b7dd8558c00475417b646be9759193351d77c499f` |
+
+The checksums are the digests that GitHub computed for the uploaded files
+(`GET /releases/416925851/assets`). The last step of the workflow downloaded
+every published asset again and compared it with the artifact that was
+built, so the published files are the files of the tagged commit.
+
+**The assets could not be downloaded from this sandbox**: the host
+`release-assets.githubusercontent.com`, which serves the release files, is not
+reachable from the environment of this work. The comparison of the published
+files with the built files therefore comes from the run of the workflow and
+not from a download here. The digests above are the ones of the server.
+
+### The checks of the release
+
+They ran in the workflow of the release on Linux x64 with Node.js 22 and
+Python 3.11, against the commit of the tag:
+
+* `npm run typecheck` - passed.
+* `npm run lint` - passed, no findings.
+* `npm test` - **155 tests in 16 files**, all passed.
+* `npm run build` - passed.
+* `npm run check:integration` - **14 of 14**, the built bundle against the
+  mock upstream.
+* `python3 -m unittest discover -s notebooks -p "test_*.py"` - **39 tests**,
+  all passed.
+* `python3 -m unittest discover -s tools -p "test_*.py"` - **15 tests**, all
+  passed.
+* The validator of the release accepted the staged assets and the published
+  assets.
+
+### What is still not verified
+
+The same as in the release notes: the behaviour on a real Kaggle GPU runtime,
+with the real download of the model, with a real llama.cpp inference, with a
+real Cloudflare Quick Tunnel and in a real browser. The checks above run
+against stubs, a mock upstream and jsdom. The measured effect of the multi
+token prediction option is not known either.
