@@ -35,6 +35,9 @@ interface FormState {
   apiKey: string;
 }
 
+/** The value of the model select that switches to the manual input. */
+const CUSTOM_MODEL = '__custom__';
+
 const CREDENTIAL_LABELS: Record<CredentialStorage, string> = {
   session: 'This tab only (memory)',
   server: 'Local proxy secret store',
@@ -65,6 +68,13 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
   const [saving, setSaving] = useState(false);
 
   const discoveredModels = app.state.discoveredModels[profile.id] ?? [];
+
+  // A model that is not in the discovered list can only be typed by hand.
+  const [manualModel, setManualModel] = useState(
+    () =>
+      profile.modelId !== '' &&
+      !(app.state.discoveredModels[profile.id] ?? []).includes(profile.modelId),
+  );
 
   const timeoutValue = Number.parseInt(form.timeoutMs, 10);
 
@@ -330,18 +340,45 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           Model ID
         </label>
         {discoveredModels.length > 0 ? (
-          <select
-            id={`model-${profile.id}`}
-            value={form.modelId}
-            onChange={(event) => update('modelId', event.target.value)}
-          >
-            <option value="">(first model returned by the server)</option>
-            {discoveredModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              id={`model-${profile.id}`}
+              value={manualModel ? CUSTOM_MODEL : form.modelId}
+              onChange={(event) => {
+                if (event.target.value === CUSTOM_MODEL) {
+                  setManualModel(true);
+                  return;
+                }
+                setManualModel(false);
+                update('modelId', event.target.value);
+              }}
+            >
+              <option value="">(first model returned by the server)</option>
+              {discoveredModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+              <option value={CUSTOM_MODEL}>another model ID (type it)</option>
+            </select>
+            {manualModel ? (
+              <>
+                <label
+                  className="field__label field__label--sub"
+                  htmlFor={`model-${profile.id}-custom`}
+                >
+                  Model ID (typed by hand)
+                </label>
+                <input
+                  id={`model-${profile.id}-custom`}
+                  type="text"
+                  value={form.modelId}
+                  placeholder="the model ID of the server"
+                  onChange={(event) => update('modelId', event.target.value)}
+                />
+              </>
+            ) : null}
+          </>
         ) : (
           <input
             id={`model-${profile.id}`}
@@ -353,7 +390,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
         )}
         <span className="field__hint">
           {discoveredModels.length > 0
-            ? 'Discovered from /v1/models. Use "Discover models" again to refresh.'
+            ? 'Discovered from /v1/models. Use "Discover models" again to refresh, or type another model ID.'
             : 'Type the model ID manually, or use "Discover models" to read it from the server.'}
         </span>
       </div>
