@@ -22,10 +22,10 @@ cell exposes.
 | GPU check | Lists the GPUs and aborts with an actionable message when fewer than two (or no T4) are present. |
 | `llama.cpp` | Reuses a working `llama-server` from the working directory, otherwise downloads the pinned CUDA build from **direct release asset URLs** and verifies it with `--version`. |
 | Model | Reuses a complete GGUF file from `/kaggle/input` (Kaggle Dataset), from the working directory (Notebook Output) or from an earlier run. Otherwise it downloads the pinned file with resume support. |
-| Server | Starts `llama-server` with the verified configuration, filtered through the `--help` output of the installed build. |
-| Smoke test | Sends a **real** chat completion (`Reply with exactly: OK`) before success is announced. |
-| Tunnel | Starts a Cloudflare Quick Tunnel and verifies the public URL with a real request. |
-| Runtime bundle | Writes `api_key.txt` (mode `0600`), `runtime.json` and `profile.json` into `/kaggle/working/qwen38_api`. |
+| Server | Reuses a healthy server of a previous run when its configuration still fits, restarts a server of this cell that no longer fits, and starts a new one otherwise. A process that the cell did not start is never touched. |
+| Smoke test | Sends a **real** chat completion (`Reply with exactly: OK`) before success is announced. The test proves that the model answers; it does **not** prove that speculative decoding is active. |
+| Tunnel | Starts a Cloudflare Quick Tunnel and verifies the public URL with an authenticated **chat completion**. |
+| Runtime bundle | Writes `api_key.txt` (mode `0600`), `server-state.json`, `runtime.json` and `profile.json` into `/kaggle/working/qwen38_api`. |
 
 ### Verified start-up configuration
 
@@ -51,6 +51,12 @@ cell exposes.
   it. The fallback chain is `ctx=8192 + MTP` → `ctx=8192` → `ctx=4096` →
   `ctx=4096` without the reasoning flag. Every variant has to pass the real
   inference test before it is accepted.
+* **Only what was applied is reported.** The start-up command is built from
+  the options the installed build really understands. `runtime.json` and the
+  summary describe the options that were passed to the binary – a build
+  without `--spec-type` is reported as `MTP decoding: disabled`, not as
+  enabled. The options the build does not know are listed as
+  `Not supported: …`.
 
 ## 3. Read the result
 
@@ -63,22 +69,35 @@ QWEN API STATUS
 Model:            <model id>
 Model file:       /kaggle/working/qwen38_api/models/....gguf
 Context size:     8192
-Reasoning effort: medium
-MTP decoding:     enabled
+Reasoning effort: medium (start-up flag)
+MTP decoding:     enabled (--spec-type draft-mtp, --spec-draft-n-max 2)
 Local endpoint:   http://127.0.0.1:8000/v1
-Public endpoint:  https://<random>.trycloudflare.com/v1
-Public status:    The public endpoint answered a model list request.
+Local server:     started in this run
+Local inference:  verified with a real chat completion
 Local streaming:  supported
+Public endpoint:  https://<random>.trycloudflare.com/v1
+Public route:     The public endpoint answered an authenticated chat completion.
+Public streaming: not supported (use the non streaming mode)
 llama-server:     /kaggle/working/qwen38_api/bin/b11719/.../llama-server
 Runtime info:     /kaggle/working/qwen38_api/runtime.json
 Profile template: /kaggle/working/qwen38_api/profile.json
 ----------------------------------------------------------------
-The API key is generated for this session only.
-It is stored in /kaggle/working/qwen38_api/api_key.txt (mode 0600).
-Copy it into the chat interface; rotate it by restarting the cell.
+The API key is stored in /kaggle/working/qwen38_api/api_key.txt (mode 0600).
+Copy it into the chat interface. Do not publish this output.
 API key: <generated key>
 ================================================================
 ```
+
+The four states of the deployment are kept apart and are never merged:
+
+| Line | Meaning |
+| --- | --- |
+| `Local server` | whether the server was started in this run or reused from a previous one |
+| `Local inference` | the real chat completion against `127.0.0.1:8000` |
+| `Public route` | an authenticated chat completion **through the tunnel** |
+| `Local streaming` / `Public streaming` | the two transports are probed separately |
+
+A healthy local server is never reported as a working public route.
 
 The key is printed exactly once, at the end, because it has to be copied into
 the chat interface. It is never written into `runtime.json`, `profile.json`,
@@ -144,17 +163,40 @@ copied into the profile form.
 
 ## 6. Rotate the API key
 
-The key is generated per session, so a new key is created by restarting the
-cell:
+The key belongs to the server process, so it changes when the server is
+restarted.
 
-1. Stop the running server (or just rerun the cell – the cell generates a new
-   key and the old server is replaced).
-2. Rerun the cell and copy the new key.
-3. Update the profile in the chat interface.
+**A rerun of the cell does not need a new key.** The cell reads
+`server-state.json` and `api_key.txt` from the working directory. When the
+running server is healthy and its configuration still fits, it is reused and
+the key stays the same – the profile in the chat interface keeps working.
 
-Because the key is bound to the server process, an old key stops working as
-soon as the old server is stopped. If the key was stored in the local proxy
-secret store, delete the old reference under **Data & credentials**.
+A new key is created when
+
+* no server is running (the first run of a session), or
+* the server of the previous run no longer fits (a different model, a
+  different context size) or does not answer any more.
+
+In that case the cell stops the server it started itself, starts a new one
+with a new key and says so in the summary:
+
+```
+The API key was rotated because the server was restarted.
+The old key does not work any more; use the new key below.
+```
+
+Then copy the new key into the chat interface. If the old key was stored in
+the local proxy secret store, delete the old reference under **Data &
+credentials**.
+
+**A process that the cell did not start is never stopped.** If the port 8000
+is used by another program, the cell reports the conflict and stops:
+
+```
+The port 8000 on 127.0.0.1 is used by a process that this cell did not
+start. The cell never stops a foreign process. Stop that process, or use
+another port in DeploymentConfig, and rerun the cell.
+```
 
 ## 7. Limitations
 
@@ -164,6 +206,11 @@ secret store, delete the old reference under **Data & credentials**.
   interface therefore keeps the streaming switch off until a streaming probe
   against the *actual* endpoint succeeds. The notebook reports the local
   streaming support separately – do not confuse the two.
-* **One session, one model.** The script starts one server per session.
+* **One session, one model.** The script starts at most one server per
+  session. A rerun reuses the running server instead of starting a second
+  one.
+* **The smoke test does not measure the speculative decoding.** It proves
+  that the model answers. `runtime.json` reports that the MTP flags were
+  passed to the binary, not that they made the answer faster.
 * The `t4x2` mode needs two T4s. `single` exists for experiments only and is
   not the verified configuration.

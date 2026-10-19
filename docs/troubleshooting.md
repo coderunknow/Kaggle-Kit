@@ -54,6 +54,28 @@ The log of the failed variant is printed. The usual causes:
   `/kaggle/working/qwen38_api/models/<file>.gguf` and let the cell download it
   again.
 
+### "The port 8000 on 127.0.0.1 is used by a process that this cell did not start"
+
+The cell found something on the port of the local server that it did not
+start itself. It never kills a foreign process – that could be a service of
+the machine. Either stop that process, or use another port in
+`DeploymentConfig` and rerun the cell.
+
+The cell only stops a process that it started itself: the process id in
+`server-state.json` is checked against the live process, and the command line
+of that process has to contain `llama-server` before it is stopped.
+
+### "The API key was rotated because the server was restarted"
+
+The server of the previous run no longer fits the configuration (a different
+model, a different context size) or did not answer. The cell stopped that
+server, started a new one and created a new key. The old key does not work
+any more: copy the new key into the chat interface and delete the old entry
+in the local secret store.
+
+When nothing changed, a rerun **reuses** the running server and the key stays
+the same. The summary then says `Local server: reused from a previous run`.
+
 ### The tunnel does not come up
 
 * `No public URL was returned` – cloudflared did not report a URL. The local
@@ -61,7 +83,10 @@ The log of the failed variant is printed. The usual causes:
   from a port forward.
 * `The public endpoint is not usable yet` – the tunnel exists but the request
   through it failed. The public URL of a Quick Tunnel needs a moment before it
-  routes; the cell reports the exact HTTP status.
+  routes; the cell reports the exact reason: `auth` (the key was rejected),
+  `upstream` (an HTTP error of the model server), `timeout`, `unreachable`
+  (the tunnel is not routing) or `invalid_response` (the answer was not a
+  valid chat completion). The local API stays available in every case.
 * A Quick Tunnel URL is **temporary**: it changes on every run and disappears
   when the session ends.
 
@@ -72,6 +97,23 @@ save the file as a Kaggle Dataset or as a Notebook Output and attach it. The
 script looks in `/kaggle/input` first.
 
 ## Chat interface
+
+### The backend answers "The origin ... is not allowed to call this proxy"
+
+The backend only accepts browser requests from its own origin and from the
+origins in `KAGGLE_KIT_ALLOWED_ORIGINS`. The development launcher
+(`npm run dev`) sets the Vite origin automatically. If the client runs on
+another port, add it:
+
+```bash
+KAGGLE_KIT_ALLOWED_ORIGINS=http://localhost:4173 npm start
+```
+
+### "This endpoint only accepts \"Content-Type: application/json\""
+
+A request with a body reached the API without a JSON content type. The
+browser always sends one; a script that calls the API by hand has to set the
+header.
 
 ### "proxy offline" in the header
 

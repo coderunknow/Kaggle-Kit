@@ -1,5 +1,7 @@
 # Kaggle-Kit
 
+[![CI](https://github.com/coderunknow/Kaggle-Kit/actions/workflows/ci.yml/badge.svg)](https://github.com/coderunknow/Kaggle-Kit/actions/workflows/ci.yml)
+
 Deploy a large GGUF model on Kaggle (Tesla T4 x2) with the official CUDA build of
 `llama.cpp`, expose it through an OpenAI-compatible API, and talk to it from a
 polished browser chat interface.
@@ -94,6 +96,11 @@ See [docs/chat-interface.md](docs/chat-interface.md) for the details.
   whenever the server mode is used.
 * `src/security.test.ts` fails the build when a tunnel URL or a credential
   appears in the source.
+* The backend refuses browser requests from another origin, requires a JSON
+  content type and resolves every static file inside the client directory
+  with a proper containment check.
+* The upstream host can be restricted with `KAGGLE_KIT_ALLOWED_HOSTS`; the
+  default stays open so that any OpenAI-compatible endpoint keeps working.
 
 See [docs/security.md](docs/security.md).
 
@@ -104,8 +111,15 @@ npm run typecheck      # tsc for the client and the backend
 npm run lint           # eslint
 npm test               # vitest (unit, integration and component tests)
 npm run check          # all three
+npm run build          # type check, build the client, bundle the backend
+npm run check:integration   # drives the built application against the mock upstream
 python3 -m unittest discover -s notebooks -p "test_*.py"   # deployment script tests
 ```
+
+The same checks run on every push and pull request in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). They need no secret,
+no GPU, no weights and no tunnel. The notebook tests need the `requests`
+package (`pip install requests`).
 
 ## Project layout
 

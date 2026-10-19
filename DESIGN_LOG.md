@@ -187,3 +187,157 @@ unknown routes and the absence of the key in the answers and in the logs.
 * Should the runtime bundle of the deployment script be importable into the
   chat interface (a "paste the startup configuration" field) instead of being
   only a file? The information is currently shown as an explanatory card.
+
+---
+
+## 2026-10-19 — Remediation of PR #1 (append only)
+
+This entry records the second pass over the branch `arena/b94557e7-kaggle-kit`.
+The entries above are unchanged.
+
+### 7. Decisions
+
+**7.1 The deployment cell owns exactly one server, and it only ever stops a
+process it started itself.** A new file `server-state.json` describes the
+running server: process id, host, port, model, binary, a digest of the
+requested configuration (`fingerprint`) and the options that were really
+applied (`applied`). The cell reads the file, checks whether the recorded
+process is still alive *and* still a `llama-server` (the command line is
+read from `/proc/<pid>/cmdline`), and then decides:
+
+| Situation | Action |
+| --- | --- |
+| nothing is listening | `start` – a new server with a new key |
+| our own server, healthy, configuration still fits | `reuse` – the key stays valid |
+| our own server, unhealthy or outdated | `restart` – the old process is stopped, a new key is created |
+| something else is listening | `conflict` – the cell reports it and stops, it never kills a foreign process |
+
+The digest is built from the *request* (model file, binary, host, port,
+context size, MTP, reasoning effort, GPU split) and not from the result, so
+a server that had to fall back to a smaller context is still the server of
+this configuration and is reused instead of being restarted on every run.
+
+**7.2 The key belongs to the server process.** `api_key.txt` (mode `0600`)
+holds the key of the server that is running. A reuse keeps the key, a
+restart rotates it and the summary says so. The key is handed to
+`llama-server` through `--api-key-file` when the installed build supports
+it, so it does not appear in the process list.
+
+**7.3 Only the applied options are reported.** `build_server_command()`
+returns a `ServerLaunch` with the command, the `applied` options and the
+`dropped` options. `runtime.json` and the summary are built from `applied`,
+so a build without `--spec-type` is reported as `MTP decoding: disabled`.
+The smoke test stays a plain chat completion: it proves that the model
+answers and it never claims that speculative decoding is active.
+`usable_variants()` removes a variant that becomes identical to another one
+after the unsupported options are removed, so a build without MTP support
+does not start the same configuration twice.
+
+**7.4 The public route is verified on its own.** `verify_public_endpoint()`
+does a model list request *and* an authenticated chat completion with a
+small output limit over the tunnel, validates the structure of the answer
+and classifies the failure (`auth`, `upstream`, `timeout`, `unreachable`,
+`invalid_response`). The public streaming support is probed separately from
+the local one, because a Quick Tunnel does not forward an event stream while
+the local server does. The local state is kept when the public route fails
+and the summary never claims a complete success.
+
+**7.5 The backend refuses browser requests from another origin.** A request
+with an `Origin` header must come from the origin of the server itself or
+from `KAGGLE_KIT_ALLOWED_ORIGINS`; a request with a body must use
+`Content-Type: application/json`. Both are cheap, they do not need a
+token, and they remove the cross site request forgery risk of a proxy that
+binds to the loopback interface.
+
+**7.6 The upstream policy stays open by default and is explicit when it is
+closed.** A blanket restriction would break the main use case (an arbitrary
+OpenAI-compatible endpoint, a `llama-server` on `127.0.0.1`). The controls
+are therefore opt-in and documented: `KAGGLE_KIT_ALLOWED_HOSTS` (with
+`*.example.com` patterns and normalized host names) and
+`KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`. The client follows redirects
+manually, validates every hop against the same policy and refuses a
+redirect to another origin as soon as an API key is configured, so the key
+can never leak and the allow list cannot be bypassed with a redirect.
+
+**7.7 The containment check is a path check, not a text check.** The static
+file handler resolves the request against the client directory and compares
+the result with `path.relative`. A traversal, an absolute path, a null byte
+and a sibling directory with the same prefix are all refused. The check was
+not "block `..`": the encoded slash (`%2f`) reaches the file resolution
+through the URL parser, so the text of the path says nothing about where the
+file ends up.
+
+**7.8 The disconnect of a client is detected on the response.** The `close`
+event of the *request* fires when the request body was received, not when
+the client goes away; the `close` event of the *response* fires when the
+connection is gone. A response that was written completely is not a
+disconnect. The upstream request is aborted, the reader of the upstream body
+is closed and the stream has a timeout.
+
+**7.9 The download is only accepted when it is the file.** An HTML answer is
+refused, the announced `Content-Length` is compared with the number of
+bytes that arrived, and the archives are extracted with a validated member
+list: no absolute path, no `..`, no link that points outside of the target
+directory, no device file. No checksum is invented: the release assets of
+`llama.cpp` do not ship one that could be verified here, so the integrity
+that *is* checked is the one that can be checked (the size, the tar
+structure, the magic bytes of the model file).
+
+### 8. Validation (2026-10-19)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Install | `npm ci` | exit 0, `found 0 vulnerabilities` |
+| Types | `npm run typecheck` | exit 0 |
+| Lint | `npm run lint` | exit 0 |
+| Tests | `npm test` | exit 0, 143 tests in 15 files |
+| Build | `npm run build` | exit 0 |
+| Built application | `npm run check:integration` | exit 0, 14/14 checks |
+| Notebook | `python3 -m unittest discover -s notebooks -p "test_*.py"` | exit 0, 39 tests |
+| Whitespace | `git diff --check` | exit 0 |
+
+The six security tests of `server/app.security.test.ts` and the cancellation
+test of `server/app.streaming.test.ts` were run against the **old**
+implementation as well: they fail there and pass with the fix. The other
+new tests are new behaviour and have no predecessor.
+
+### 9. What a maintainer has to run on Kaggle
+
+The parts that cannot be verified in the sandbox, with the exact steps:
+
+1. **GPU detection** – run the cell with *GPU T4 x2* and check the log
+   `Detected 2 GPU(s)`. With one GPU the cell has to abort with the
+   actionable message.
+2. **Binary and model** – the log has to show `llama.cpp is ready: …` and
+   `The model is ready: … (12.12 GB)`. The second run has to show
+   `Reusing the model: …`.
+3. **Start-up** – the summary has to show the context size that was applied
+   and `MTP decoding: enabled (--spec-type draft-mtp, --spec-draft-n-max 2)`
+   on a build that supports the flags, `MTP decoding: disabled` and
+   `Not supported: mtp` on a build that does not.
+4. **Real inference** – `Local inference: verified with a real chat
+   completion` and an answer in the log of the smoke test.
+5. **Public inference** – `Public route: The public endpoint answered an
+   authenticated chat completion.` and `Public streaming: not supported`.
+6. **Rerun** – run the cell a second time in the same session: the summary
+   has to show `Local server: reused from a previous run` and the *same*
+   key. Change `ctx_size` and run it again: the summary has to show
+   `Local server: started in this run` and `The API key was rotated …`.
+7. **Failure and cleanup** – occupy the port with another process and run
+   the cell: it has to report the conflict and stop, without killing the
+   foreign process.
+
+### 10. Remaining limits
+
+* The allow list of the upstream works on the host name, not on the address
+  it resolves to. A host that resolves to a private address is not detected
+  (DNS rebinding). This is a documented trade-off of a tool that has to
+  reach a `llama-server` on the loopback interface.
+* Any program on the machine can talk to the backend. The origin check stops
+  a page of another site, not a local program. The backend has to stay on the
+  loopback interface.
+* The MTP flags are reported as *applied*, not as *measured*. The effect of
+  the speculative decoding on the answer is not measured by the smoke test.
+* The component tests run in jsdom. They are not a browser test; the real
+  rendering, the copy button, the keyboard navigation and the small screen
+  layout are still unverified in a real browser.

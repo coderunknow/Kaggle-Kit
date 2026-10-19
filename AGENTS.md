@@ -69,10 +69,14 @@ npm run typecheck    # tsc for the client and for the backend
 npm run lint         # eslint
 npm test             # vitest
 npm run build        # typecheck + vite build + esbuild bundle of the backend
+npm run check:integration   # the built application against the mock upstream
 python3 -m unittest discover -s notebooks -p "test_*.py"
 ```
 
-`npm run check` runs the first three.
+`npm run check` runs the first three. The notebook tests need the
+`requests` package. The same checks run in
+`.github/workflows/ci.yml` on every push and pull request; they need no
+secret, no GPU, no weights and no tunnel.
 
 ## Writing tests
 
@@ -81,6 +85,11 @@ python3 -m unittest discover -s notebooks -p "test_*.py"
   OpenAI-compatible upstream – no mocks of the module under test.
 * `src/components/App.test.tsx`: jsdom, the whole application, with `fetch`
   replaced by a router that mimics the backend.
+* `server/app.security.test.ts`, `server/app.streaming.test.ts`: the real
+  backend against a real HTTP upstream, for the request policy and for the
+  lifecycle of a stream.
+* `tools/integration-check.mjs`: the *built* application against the mock
+  upstream; it is the check that proves the bundle works, not the sources.
 * A test that asserts a *negative* ("the key is not in the log", "the parameter
   is not sent") is worth more than a happy path test.
 * Never put a real credential into a fixture.
