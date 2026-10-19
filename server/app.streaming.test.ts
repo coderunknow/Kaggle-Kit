@@ -20,14 +20,16 @@ interface StreamState {
 interface MockUpstream {
   url: string;
   streams: StreamState[];
+  requests: { path: string; body: string }[];
 }
 
 /**
  * A mock upstream that can stream slowly, split a frame over two writes or
  * break the connection in the middle of a stream.
  */
-function startMockUpstream(): Promise<MockUpstream> {
+function startMockUpstream(redirectTarget = 'http://127.0.0.1:1/v1'): Promise<MockUpstream> {
   const streams: StreamState[] = [];
+  const requests: MockUpstream['requests'] = [];
   let counter = 0;
 
   const server = http.createServer((request, response) => {
@@ -35,6 +37,7 @@ function startMockUpstream(): Promise<MockUpstream> {
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
+      requests.push({ path: request.url ?? '', body });
       const parsed = JSON.parse(body || '{}') as { model?: string; stream?: boolean };
 
       if (request.url === '/v1/models') {
@@ -63,6 +66,13 @@ function startMockUpstream(): Promise<MockUpstream> {
           state.aborted = true;
         }
       });
+
+      if (state.model === 'redirect-model') {
+        // A redirect to a host that must not be reached by the proxy.
+        response.writeHead(302, { Location: `${redirectTarget}/chat/completions` });
+        response.end();
+        return;
+      }
 
       response.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -130,7 +140,7 @@ function startMockUpstream(): Promise<MockUpstream> {
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 0;
-      resolve({ url: `http://127.0.0.1:${port}/v1`, streams });
+      resolve({ url: `http://127.0.0.1:${port}/v1`, streams, requests });
     });
   });
 }
@@ -170,11 +180,11 @@ describe('the streaming lifecycle of the proxy', () => {
     await new Promise<void>((resolve) => app.server.close(() => resolve()));
   });
 
-  const probe = (model: string) =>
+  const probe = (model: string, target = upstream.url) =>
     fetch(`${baseUrl}/api/proxy/probe-stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseUrl: upstream.url, apiKey: API_KEY, model, timeoutMs: 10_000 }),
+      body: JSON.stringify({ baseUrl: target, apiKey: API_KEY, model, timeoutMs: 10_000 }),
     });
 
   /** Read a streamed answer completely. */
@@ -271,6 +281,39 @@ describe('the streaming lifecycle of the proxy', () => {
     expect(state).toBeDefined();
     expect(state?.aborted).toBe(true);
     expect(state?.completed).toBe(false);
+  });
+
+  it('does not follow a redirect of the upstream', async () => {
+    // The endpoint is verified with a normal model ...
+    await probe('mock-model');
+
+    // ... and answers the streaming request with a redirect to a second
+    // server that must not be reached.
+    const target = await startMockUpstream();
+    const redirecting = await startMockUpstream(target.url);
+    const before = target.requests.length;
+
+    // The endpoint answers normally until it is asked for the redirect model.
+    await probe('mock-model', redirecting.url);
+
+    const response = await fetch(`${baseUrl}/api/proxy/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: redirecting.url,
+        apiKey: API_KEY,
+        model: 'redirect-model',
+        messages: [{ role: 'user', content: 'hi' }],
+        params: { stream: true, maxTokens: 32 },
+        timeoutMs: 20_000,
+      }),
+    });
+    const text = await response.text();
+
+    // The redirect is refused instead of being sent to the target.
+    expect(response.status).toBe(502);
+    expect(text).toContain('redirect');
+    expect(target.requests.length).toBe(before);
   });
 
   it('reports an upstream failure in the event stream instead of ending silently', async () => {

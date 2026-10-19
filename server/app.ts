@@ -287,6 +287,9 @@ export function createApp(options: AppOptions = {}): App {
         headers,
         body: JSON.stringify({ ...upstreamBody, stream: true }),
         signal: controller.signal,
+        // Redirects are not followed: a redirect could send the prompt and
+        // the key to a host that is not allowed to see them.
+        redirect: 'manual',
       });
     } catch (error) {
       clearTimeout(timeout);
@@ -303,6 +306,13 @@ export function createApp(options: AppOptions = {}): App {
     if (!upstream.ok) {
       clearTimeout(timeout);
       stopWatching();
+      if ([301, 302, 303, 307, 308].includes(upstream.status)) {
+        throw new HttpError(
+          502,
+          'The upstream server answered the streaming request with a redirect. ' +
+            'The request was not forwarded to the target of the redirect.',
+        );
+      }
       const detail = await upstream.text().catch(() => '');
       throw new HttpError(
         upstream.status,

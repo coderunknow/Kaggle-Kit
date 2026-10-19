@@ -275,7 +275,7 @@ export class OpenAIClient {
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'User-Agent': 'Kaggle-Kit/0.1',
+      'User-Agent': 'Kaggle-Kit/0.1.0-dev1',
     };
 
     for (const [key, value] of Object.entries(extra ?? {})) {

@@ -19,6 +19,11 @@ models/
 llama-server
 cloudflared
 
+# Staged release artifacts (built by .github/workflows/release.yml)
+release/
+downloaded/
+checks.json
+
 # Local environment / editor state
 .env
 .env.local
