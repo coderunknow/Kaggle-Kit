@@ -421,3 +421,66 @@ describe('the chat interface', () => {
     expect(within(header()).getByText(/mock-model/)).toBeTruthy();
   });
 });
+
+describe('the recommended system prompt', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    calls.length = 0;
+    installFetchMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('is inserted from the profile editor and becomes the first message of the request', async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await createProfile(user);
+
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+    await user.click(screen.getByRole('button', { name: /insert the recommended qwen prompt/i }));
+
+    const textarea = screen.getByLabelText(/system prompt/i) as HTMLTextAreaElement;
+    expect(textarea.value.startsWith('You are Qwen')).toBe(true);
+
+    await user.click(screen.getByRole('button', { name: /save profile/i }));
+    await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
+
+    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+    const composer = await screen.findByLabelText(/^message$/i);
+    await user.type(composer, 'Explain what a hash table is');
+    await user.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await waitFor(() => expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(true));
+
+    const chat = calls.filter((call) => call.url === '/api/proxy/chat').at(-1);
+    const messages = (chat?.body as { messages: Array<{ role: string; content: string }> }).messages;
+
+    expect(messages[0].role).toBe('system');
+    expect(messages[0].content.startsWith('You are Qwen')).toBe(true);
+    expect(messages[1]).toEqual({ role: 'user', content: 'Explain what a hash table is' });
+    // The prompt is sent once, not repeated per turn.
+    expect(messages.filter((message) => message.role === 'system')).toHaveLength(1);
+  });
+
+  it('sends no system message when the profile has no prompt', async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await createProfile(user);
+
+    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+    const composer = await screen.findByLabelText(/^message$/i);
+    await user.type(composer, 'Hello');
+    await user.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await waitFor(() => expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(true));
+
+    const chat = calls.filter((call) => call.url === '/api/proxy/chat').at(-1);
+    const messages = (chat?.body as { messages: Array<{ role: string }> }).messages;
+    expect(messages.some((message) => message.role === 'system')).toBe(false);
+  });
+});

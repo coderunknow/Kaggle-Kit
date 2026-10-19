@@ -12,6 +12,7 @@ import { describeErrorKind } from '../../shared/api/errors';
 import type { ServerCapabilities } from '../../shared/api/requests';
 import type { ApiProfile, ConnectionTestResult, CredentialStorage } from '../../shared/domain';
 import { validateProfileDraft } from '../../shared/api/validation';
+import { QWEN_SYSTEM_PROMPT, QWEN_SYSTEM_PROMPT_ID, estimatePromptTokens } from '../../shared/prompts/qwen';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
 import { useApp } from '../state/AppProvider';
@@ -368,7 +369,24 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           placeholder="Optional instructions sent with every message."
           onChange={(event) => update('systemPrompt', event.target.value)}
         />
-        <span className="field__hint">Sent as the first message of every request.</span>
+        <span className="field__hint">
+          Sent as the first message of every request.
+          {form.systemPrompt.trim()
+            ? ` ${form.systemPrompt.length} characters, roughly ${estimatePromptTokens(form.systemPrompt)} tokens of the 8192 that the deployed server allocates to the whole conversation.`
+            : ''}
+        </span>
+        <button
+          type="button"
+          className="button button--small"
+          onClick={() => update('systemPrompt', QWEN_SYSTEM_PROMPT)}
+        >
+          {form.systemPrompt.trim() ? 'Replace with the recommended Qwen prompt' : 'Insert the recommended Qwen prompt'}
+        </button>
+        <span className="field__hint">
+          Tuned for the {QWEN_SYSTEM_PROMPT_ID} target: no tools, one system message. The text is in
+          <code> shared/prompts/qwen.ts</code>; the research behind it is in
+          <code> research/qwen-system-prompt/</code>.
+        </span>
       </div>
 
       <div className="field">

@@ -17,8 +17,21 @@ A profile describes one OpenAI-compatible endpoint.
 | API key | The bearer token of the server. |
 | Where the key is kept | `This tab only` (memory), `Local proxy secret store` (`0600` file) or `Browser storage` (plain text, opt-in). |
 | Model ID | Filled from `/v1/models` with **Discover models** or typed manually. Empty means "the first model the server reports". |
-| System prompt | Sent as the first message of every request. |
+| System prompt | Sent as the first message of every request. The field shows the character count and an estimated token share of the 8 192-token window, and **Insert the recommended Qwen prompt** fills it with the prompt described below. |
 | Request timeout | Per request timeout in milliseconds (1 000 – 1 800 000). |
+
+### The recommended system prompt
+
+The editor can insert a ready-made prompt for the deployment this repository
+describes (one system message, no tools, 8 192-token context). The text lives in
+`shared/prompts/qwen.ts` and is mirrored in
+[`research/qwen-system-prompt/SYSTEM_PROMPT.md`](../research/qwen-system-prompt/SYSTEM_PROMPT.md),
+which also records what each block is for and what was deliberately left out.
+The two copies are checked against each other by `shared/prompts/qwen.test.ts`.
+
+The button only changes the form. Nothing is sent until the profile is saved,
+and an empty field still means "no system message", which is the right default
+for other OpenAI-compatible endpoints.
 
 ### Connection test
 

@@ -77,3 +77,74 @@ this environment (no GPUs, and `huggingface.co` and the GitHub release CDN are
 not reachable from the sandbox). The deployment script is therefore validated
 by its unit tests and by the review of the working cell it is based on, not by
 a real deployment.
+
+---
+
+## 2026-10-19 – Branch `arena/3d0a4491-kaggle-kit` – system prompt research
+
+**Task.** Research the leaked system-prompt corpus, extract reusable behavioural
+engineering, and produce and integrate an optimized system prompt for the Qwen
+deployment in this repository, with tests and honest coverage reporting.
+
+**Starting point.** The repository on this branch was empty apart from
+`LICENSE`; the application lives on `arena/b94557e7-kaggle-kit`. That branch was
+fast-forwarded into this one so that the prompt could be integrated against the
+real code instead of being written blind. `npm install` was run and the baseline
+suite (85 tests) passed before any change.
+
+**What was added.**
+
+* `research/qwen-system-prompt/` – the research deliverable:
+  `SYSTEM_PROMPT.md` (the prompt, its target table, per-block evidence, the
+  deliberate omissions, optional appendices), `PROMPT_INVENTORY.json`/`.csv`
+  (1 304 files classified; 313 prompt-carrying; 128 exact duplicates; 14
+  near-duplicate clusters), `SOURCE_EVIDENCE.md` (revision
+  `dfa2e2855f65a8982b3360d6bd12eeabc049355f`, provenance classes, what was and
+  was not verified), `PROMPT_ANALYSIS.md` (behavioural findings with `path:line`
+  citations, restriction classifications R1–R15, conflicts, runtime
+  dependencies), `PROMPT_EVALUATION.md` (protocol, executed checks, blocked
+  model run, hypotheses H1–H7), `README.md`, `corpus_analysis.json`,
+  `inspected_files.json`, `build_inventory.py`, `analyze_corpus.py`, and
+  `eval/eval_cases.json` + `eval/run_eval.py`.
+* `shared/prompts/qwen.ts` – the prompt and a token estimate, single source of
+  truth for the application.
+* `shared/prompts/qwen.test.ts` – 9 tests: no template tokens, no tool schemas,
+  no dates or cutoffs, no foreign vendor identity, context budget, required
+  safety clauses, and character-level parity with `SYSTEM_PROMPT.md`.
+* `src/components/ProfileForm.tsx` – an "Insert the recommended Qwen prompt"
+  button and a character/token estimate next to the system prompt field.
+* `src/components/App.test.tsx` – two end-to-end tests: the inserted prompt
+  becomes the first request message exactly once, and an empty field still
+  sends no system message.
+* `docs/chat-interface.md` – documents the button, the token hint and where the
+  text lives.
+
+**Bugs and problems found while doing it.**
+
+1. The inventory classifier first counted prompt files that embed tool schemas
+   (Grok, Qwen) as `tool_description`, which under-reported behavioural prompts
+   by 38 files. Fixed: a file with a system prompt *and* directives *and*
+   schemas is a `system_prompt` with subcategory `contains_tool_schemas`.
+2. The first MinHash implementation re-hashed every shingle once per
+   permutation; on a 500 KB file that was unusable. Rewritten to hash each
+   shingle once and apply the permutations arithmetically (20 s for the whole
+   corpus).
+3. Two restriction regexes were too broad (`do not use` matched by a
+   "no web" pattern) and reported 129 files for a rule that actually applies to
+   8. Narrowed and re-run; the corrected numbers are what the documents quote.
+
+**Checks that were run.**
+
+* `npm run typecheck` – passed.
+* `npm run lint` – passed.
+* `npm test` – 96 tests in 11 files, all passed.
+* `python3 research/qwen-system-prompt/eval/run_eval.py --dry-run` – suite
+  valid, 17 cases / 36 checks / 45 manual criteria; **no model run**.
+* `python3 research/qwen-system-prompt/build_inventory.py --repo /tmp/sp_leaks`
+  and `analyze_corpus.py --repo /tmp/sp_leaks` – completed in ~20 s and ~38 s.
+
+**Not verified.** No inference was executed: no GPU, no model file and no
+endpoint exist in this environment. The prompt's effect on answer quality is
+therefore a set of labelled hypotheses, not a measured improvement. The
+inventoried corpus's authenticity was not confirmed against vendor
+documentation, which is unreachable from the sandbox.
