@@ -359,3 +359,82 @@ insert button of the recommended Qwen prompt *and* the manual model id.
 entry; the merge, the tag and the published assets are recorded in a later
 entry. The behaviour on a real Kaggle GPU runtime, with a real model, a real
 Quick Tunnel and a real browser is not verified by the checks above.
+
+---
+
+## 2026-10-19 – The release `v0.1.0-dev1` (published)
+
+**Task.** Merge pull request #1, tag the result as `v0.1.0-dev1` and publish
+a prerelease whose assets are built, verified and uploaded by a workflow of
+the repository.
+
+**The merge.**
+
+* Pull request #1 was merged into `main` with a merge commit,
+  `4f5446d2f6c69826f2bb51a7706cf4d62c9b41c7`, on 2026-10-19 at 05:09 UTC.
+  The checks of the head commit `b722bb1` were green (the job
+  `typecheck, lint, test and build` and the job `notebook tests`).
+  The check of the third party bot `Kilo Code Review` ended in
+  `action_required`, because the bot has no credits left. It is not a check
+  of the repository, it was reported as it is and it was not counted as a
+  passing check.
+* The first run of the release workflow failed in the step that stages the
+  assets: the rule `release/` of the `.gitignore` had also hidden
+  `docs/release/environment.json`, so the file with the tested and the
+  untested environments was never committed. The failure happened before a
+  release was created, nothing was published.
+* Pull request #3 with the fix was merged into `main` with a merge commit,
+  `04c88d2c6d7e7bbbd5c8ac4409cbb1c5941efe55`, on 2026-10-19 at 05:17 UTC.
+  The tag was moved to this commit, because a tag has to point at a commit
+  with a working release automation. The old target (`4f5446d`, tag object
+  `892f860`) is written into the message of the new tag object, so the
+  correction is traceable.
+
+**The published release.**
+
+* <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev1> -
+  a prerelease, not a draft, published at 2026-10-19T05:18:18Z, built from
+  the commit `04c88d2c6d7e7bbbd5c8ac4409cbb1c5941efe55`.
+* The workflow run that published it:
+  <https://github.com/coderunknow/Kaggle-Kit/actions/runs/39203797957> - all
+  steps succeeded, including the publication and the verification of the
+  published assets.
+* The assets: `v0.1.0-dev1-notebook.ipynb` (83 561 bytes), `v0.1.0-dev1-app.zip`
+  (867 555), `v0.1.0-dev1-source.zip` (538 355), `manifest.json` (1 901),
+  `SHA256SUMS` (439) and `verification-report.json` (7 799). The SHA-256 of
+  every file is in the entry of `DESIGN_LOG.md`.
+
+**Checks that were run.**
+
+* In the workflow of the release: typecheck, lint, 155 tests in 16 files, the
+  build, 14 of 14 integration checks, 39 notebook tests, 15 tests of the
+  release tools, the validation of the staged assets and the comparison of the
+  published assets with the built ones. All passed.
+* The continuous integration of the two merge commits was green.
+
+**Bugs and problems found while doing it.**
+
+1. The rule `release/` of the `.gitignore` matched `docs/release/` as well
+   and hid the file with the tested and the untested environments. The rule
+   is anchored to the root now, and the tools of the release have a test that
+   proves that they do not contain a secret themselves.
+2. The step that publishes the release changed into the directory of the
+   assets before it read the release notes from `docs/release-notes/`. The
+   notes are rendered before the change of the directory now. The problem was
+   found while the failure was reproduced locally; the first run of the
+   workflow had stopped before that step.
+3. The test of the scanner of secrets contained a literal that looked like a
+   key, so the scan reported the test file itself. The value is built from
+   fragments at runtime now.
+4. The log of the runs of the workflow could not be read from this
+   environment: the host that serves the logs of a run is not reachable. The
+   outcome of the run was read from the API of the runs, of the jobs and of
+   the steps, and the digests of the published files were read from the API
+   of the release.
+
+**Not verified.** The assets of the release could not be downloaded from this
+environment, the host that serves the files of a release is not reachable
+here; the comparison of the published files with the built files comes from
+the run of the workflow. The behaviour on a real Kaggle GPU runtime, with a
+real model, a real Quick Tunnel and in a real browser is not verified by the
+checks above.

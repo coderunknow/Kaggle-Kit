@@ -24,6 +24,7 @@ cloudflared
 /release/
 /downloaded/
 /checks.json
+/release-notes.md
 
 # Local environment / editor state
 .env
