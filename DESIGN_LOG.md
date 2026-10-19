@@ -847,3 +847,83 @@ not blocked.
 The behaviour on a real Kaggle GPU, with the real model download, a real
 llama.cpp inference, a real Cloudflare Quick Tunnel and in a real browser.
 The checks run against stubs, a mock upstream and jsdom.
+
+---
+
+## 2026-10-19 – v0.1.0-dev3: one connection, evidence-based diagnosis
+
+**The defect that shaped this release.** The chat sent `profile.baseUrl`,
+while the connection test and the settings cards used the normalized URL
+(`shared/api/url.ts` adds `/v1`). A profile saved as `https://host` tested
+`https://host/v1` but chatted with `https://host`. The badge was read by
+profile id alone, so a result could outlive the URL, model or key it described.
+The release fixes the data flow, not the wording: one module
+(`shared/connection.ts`) resolves the credential, the effective URL and the
+fingerprint, and every consumer uses it.
+
+**Decisions.**
+
+* `effectiveProfileTarget()` is the only normalization path on the client. A
+  pasted `/v1/v1` is collapsed; a legitimate path prefix is kept; an invalid
+  value returns the typed text plus an error instead of silently changing it.
+* `profileConfigFingerprint()` covers the effective URL, the model, the
+  timeout and the credential mode; `profileFingerprint()` adds the credential
+  identity. No key value is stored in a fingerprint.
+* The reducer drops a stored test and its capabilities when the connection
+  identity changes and drops the discovered models when the endpoint changes.
+  Writing a **new** key does the same; writing the same key again does not.
+* The test result may only be attached to the saved profile when the saved
+  configuration and the credential that was tested match. A test with a typed
+  key stores the key in component memory for the comparison and is otherwise
+  editor-local.
+* The connection test is a six-stage sequence. `ok` requires a non-empty
+  inference answer; transport, auth and the model list can be `ok` while the
+  test is `failed`. Streaming is never implied: it is `ok` only when the SSE
+  probe cached a verified stream for the same base URL and credential.
+* Errors are classified once (`shared/api/errors.ts`) and rendered with the
+  same labels in Settings and the chat. The streaming proxy error body is
+  redacted before it reaches the browser.
+* The Windows launcher is split into a thin PowerShell wrapper (Node/npm and
+  version checks, project files) and a dependency-free Node launcher (install,
+  build, port, readiness, browser, shutdown). Only the wrapper is
+  Windows-specific; the logic is testable on Linux. An application bundle
+  starts without `node_modules` because it already contains the build.
+* The real-endpoint checker reads the key with `Read-Host -AsSecureString`,
+  zeroes the unmanaged copy and prints a masked, sanitized report.
+
+**Publication.**
+
+* PR [#7](https://github.com/coderunknow/Kaggle-Kit/pull/7), merged with
+  `--merge`; merge commit `ea4aa427367fa441b87d39c7d256ec0147b21c84`.
+* Tag `v0.1.0-dev3` (lightweight) points at that commit.
+* Release: <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev3>
+  (prerelease, not draft), created 2026-10-19T14:00:17Z.
+* Release workflow
+  [run 39265201384](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39265201384)
+  succeeded; the main CI of the merge commit
+  ([run 39265050445](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39265050445))
+  is green.
+
+**Assets (size and the digest GitHub reports).**
+
+| Asset | Size | SHA-256 |
+| --- | --- | --- |
+| `v0.1.0-dev3-notebook.ipynb` | 83 561 | `55fed23e7c7b94b9306aece254d710640727de6c5949eb68e9f9073cff63a387` |
+| `v0.1.0-dev3-app.zip` | 935 204 | `60ae9478c3b43dd87471c90bbb70f5fe5e79cc072a89f239aad529e986323fe3` |
+| `v0.1.0-dev3-source.zip` | 626 339 | `659eb5e6cb618881830d69c31de6384070eeb055144616198c387f32303831e7` |
+| `manifest.json` | 1 901 | `ce0187e16912f13394a0d09fe75d28dda49ee5ce4780bf454dcf374c4ce4bb64` |
+| `SHA256SUMS` | 439 | `4c54cb943d6ccd5a069f2e91956ab99d2f80e15d97134bd49976639dbd218cb4` |
+| `verification-report.json` | 8 038 | `3264531d093924fdc648989c8d5443d6c38cac0af896fd87d89ea7c39cb64c9e` |
+
+The workflow's "Verify the published release" step downloaded every asset
+and validated the manifest and checksums; it succeeded. The sandbox cannot
+download from `release-assets.githubusercontent.com` (EOF), so the digests
+above come from the GitHub API rather than a local download.
+
+**What this release does not prove.** No real Kaggle endpoint request was
+made here: outbound TLS is blocked and the user deferred the local PowerShell
+check, so `/v1/models`, real inference and streaming against the live endpoint
+are **not run**, not passed. The PowerShell wrapper was not executed on a real
+Windows machine; the Node launcher was executed on Linux (readiness, port
+conflict, forced conflict, clean shutdown). Real GPU inference and a real
+browser remain outside this environment.
