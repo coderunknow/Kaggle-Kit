@@ -123,11 +123,9 @@ export function createApp(options: AppOptions = {}): App {
 
       switch (route) {
         case 'GET /api/health': {
-          sendJson(response, 200, {
-            ok: true,
-            name: 'kaggle-kit-proxy',
-            allowedHosts: config.allowedHosts,
-          });
+          // The allow list and other configuration stay on the server: the
+          // browser only needs to know that the proxy is alive.
+          sendJson(response, 200, { ok: true, name: 'kaggle-kit-proxy' });
           return;
         }
 
@@ -239,6 +237,8 @@ export function createApp(options: AppOptions = {}): App {
       throw new HttpError(
         409,
         'Streaming has not been verified for this endpoint. Run the streaming probe first, or disable streaming.',
+        'bad_request',
+        'Open the Inference settings and run "Verify streaming support", or turn streaming off.',
       );
     }
 
@@ -322,19 +322,35 @@ export function createApp(options: AppOptions = {}): App {
       );
     }
 
-    response.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-
     if (!upstream.body) {
       clearTimeout(timeout);
       stopWatching();
       response.end();
       return;
     }
+
+    // `stream: true` in the request is not a promise of an event stream. An
+    // endpoint that ignores it would otherwise be forwarded as if it were
+    // SSE, and the client would read an empty, "complete" answer.
+    const upstreamType = (upstream.headers.get('content-type') ?? '').toLowerCase();
+    if (!upstreamType.includes('text/event-stream')) {
+      clearTimeout(timeout);
+      stopWatching();
+      await upstream.body.cancel().catch(() => undefined);
+      throw new HttpError(
+        502,
+        `The endpoint answered the streaming request with "${upstreamType || 'no content type'}" instead of text/event-stream. The answer was not forwarded.`,
+        'inference',
+        'Disable streaming for this endpoint, or check that it really supports Server-Sent Events.',
+      );
+    }
+
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
 
     const reader = upstream.body.getReader();
     try {

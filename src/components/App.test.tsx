@@ -131,6 +131,11 @@ function sidebar(): HTMLElement {
   return screen.getByRole('complementary', { name: /conversations/i });
 }
 
+/** The settings drawer, which every profile test has to scope its queries to. */
+function drawer(): HTMLElement {
+  return screen.getByRole('dialog', { name: /^settings$/i });
+}
+
 function renderApp() {
   return render(
     <AppProvider>
@@ -139,21 +144,42 @@ function renderApp() {
   );
 }
 
-/** Create a profile through the settings UI. */
+async function openSettings(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(within(header()).getByRole('button', { name: /^settings$/i }));
+  await screen.findByRole('dialog', { name: /^settings$/i });
+  return within(drawer());
+}
+
+async function closeSettings(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(within(drawer()).getByRole('button', { name: /close settings/i }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+}
+
+/** Create a profile through the settings UI. Leaves the drawer closed. */
 async function createProfile(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(within(header()).getByRole('button', { name: /settings/i }));
-  await user.click(await screen.findByRole('button', { name: /add profile/i }));
+  const panel = await openSettings(user);
+  await user.click(await panel.findByRole('button', { name: /add profile/i }));
 
-  await user.type(screen.getByLabelText(/display name/i), 'Kaggle T4');
-  await user.clear(screen.getByLabelText(/base url/i));
-  await user.type(screen.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
-  await user.type(screen.getByLabelText(/api key/i), API_KEY);
+  await user.clear(panel.getByLabelText(/display name/i));
+  await user.type(panel.getByLabelText(/display name/i), 'Kaggle T4');
+  await user.clear(panel.getByLabelText(/base url/i));
+  await user.type(panel.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
+  await user.type(panel.getByLabelText(/api key/i), API_KEY);
 
-  await user.click(screen.getByRole('button', { name: /test connection/i }));
-  await screen.findByText(/connection works/i);
+  await user.click(panel.getByRole('button', { name: /test connection/i }));
+  await panel.findByText(/connection works/i);
 
-  await user.click(screen.getByRole('button', { name: /save profile/i }));
+  await user.click(panel.getByRole('button', { name: /save profile/i }));
   await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
+
+  await closeSettings(user);
+}
+
+async function startConversation(user: ReturnType<typeof userEvent.setup>, text: string) {
+  await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+  const composer = await screen.findByLabelText(/^message$/i);
+  await user.type(composer, text);
+  await user.click(screen.getByRole('button', { name: /^send$/i }));
 }
 
 describe('the chat interface', () => {
@@ -173,12 +199,7 @@ describe('the chat interface', () => {
     renderApp();
 
     await createProfile(user);
-
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    const composer = await screen.findByLabelText(/^message$/i);
-
-    await user.type(composer, 'Hello there');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'Hello there');
 
     await screen.findByText('Hello from the model');
 
@@ -242,9 +263,7 @@ describe('the chat interface', () => {
     renderApp();
 
     await createProfile(user);
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    await user.type(await screen.findByLabelText(/^message$/i), 'Hello there');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'Hello there');
 
     const errorBox = await screen.findByRole('alert');
     expect(errorBox).toHaveTextContent('Connection failed');
@@ -261,9 +280,7 @@ describe('the chat interface', () => {
     renderApp();
 
     await createProfile(user);
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    await user.type(await screen.findByLabelText(/^message$/i), 'First question');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'First question');
     await screen.findByText('Hello from the model');
 
     await user.type(screen.getByLabelText(/^message$/i), 'Second question');
@@ -292,26 +309,25 @@ describe('the chat interface', () => {
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(within(header()).getByRole('button', { name: /settings/i }));
-    await user.click(await screen.findByRole('button', { name: /add profile/i }));
+    const panel = await openSettings(user);
+    await user.click(await panel.findByRole('button', { name: /add profile/i }));
 
-    await user.type(screen.getByLabelText(/display name/i), 'Proxy key');
-    await user.clear(screen.getByLabelText(/base url/i));
-    await user.type(screen.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
-    await user.selectOptions(screen.getByLabelText(/where the key is kept/i), 'server');
-    await user.type(screen.getByLabelText(/api key/i), API_KEY);
+    await user.clear(panel.getByLabelText(/display name/i));
+    await user.type(panel.getByLabelText(/display name/i), 'Proxy key');
+    await user.clear(panel.getByLabelText(/base url/i));
+    await user.type(panel.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
+    await user.selectOptions(panel.getByLabelText(/where the key is kept/i), 'server');
+    await user.type(panel.getByLabelText(/api key/i), API_KEY);
 
-    await user.click(screen.getByRole('button', { name: /save profile/i }));
+    await user.click(panel.getByRole('button', { name: /save profile/i }));
     await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
 
     const secretCall = calls.find((call) => call.url === '/api/secrets');
     expect(secretCall).toBeDefined();
     expect(secretCall?.body).toMatchObject({ apiKey: API_KEY });
 
-    // The browser sends the reference, not the key itself.
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    await user.type(await screen.findByLabelText(/^message$/i), 'Hello there');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await closeSettings(user);
+    await startConversation(user, 'Hello there');
     await screen.findByText('Hello from the model');
 
     const chatCall = calls.find((call) => call.url === '/api/proxy/chat');
@@ -327,9 +343,7 @@ describe('the chat interface', () => {
     renderApp();
 
     await createProfile(user);
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    await user.type(await screen.findByLabelText(/^message$/i), 'Hello there');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'Hello there');
 
     await screen.findByRole('button', { name: /stop/i });
     await user.click(screen.getByRole('button', { name: /stop/i }));
@@ -346,18 +360,20 @@ describe('the chat interface', () => {
     renderApp();
 
     await createProfile(user);
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    await user.type(await screen.findByLabelText(/^message$/i), 'Remember this');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'Remember this');
 
     await screen.findByRole('alert');
 
     // The user message survives the failure.
     expect(screen.getAllByText('Remember this').length).toBeGreaterThan(0);
 
-    const stored = window.localStorage.getItem('kaggle-kit.conversations.v1') ?? '';
-    expect(stored).toContain('Remember this');
-    expect(stored).not.toContain(API_KEY);
+    // Conversation writes are throttled, so the failure has to reach the
+    // store eventually rather than synchronously.
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('kaggle-kit.conversations.v1') ?? '';
+      expect(stored).toContain('Remember this');
+      expect(stored).not.toContain(API_KEY);
+    });
     expect(window.localStorage.getItem('kaggle-kit.browser-keys.v1')).toBe('{}');
   });
 
@@ -366,27 +382,22 @@ describe('the chat interface', () => {
     renderApp();
 
     await createProfile(user);
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    await user.type(await screen.findByLabelText(/^message$/i), 'First message');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'First message');
     await screen.findByText('Hello from the model');
 
-    const list = screen.getByRole('list', { name: '' }) ?? document.body;
-    const renameButton = screen.getByRole('button', { name: /rename/i });
-    await user.click(renameButton);
+    await user.click(screen.getByRole('button', { name: /^rename first message$/i }));
 
     const input = screen.getByLabelText(/conversation title/i);
     await user.clear(input);
     await user.type(input, 'Renamed conversation');
     await user.keyboard('{Enter}');
 
-    await waitFor(() => expect(screen.getByText('Renamed conversation')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Renamed conversation').length).toBeGreaterThan(0));
 
-    const deleteButton = screen.getByRole('button', { name: /delete renamed conversation/i });
-    await user.click(deleteButton);
+    await user.click(screen.getByRole('button', { name: /^delete renamed conversation$/i }));
+    await user.click(screen.getByRole('button', { name: /^confirm delete renamed conversation$/i }));
 
     await waitFor(() => expect(screen.queryByText('Renamed conversation')).toBeNull());
-    expect(list).toBeTruthy();
   });
 
   it('reports a failing connection test with the reason', async () => {
@@ -420,41 +431,44 @@ describe('the chat interface', () => {
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(within(header()).getByRole('button', { name: /settings/i }));
-    await user.click(await screen.findByRole('button', { name: /add profile/i }));
-    await user.type(screen.getByLabelText(/display name/i), 'Kaggle T4');
-    await user.clear(screen.getByLabelText(/base url/i));
-    await user.type(screen.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
-    await user.type(screen.getByLabelText(/api key/i), API_KEY);
+    const panel = await openSettings(user);
+    await user.click(await panel.findByRole('button', { name: /add profile/i }));
+    await user.clear(panel.getByLabelText(/display name/i));
+    await user.type(panel.getByLabelText(/display name/i), 'Kaggle T4');
+    await user.clear(panel.getByLabelText(/base url/i));
+    await user.type(panel.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
+    await user.type(panel.getByLabelText(/api key/i), API_KEY);
 
-    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await user.click(panel.getByRole('button', { name: /test connection/i }));
 
-    await screen.findByText(/connection failed/i);
-    expect(screen.getAllByText(/rejected the api key/i).length).toBeGreaterThan(0);
+    await panel.findByText(/connection failed/i);
+    expect(panel.getAllByText(/rejected the api key/i).length).toBeGreaterThan(0);
   });
 
   it('lets the user type a model ID that the server did not report', async () => {
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(within(header()).getByRole('button', { name: /settings/i }));
-    await user.click(await screen.findByRole('button', { name: /add profile/i }));
+    const panel = await openSettings(user);
+    await user.click(await panel.findByRole('button', { name: /add profile/i }));
 
-    await user.type(screen.getByLabelText(/display name/i), 'Kaggle T4');
-    await user.clear(screen.getByLabelText(/base url/i));
-    await user.type(screen.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
-    await user.type(screen.getByLabelText(/api key/i), API_KEY);
+    await user.clear(panel.getByLabelText(/display name/i));
+    await user.type(panel.getByLabelText(/display name/i), 'Kaggle T4');
+    await user.clear(panel.getByLabelText(/base url/i));
+    await user.type(panel.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
+    await user.type(panel.getByLabelText(/api key/i), API_KEY);
 
-    await user.click(screen.getByRole('button', { name: /discover models/i }));
-    await waitFor(() => expect(screen.getByLabelText(/model id/i).tagName).toBe('SELECT'));
+    await user.click(panel.getByRole('button', { name: /discover models/i }));
+    await waitFor(() => expect(panel.getByLabelText(/model id/i).tagName).toBe('SELECT'));
 
-    await user.selectOptions(screen.getByLabelText(/model id/i), '__custom__');
+    await user.selectOptions(panel.getByLabelText(/model id/i), '__custom__');
 
-    const manual = screen.getByLabelText(/model id \(typed by hand\)/i);
+    const manual = panel.getByLabelText(/model id \(typed by hand\)/i);
     await user.type(manual, 'my-own-model');
 
-    await user.click(screen.getByRole('button', { name: /save profile/i }));
+    await user.click(panel.getByRole('button', { name: /save profile/i }));
     await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
+    await closeSettings(user);
 
     expect(within(header()).getByText(/my-own-model/)).toBeTruthy();
   });
@@ -488,27 +502,26 @@ describe('the recommended system prompt', () => {
 
     await createProfile(user);
 
-    await user.click(screen.getByRole('button', { name: /^edit$/i }));
-    await user.click(screen.getByRole('button', { name: /insert the recommended qwen prompt/i }));
+    const panel = await openSettings(user);
+    await user.click(panel.getByRole('button', { name: /^edit$/i }));
+    await user.click(panel.getByRole('button', { name: /insert the recommended qwen prompt/i }));
 
-    const textarea = screen.getByLabelText(/system prompt/i) as HTMLTextAreaElement;
+    const textarea = panel.getByLabelText(/system prompt/i) as HTMLTextAreaElement;
     expect(textarea.value.startsWith('You are Qwen')).toBe(true);
 
-    await user.click(screen.getByRole('button', { name: /save profile/i }));
+    await user.click(panel.getByRole('button', { name: /save profile/i }));
     await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
+    await closeSettings(user);
 
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    const composer = await screen.findByLabelText(/^message$/i);
-    await user.type(composer, 'Explain what a hash table is');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'Explain what a hash table is');
 
     await waitFor(() => expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(true));
 
     const chat = calls.filter((call) => call.url === '/api/proxy/chat').at(-1);
     const messages = (chat?.body as { messages: Array<{ role: string; content: string }> }).messages;
 
-    expect(messages[0].role).toBe('system');
-    expect(messages[0].content.startsWith('You are Qwen')).toBe(true);
+    expect(messages[0]!.role).toBe('system');
+    expect(messages[0]!.content.startsWith('You are Qwen')).toBe(true);
     expect(messages[1]).toEqual({ role: 'user', content: 'Explain what a hash table is' });
     // The prompt is sent once, not repeated per turn.
     expect(messages.filter((message) => message.role === 'system')).toHaveLength(1);
@@ -519,16 +532,189 @@ describe('the recommended system prompt', () => {
     renderApp();
 
     await createProfile(user);
-
-    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
-    const composer = await screen.findByLabelText(/^message$/i);
-    await user.type(composer, 'Hello');
-    await user.click(screen.getByRole('button', { name: /^send$/i }));
+    await startConversation(user, 'Hello');
 
     await waitFor(() => expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(true));
 
     const chat = calls.filter((call) => call.url === '/api/proxy/chat').at(-1);
     const messages = (chat?.body as { messages: Array<{ role: string }> }).messages;
     expect(messages.some((message) => message.role === 'system')).toBe(false);
+  });
+
+});
+
+describe('the chat surface', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    calls.length = 0;
+    installFetchMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('starts a conversation from the landing view and sends the first message', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+
+    // No conversation is selected, but the composer is usable.
+    const composer = screen.getByLabelText(/^message$/i);
+    await user.type(composer, 'First words');
+    await user.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await screen.findByText('Hello from the model');
+    expect(calls.filter((call) => call.url === '/api/proxy/chat')).toHaveLength(1);
+    expect(screen.getAllByText('First words').length).toBeGreaterThan(0);
+  });
+
+  it('fills the composer from a starter without sending anything', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+
+    await user.click(screen.getByRole('button', { name: /explain a concept/i }));
+
+    const composer = screen.getByLabelText(/^message$/i) as HTMLTextAreaElement;
+    expect(composer.value).toContain('hash table');
+    expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(false);
+  });
+
+  it('keeps a draft when the page is reloaded', async () => {
+    const user = userEvent.setup();
+    const view = renderApp();
+    await createProfile(user);
+    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+
+    await user.type(screen.getByLabelText(/^message$/i), 'A draft worth keeping');
+    expect(window.localStorage.getItem('kaggle-kit.drafts.v1')).toContain('A draft worth keeping');
+
+    view.unmount();
+    renderApp();
+
+    const restored = await screen.findByLabelText(/^message$/i);
+    await waitFor(() => expect((restored as HTMLTextAreaElement).value).toBe('A draft worth keeping'));
+  });
+
+  it('exports the active conversation as a Markdown download', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+    await startConversation(user, 'Export this please');
+    await screen.findByText('Hello from the model');
+
+    const createObjectURL = vi.fn((blob: Blob) => {
+      void blob;
+      return 'blob:mock';
+    });
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    let downloaded = '';
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloaded = this.download;
+    });
+
+    await user.click(screen.getByRole('button', { name: /export the conversation/i }));
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0]?.[0];
+    expect(blob?.type).toContain('text/markdown');
+    expect(downloaded.endsWith('.md')).toBe(true);
+    expect(screen.getByText(/exported as markdown/i)).toBeTruthy();
+  });
+
+  it('sends only with Ctrl+Enter when the preference says so', async () => {
+    window.localStorage.setItem(
+      'kaggle-kit.prefs.v1',
+      JSON.stringify({
+        activeProfileId: null,
+        activeConversationId: null,
+        theme: 'system',
+        sendOnEnter: false,
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+    await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+
+    const composer = screen.getByLabelText(/^message$/i);
+    await user.type(composer, 'Modifier only');
+    await user.keyboard('{Enter}');
+
+    expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(false);
+    expect((composer as HTMLTextAreaElement).value).toContain('Modifier only');
+
+    await user.keyboard('{Control>}{Enter}{/Control}');
+    await waitFor(() => expect(calls.some((call) => call.url === '/api/proxy/chat')).toBe(true));
+    await screen.findByText('Hello from the model');
+  });
+
+  it('finds a conversation by title from the sidebar search', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+
+    for (let index = 0; index < 3; index += 1) {
+      await user.click(within(sidebar()).getByRole('button', { name: /^new conversation$/i }));
+    }
+
+    const search = await screen.findByLabelText(/search conversations/i);
+    await user.type(search, 'alpha');
+    expect(screen.getByText(/no conversation matches/i)).toBeTruthy();
+
+    await user.clear(search);
+    const rename = screen.getAllByRole('button', { name: /^rename new conversation$/i })[0]!;
+    await user.click(rename);
+    const input = screen.getByLabelText(/conversation title/i);
+    await user.clear(input);
+    await user.type(input, 'Alpha plan');
+    await user.keyboard('{Enter}');
+
+    await user.type(search, 'alpha');
+    expect(within(sidebar()).getAllByText('Alpha plan').length).toBeGreaterThan(0);
+    expect(within(sidebar()).queryByText(/no conversation matches/i)).toBeNull();
+  });
+
+  it('starts a new conversation with Alt+Shift+N and focuses the composer with Ctrl+/', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+
+    await user.keyboard('{Alt>}{Shift>}n{/Shift}{/Alt}');
+    await waitFor(() => {
+      expect(within(sidebar()).getAllByRole('button', { name: /^rename new conversation$/i })).toHaveLength(1);
+    });
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    await user.keyboard('{Control>}/{/Control}');
+    expect(screen.getByLabelText(/^message$/i)).toHaveFocus();
+  });
+
+  it('switches the color theme without touching stored credentials', async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const themeButton = () =>
+      screen.getByRole('button', { name: /switch to the (dark|light) theme/i });
+
+    await user.click(themeButton());
+    const first = document.documentElement.dataset.theme;
+    expect(first === 'dark' || first === 'light').toBe(true);
+
+    await user.click(themeButton());
+    const second = document.documentElement.dataset.theme;
+    expect(second).not.toBe(first);
+
+    const prefs = JSON.parse(window.localStorage.getItem('kaggle-kit.prefs.v1') ?? '{}');
+    expect(prefs.theme).toBe(second);
+    expect(window.localStorage.getItem('kaggle-kit.browser-keys.v1')).toBe('{}');
   });
 });

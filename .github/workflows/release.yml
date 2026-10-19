@@ -6,7 +6,7 @@
 #
 # Trigger: a push of a version tag (`v*`).
 #
-#   git tag v0.1.0-dev1 <commit> && git push origin v0.1.0-dev1
+#   git tag v0.1.0-dev2 <commit> && git push origin v0.1.0-dev2
 #
 # The assets of a release are:
 #

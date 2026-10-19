@@ -12,6 +12,7 @@
  *  - the key is never placed in a URL, a query string or an error message
  */
 
+import { APP_USER_AGENT } from '../version';
 import { ApiError, classifyHttpStatus, redactSecrets, withHint } from './errors';
 import { joinApiPath, normalizeBaseUrl } from './url';
 import type {
@@ -275,7 +276,7 @@ export class OpenAIClient {
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'User-Agent': 'Kaggle-Kit/0.1.0-dev1',
+      'User-Agent': APP_USER_AGENT,
     };
 
     for (const [key, value] of Object.entries(extra ?? {})) {

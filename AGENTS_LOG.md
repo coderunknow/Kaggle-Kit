@@ -438,3 +438,64 @@ here; the comparison of the published files with the built files comes from
 the run of the workflow. The behaviour on a real Kaggle GPU runtime, with a
 real model, a real Quick Tunnel and in a real browser is not verified by the
 checks above.
+
+---
+
+## 2026-10-19 – v0.1.0-dev2 on `arena/4ad4bf62-kaggle-kit`
+
+**Task.** Ship `v0.1.0-dev2`: turn the `dev1` chat client into a polished
+workspace, audit the repository for real defects, fix them without broad
+rewrites, and publish the prerelease through the existing workflow.
+
+**Starting point.** `main` at `8c72dd9` (merge of PR #4), `v0.1.0-dev1`
+published, all checks green. The audit ran against that commit, not against the
+summary of an earlier session.
+
+**What was done.**
+
+* Rebuilt the client shell: `App`, `ChatView`, `Sidebar`, `SettingsPanel`,
+  `Composer`, `MessageItem`, `Markdown`, `ProfileForm`, `PreferencesSettings`,
+  `ui` and the stylesheet. New local modules: `useDraft`, `useFocusTrap`,
+  `useMediaQuery`, `clipboard`, `export`, `promptStarters`, `version`.
+* Added the conversation workspace (date groups, search, rename, two-step
+  delete, active connection), the context bar, the export, the theme switch,
+  the prompt starters, the draft per conversation, code-block labels and copy,
+  the edit/resend/regenerate/retry/stop set, the jump-to-latest control and the
+  four-tab modal settings drawer with a real tab list and a focus trap.
+* Fixed thirteen defects with regression tests: drafts, Ctrl+Enter, truncated
+  streams, an ignored error event, the dropped first message, pre-save writes
+  to the secret store, an active-profile switch on edit, the capability cache
+  keyed by URL only, the health payload leak, the unstable drawer close
+  handler, forced scrolling, hidden row actions while pending, the missing
+  message-region id and the crowded status pill below 560 px.
+* Added the streaming fallback for a `409` (only when no token arrived), the
+  proxy health banner with a 30 s poll and a visibility check, and the
+  connection help that separates the local app address from the upstream API
+  address, including `KAGGLE_KIT_ALLOWED_HOSTS`, a PowerShell example and when
+  a restart is required.
+* Updated every version reference to `0.1.0-dev2` (package, lockfile, release
+  workflow, tools, tests, docs) and wrote
+  `docs/release-notes/0.1.0-dev2.md` with the `{{SOURCE_SHA}}` placeholder.
+* Updated `README.md`, `docs/chat-interface.md`, `docs/security.md` and
+  `docs/troubleshooting.md`.
+
+**Checks.**
+
+* `npm run typecheck`, `npm run lint`: passed.
+* `npm test`: 24 files, 202 tests, all passed.
+* `npm run build`: passed; `dist/server/index.js` 56.4 kb.
+* `npm run check:integration`: 14 of 14.
+* Notebook tests: 39 (7 skipped). Release tools: 15.
+* `tools/release-dry-run.sh 0.1.0-dev2`: the staged release validates. The
+  validator only accepts six assets, the `{{SOURCE_SHA}}` placeholder and a
+  report whose checks passed and whose `notTested` list is non-empty.
+
+**Not verified.**
+
+* No real browser: no Chromium, Firefox, Playwright or `libnss3` was available
+  in the sandbox, and the Playwright CDN was unreachable. Layout, fonts, real
+  scrolling and the visual result were validated only in jsdom.
+* No Kaggle GPU, no model download, no real llama.cpp inference, no
+  Cloudflare Quick Tunnel. Those checks remain stubs and a mock upstream.
+* The release assets of this version are not downloaded here after
+  publication; the workflow's own verification step compares them.

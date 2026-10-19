@@ -77,11 +77,30 @@ unreliable from Kaggle (`RemoteDisconnected`). It downloads the pinned
 * **Data & credentials tab** – shows exactly what is stored where and removes
   keys, conversations or all local data.
 
-The interface supports Markdown with syntax highlighted code, copy, edit and
-resend, retry, cancel, conversation rename/delete/clear, dark mode, keyboard
-access and a mobile layout.
+The interface is a full chat workspace rather than a settings form:
 
-See [docs/chat-interface.md](docs/chat-interface.md) for the details.
+* a date-grouped conversation sidebar with search, inline rename and a
+  two-step delete, plus the active connection in its footer;
+* a context bar with the profile, model, connection state, Markdown export and
+  a light/dark switch that can also follow the operating system;
+* prompt starters for an empty conversation, a draft per conversation that
+  survives a reload, and a composer whose height follows the text;
+* Markdown with GFM tables, code blocks with a language label and a copy
+  button, message copy, edit, resend, retry and regenerate, a stop button and
+  a jump-to-latest control that does not drag a reader away;
+* truthful states: a failed or cancelled answer is never shown as complete, a
+  stream that broke keeps the part that arrived, token counts appear only when
+  the server returned them, and an unsupported inference parameter is left out
+  of the request instead of being guessed;
+* a modal settings drawer with four tabs, a focus trap, Escape handling,
+  arrow-key tabs, and connection help that separates the address of this page
+  from the address of the model API;
+* keyboard access (Alt+Shift+N, Ctrl/Cmd+/, Escape), visible focus and a
+  reduced-motion layout.
+
+See [docs/chat-interface.md](docs/chat-interface.md) for the details and
+[docs/release-notes/0.1.0-dev2.md](docs/release-notes/0.1.0-dev2.md) for what
+changed in this release.
 
 ## Security model
 
@@ -130,7 +149,7 @@ stages the assets, validates them and uploads them to a prerelease of the same
 tag. Nothing is uploaded by hand.
 
 ```bash
-git tag v0.1.0-dev1 <commit> && git push origin v0.1.0-dev1
+git tag v0.1.0-dev2 <commit> && git push origin v0.1.0-dev2
 ```
 
 The version of `package.json` has to match the tag and the release notes have

@@ -9,7 +9,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-0.1.0-dev1}"
+VERSION="${1:-0.1.0-dev2}"
 TAG="${2:-v$VERSION}"
 SOURCE_SHA="$(git rev-parse HEAD)"
 STAGE="release"

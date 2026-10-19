@@ -29,7 +29,61 @@ function reduce(state: AppState, ...actions: Parameters<typeof appReducer>[1][])
   return actions.reduce(appReducer, state);
 }
 
+const secondConversation: Conversation = {
+  ...conversation,
+  id: 'conv-2',
+  title: 'Other',
+  updatedAt: '2026-01-02T00:00:00.000Z',
+};
+
 describe('appReducer', () => {
+  it('patches a message without touching other conversations', () => {
+    const first: Conversation = {
+      ...conversation,
+      updatedAt: '2026-01-03T00:00:00.000Z',
+      messages: [
+        {
+          id: 'msg-1',
+          role: 'assistant',
+          content: '',
+          status: 'pending',
+          createdAt: '2026-01-03T00:00:00.000Z',
+        },
+      ],
+    };
+
+    const state = reduce(
+      reduce(
+        reduce(initialState, { type: 'conversations/upsert', conversation: first }),
+        { type: 'conversations/upsert', conversation: secondConversation },
+      ),
+      {
+        type: 'messages/patch',
+        conversationId: 'conv-1',
+        messageId: 'msg-1',
+        changes: { content: 'Hello' },
+      },
+    );
+
+    const patched = state.conversations.find((item) => item.id === 'conv-1');
+    const untouched = state.conversations.find((item) => item.id === 'conv-2');
+
+    expect(patched?.messages[0]?.content).toBe('Hello');
+    expect(untouched?.updatedAt).toBe(secondConversation.updatedAt);
+    expect(untouched).toBe(secondConversation);
+  });
+
+  it('does not create a conversation for a late patch', () => {
+    const state = reduce(initialState, {
+      type: 'messages/patch',
+      conversationId: 'missing',
+      messageId: 'msg-1',
+      changes: { content: 'late' },
+    });
+
+    expect(state).toBe(initialState);
+  });
+
   it('adds and updates profiles', () => {
     let state = reduce(initialState, { type: 'profiles/upsert', profile });
     expect(state.profiles).toHaveLength(1);

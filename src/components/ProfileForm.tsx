@@ -10,9 +10,13 @@ import { useMemo, useState } from 'react';
 
 import { describeErrorKind } from '../../shared/api/errors';
 import type { ServerCapabilities } from '../../shared/api/requests';
-import type { ApiProfile, ConnectionTestResult, CredentialStorage } from '../../shared/domain';
 import { validateProfileDraft } from '../../shared/api/validation';
-import { QWEN_SYSTEM_PROMPT, QWEN_SYSTEM_PROMPT_ID, estimatePromptTokens } from '../../shared/prompts/qwen';
+import type { ApiProfile, ConnectionTestResult, CredentialStorage } from '../../shared/domain';
+import {
+  QWEN_SYSTEM_PROMPT,
+  QWEN_SYSTEM_PROMPT_ID,
+  estimatePromptTokens,
+} from '../../shared/prompts/qwen';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
 import { useApp } from '../state/AppProvider';
@@ -67,6 +71,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
   const [testError, setTestError] = useState<string | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const discoveredModels = app.state.discoveredModels[profile.id] ?? [];
 
@@ -92,6 +97,20 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     [form, timeoutValue],
   );
 
+  const ids = {
+    name: `name-${profile.id}`,
+    url: `url-${profile.id}`,
+    urlHint: `url-hint-${profile.id}`,
+    key: `key-${profile.id}`,
+    credential: `cred-${profile.id}`,
+    model: `model-${profile.id}`,
+    modelHint: `model-hint-${profile.id}`,
+    system: `system-${profile.id}`,
+    systemHint: `system-hint-${profile.id}`,
+    timeout: `timeout-${profile.id}`,
+    timeoutHint: `timeout-hint-${profile.id}`,
+  };
+
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
@@ -104,7 +123,11 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
       case 'browser':
         return { apiKey: form.apiKey.trim() || app.state.browserKeys[profile.id] };
       case 'server':
-        return { secretRef: profile.secretRef };
+        // A key typed into the form is used directly for a test; it is only
+        // written to the proxy secret store when the profile is saved.
+        return form.apiKey.trim()
+          ? { apiKey: form.apiKey.trim() }
+          : { secretRef: profile.secretRef };
       default:
         return {};
     }
@@ -148,8 +171,9 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
       const secretRef = await storeServerSecret();
 
       app.saveProfile({ ...target, secretRef });
-      // A newly saved profile becomes the active one so the chat can use it.
-      app.selectProfile(target.id);
+      // A brand new profile becomes the active one so the chat can use it.
+      // Editing an existing profile must not silently change the selection.
+      if (isNew) app.selectProfile(target.id);
 
       if (form.credentialStorage === 'session' && form.apiKey.trim()) {
         app.setSessionKey(profile.id, form.apiKey.trim());
@@ -178,11 +202,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     const target = effectiveProfile();
 
     try {
-      const secretRef = await storeServerSecret();
-      const credential =
-        secretRef && secretRef !== profile.secretRef
-          ? { secretRef }
-          : credentialFor();
+      const credential = credentialFor();
 
       const result = await gateway.testConnection({
         baseUrl: target.baseUrl,
@@ -213,15 +233,16 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
   };
 
   const handleDiscover = async () => {
+    if (!validation.ok) {
+      setErrors(validation.errors);
+      return;
+    }
+    setErrors({});
     setDiscovering(true);
     setTestError(null);
 
     try {
-      const secretRef = await storeServerSecret();
-      const credential =
-        secretRef && secretRef !== profile.secretRef
-          ? { secretRef }
-          : credentialFor();
+      const credential = credentialFor();
 
       const models = await gateway.listModels({
         baseUrl: validation.normalizedBaseUrl ?? form.baseUrl,
@@ -249,7 +270,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
 
   return (
     <form
-      className="card"
+      className="card profile-form"
       onSubmit={(event) => {
         event.preventDefault();
         void handleSave();
@@ -263,68 +284,112 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
       </div>
 
       <div className="field">
-        <label className="field__label" htmlFor={`name-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.name}>
           Display name
         </label>
         <input
-          id={`name-${profile.id}`}
+          id={ids.name}
           type="text"
           value={form.name}
           placeholder="Kaggle T4 x2"
           onChange={(event) => update('name', event.target.value)}
           aria-invalid={Boolean(errors.name)}
+          aria-describedby={errors.name ? `${ids.name}-error` : undefined}
         />
-        {errors.name ? <span className="field__error">{errors.name}</span> : null}
+        {errors.name ? (
+          <span className="field__error" id={`${ids.name}-error`}>
+            {errors.name}
+          </span>
+        ) : null}
       </div>
 
       <div className="field">
-        <label className="field__label" htmlFor={`url-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.url}>
           Base URL
         </label>
         <input
-          id={`url-${profile.id}`}
+          id={ids.url}
           type="text"
           inputMode="url"
           value={form.baseUrl}
           placeholder="http://127.0.0.1:8000/v1"
           onChange={(event) => update('baseUrl', event.target.value)}
           aria-invalid={Boolean(errors.baseUrl)}
-          aria-describedby={`url-hint-${profile.id}`}
+          aria-describedby={ids.urlHint}
         />
-        <span className="field__hint" id={`url-hint-${profile.id}`}>
-          The OpenAI-compatible base URL of your server. A missing <code>/v1</code> is added
+        <span className="field__hint" id={ids.urlHint}>
+          The address of the <strong>model API</strong>, not of this page. The Kaggle notebook
+          prints a <code>https://…trycloudflare.com</code> base URL; a local llama-server usually
+          answers on <code>http://127.0.0.1:8000/v1</code>. A missing <code>/v1</code> is added
           automatically.
         </span>
         {errors.baseUrl ? <span className="field__error">{errors.baseUrl}</span> : null}
       </div>
 
+      <details className="help">
+        <summary>Connection help (tunnel, allow list, Windows)</summary>
+        <div className="help__body">
+          <p>
+            <strong>The local application address is not the model address.</strong> This page is
+            served by the proxy on <code>http://127.0.0.1:8787</code>. A profile has to point at the
+            model server, for example the Quick Tunnel URL from the notebook.
+          </p>
+          <p>
+            <strong>Streaming.</strong> A Cloudflare Quick Tunnel does not support Server-Sent
+            Events. The streaming switch stays off and the non streaming mode is used, which works
+            through the tunnel.
+          </p>
+          <p>
+            <strong>Upstream allow list.</strong> To restrict which hosts the proxy may reach, set
+            <code> KAGGLE_KIT_ALLOWED_HOSTS</code> to a comma separated list of host names
+            (<code>*.example.com</code> is supported) and restart the proxy, because the value is
+            read at start-up. Without it the proxy can reach any host.
+          </p>
+          <pre className="help__code">
+{`# PowerShell (Windows)
+$env:KAGGLE_KIT_ALLOWED_HOSTS = "your-tunnel.trycloudflare.com"
+npm start`}
+          </pre>
+          <p className="text-subtle">
+            Use the host name of <em>your</em> tunnel, without a real one being stored here. The
+            proxy has to be restarted after a change of this variable.
+          </p>
+        </div>
+      </details>
+
       <div className="field">
-        <label className="field__label" htmlFor={`key-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.key}>
           API key
         </label>
         <input
-          id={`key-${profile.id}`}
+          id={ids.key}
           type="password"
           value={form.apiKey}
           autoComplete="off"
-          placeholder={form.credentialStorage === 'server' ? 'Stored on the local proxy' : 'Paste the key printed by the notebook'}
+          placeholder={
+            form.credentialStorage === 'server' && profile.secretRef
+              ? 'A key is stored on the proxy; leave empty to keep it'
+              : form.credentialStorage === 'server'
+                ? 'Stored on the local proxy'
+                : 'Paste the key printed by the notebook'
+          }
           onChange={(event) => update('apiKey', event.target.value)}
         />
         <span className="field__hint">
           {form.credentialStorage === 'session'
             ? 'Kept in memory for this tab only. It disappears when you reload the page.'
             : form.credentialStorage === 'server'
-              ? 'Stored by the local proxy in a 0600 file. It never reaches the browser storage.'
+              ? 'Stored by the local proxy in a 0600 file. It never reaches browser storage.'
               : 'Stored as plain text in this browser. Only use this on a trusted machine.'}
         </span>
       </div>
 
       <div className="field">
-        <label className="field__label" htmlFor={`cred-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.credential}>
           Where the key is kept
         </label>
         <select
-          id={`cred-${profile.id}`}
+          id={ids.credential}
           value={form.credentialStorage}
           onChange={(event) => update('credentialStorage', event.target.value as CredentialStorage)}
         >
@@ -334,17 +399,23 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
             </option>
           ))}
         </select>
+        {form.credentialStorage === 'browser' ? (
+          <span className="field__error">
+            Browser storage is readable by any script on this origin. This is an explicit opt-in.
+          </span>
+        ) : null}
       </div>
 
       <div className="field">
-        <label className="field__label" htmlFor={`model-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.model}>
           Model ID
         </label>
         {discoveredModels.length > 0 ? (
           <>
             <select
-              id={`model-${profile.id}`}
+              id={ids.model}
               value={manualModel ? CUSTOM_MODEL : form.modelId}
+              aria-describedby={ids.modelHint}
               onChange={(event) => {
                 if (event.target.value === CUSTOM_MODEL) {
                   setManualModel(true);
@@ -364,14 +435,11 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
             </select>
             {manualModel ? (
               <>
-                <label
-                  className="field__label field__label--sub"
-                  htmlFor={`model-${profile.id}-custom`}
-                >
+                <label className="field__label field__label--sub" htmlFor={`${ids.model}-custom`}>
                   Model ID (typed by hand)
                 </label>
                 <input
-                  id={`model-${profile.id}-custom`}
+                  id={`${ids.model}-custom`}
                   type="text"
                   value={form.modelId}
                   placeholder="the model ID of the server"
@@ -382,56 +450,60 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           </>
         ) : (
           <input
-            id={`model-${profile.id}`}
+            id={ids.model}
             type="text"
             value={form.modelId}
             placeholder="leave empty to use the first model of the server"
+            aria-describedby={ids.modelHint}
             onChange={(event) => update('modelId', event.target.value)}
           />
         )}
-        <span className="field__hint">
+        <span className="field__hint" id={ids.modelHint}>
           {discoveredModels.length > 0
-            ? 'Discovered from /v1/models. Use "Discover models" again to refresh, or type another model ID.'
-            : 'Type the model ID manually, or use "Discover models" to read it from the server.'}
+            ? 'Discovered from /v1/models. Run “Discover models” again to refresh, or type another model ID.'
+            : 'Type the model ID manually, or use “Discover models” to read it from the server.'}
         </span>
       </div>
 
       <div className="field">
-        <label className="field__label" htmlFor={`system-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.system}>
           System prompt
         </label>
         <textarea
-          id={`system-${profile.id}`}
+          id={ids.system}
           value={form.systemPrompt}
           placeholder="Optional instructions sent with every message."
+          aria-describedby={ids.systemHint}
           onChange={(event) => update('systemPrompt', event.target.value)}
         />
-        <span className="field__hint">
+        <span className="field__hint" id={ids.systemHint}>
           Sent as the first message of every request.
           {form.systemPrompt.trim()
             ? ` ${form.systemPrompt.length} characters, roughly ${estimatePromptTokens(form.systemPrompt)} tokens of the 8192 that the deployed server allocates to the whole conversation.`
             : ''}
         </span>
-        <button
-          type="button"
-          className="button button--small"
-          onClick={() => update('systemPrompt', QWEN_SYSTEM_PROMPT)}
-        >
-          {form.systemPrompt.trim() ? 'Replace with the recommended Qwen prompt' : 'Insert the recommended Qwen prompt'}
-        </button>
+        <div className="row" style={{ marginTop: 8 }}>
+          <button
+            type="button"
+            className="button button--small"
+            onClick={() => update('systemPrompt', QWEN_SYSTEM_PROMPT)}
+          >
+            {form.systemPrompt.trim() ? 'Replace with the recommended Qwen prompt' : 'Insert the recommended Qwen prompt'}
+          </button>
+        </div>
         <span className="field__hint">
-          Tuned for the {QWEN_SYSTEM_PROMPT_ID} target: no tools, one system message. The text is in
-          <code> shared/prompts/qwen.ts</code>; the research behind it is in
-          <code> research/qwen-system-prompt/</code>.
+          Tuned for the {QWEN_SYSTEM_PROMPT_ID} target: no tools, one system message. The text lives
+          in <code>shared/prompts/qwen.ts</code>; the research behind it is in{' '}
+          <code>research/qwen-system-prompt/</code>.
         </span>
       </div>
 
       <div className="field">
-        <label className="field__label" htmlFor={`timeout-${profile.id}`}>
+        <label className="field__label" htmlFor={ids.timeout}>
           Request timeout (ms)
         </label>
         <input
-          id={`timeout-${profile.id}`}
+          id={ids.timeout}
           type="number"
           min={1000}
           max={1800000}
@@ -439,7 +511,11 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           value={form.timeoutMs}
           onChange={(event) => update('timeoutMs', event.target.value)}
           aria-invalid={Boolean(errors.timeoutMs)}
+          aria-describedby={ids.timeoutHint}
         />
+        <span className="field__hint" id={ids.timeoutHint}>
+          1 000 – 1 800 000. 120 000 ms = 2 minutes. Long answers on a T4 need a generous value.
+        </span>
         {errors.timeoutMs ? <span className="field__error">{errors.timeoutMs}</span> : null}
       </div>
 
@@ -451,7 +527,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
         </div>
       ) : null}
 
-      <div className="row" style={{ marginBottom: 12 }}>
+      <div className="row form-actions">
         <button
           type="button"
           className="button button--small"
@@ -470,6 +546,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           <Icon name="refresh" size={13} />
           {discovering ? 'Loading…' : 'Discover models'}
         </button>
+        <span className="text-subtle">Tests use the values above, even before saving.</span>
       </div>
 
       {testError ? (
@@ -481,11 +558,29 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
 
       {testResult ? <TestResultView result={testResult} /> : null}
 
-      <div className="row row--between" style={{ marginTop: 16 }}>
-        <button type="button" className="button button--danger button--small" onClick={handleDelete}>
-          <Icon name="trash" size={13} />
-          Delete profile
-        </button>
+      <div className="row row--between form-footer">
+        {isNew ? (
+          <span />
+        ) : confirmDelete ? (
+          <div className="row">
+            <span className="text-small">Delete this profile?</span>
+            <button type="button" className="button button--danger button--small" onClick={handleDelete}>
+              Yes, delete
+            </button>
+            <button type="button" className="button button--small" onClick={() => setConfirmDelete(false)}>
+              Keep it
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="button button--danger button--small"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Icon name="trash" size={13} />
+            Delete profile
+          </button>
+        )}
         <div className="row">
           <button type="button" className="button" onClick={onCancel}>
             Cancel
@@ -501,7 +596,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
 
 export function TestResultView({ result }: { result: ConnectionTestResult }) {
   return (
-    <div className="stack stack--tight" style={{ marginBottom: 12 }}>
+    <div className="test-result" aria-live="polite">
       <div className="row">
         <Badge tone={result.ok ? 'ok' : 'danger'}>
           {result.ok ? 'Connection works' : 'Connection failed'}
