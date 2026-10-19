@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
+import type { ConnectionViewState } from '../../shared/connection';
 import type { ApiProfile, ChatMessage, Conversation } from '../../shared/domain';
 import { PROMPT_STARTERS } from '../lib/promptStarters';
 import { useApp } from '../state/AppProvider';
@@ -18,7 +19,7 @@ import { Composer } from './Composer';
 import { MessageItem } from './MessageItem';
 import { Icon, StatusDot } from './ui';
 
-export type ConnectionState = 'connected' | 'failed' | 'untested' | 'missing';
+export type ConnectionState = ConnectionViewState;
 
 export interface ChatViewProps {
   conversation: Conversation | undefined;
@@ -41,12 +42,14 @@ function Landing({
   hasActiveProfile,
   connected,
   untested,
+  stale,
   onOpenSettings,
 }: {
   hasProfile: boolean;
   hasActiveProfile: boolean;
   connected: boolean;
   untested: boolean;
+  stale: boolean;
   onOpenSettings: () => void;
 }) {
   return (
@@ -89,9 +92,11 @@ function Landing({
                   ? 'More than one profile exists; choose the one this chat should use.'
                   : connected
                     ? 'The endpoint answered a real completion.'
-                    : untested
-                      ? 'A real model-list request and a real completion, before you write anything.'
-                      : 'The last test failed. Check the URL and the key, then test again.'}
+                    : stale
+                      ? 'The profile changed since the last test. Test the saved configuration again.'
+                      : untested
+                        ? 'A real model-list request and a real completion, before you write anything.'
+                        : 'The last test failed. Check the URL and the key, then test again.'}
             </p>
           </div>
           {hasProfile && !connected ? (
@@ -274,6 +279,7 @@ export function ChatView({
               hasActiveProfile={Boolean(profile)}
               connected={connectionState === 'connected'}
               untested={connectionState === 'untested'}
+              stale={connectionState === 'stale'}
               onOpenSettings={onOpenSettings}
             />
           ) : messageCount === 0 ? (

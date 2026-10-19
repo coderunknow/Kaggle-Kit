@@ -16,6 +16,8 @@ interface RecordedCall {
 
 interface FetchMockOptions {
   chatResponses?: Array<{ status: number; body: unknown } | 'hang'>;
+  /** Answers for consecutive /api/proxy/test calls. */
+  testResponses?: unknown[];
   /** Answer the chat request with an event stream. */
   streaming?: boolean;
 }
@@ -31,7 +33,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function installFetchMock(options: FetchMockOptions = {}): void {
   const chatResponses = [...(options.chatResponses ?? [])];
+  const testResponses = [...(options.testResponses ?? [])];
   let chatIndex = 0;
+  let testIndex = 0;
 
   const impl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
@@ -48,14 +52,25 @@ function installFetchMock(options: FetchMockOptions = {}): void {
     }
 
     if (url === '/api/proxy/test') {
+      const next = testResponses[testIndex];
+      testIndex += 1;
+      if (next !== undefined) return jsonResponse(next);
+
       return jsonResponse({
         ok: true,
         baseUrl: 'http://127.0.0.1:8000/v1',
+        requestedBaseUrl: 'http://127.0.0.1:8000',
+        baseUrlChanged: true,
         modelId: 'mock-model',
         stages: [
-          { stage: 'models', status: 'ok', message: 'Model list retrieved (1 model(s)).' },
+          { stage: 'transport', status: 'ok', message: 'The endpoint answered the model list request.' },
+          { stage: 'auth', status: 'ok', message: 'The endpoint accepted the API key.' },
+          { stage: 'models', status: 'ok', message: 'Model list retrieved (2 model(s)).' },
+          { stage: 'model', status: 'ok', message: 'The endpoint advertises the configured model mock-model.' },
           { stage: 'inference', status: 'ok', message: 'A real chat completion was returned.' },
+          { stage: 'streaming', status: 'not_run', message: 'Not tested.' },
         ],
+        testedAt: '2026-10-19T00:00:00.000Z',
         capabilities: {
           streamingVerified: Boolean(options.streaming),
           reasoningEffortSupported: false,
@@ -167,7 +182,7 @@ async function createProfile(user: ReturnType<typeof userEvent.setup>) {
   await user.type(panel.getByLabelText(/api key/i), API_KEY);
 
   await user.click(panel.getByRole('button', { name: /test connection/i }));
-  await panel.findByText(/connection works/i);
+  await panel.findByText(/^connected$/i);
 
   await user.click(panel.getByRole('button', { name: /save profile/i }));
   await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
@@ -411,11 +426,26 @@ describe('the chat interface', () => {
             baseUrl: 'http://127.0.0.1:8000/v1',
             stages: [
               {
+                stage: 'transport',
+                status: 'ok',
+                message: 'The endpoint answered with HTTP 401.',
+                httpStatus: 401,
+              },
+              {
+                stage: 'auth',
+                status: 'failed',
+                message: 'The server rejected the API key (HTTP 401/403).',
+                httpStatus: 401,
+              },
+              {
                 stage: 'models',
                 status: 'failed',
                 message: 'The server rejected the API key (HTTP 401/403).',
                 httpStatus: 401,
               },
+              { stage: 'model', status: 'not_run', message: 'Not checked.' },
+              { stage: 'inference', status: 'not_run', message: 'Not checked.' },
+              { stage: 'streaming', status: 'not_run', message: 'Not tested.' },
             ],
             errorKind: 'auth',
             errorMessage: 'The server rejected the API key (HTTP 401/403).',
@@ -441,7 +471,7 @@ describe('the chat interface', () => {
 
     await user.click(panel.getByRole('button', { name: /test connection/i }));
 
-    await panel.findByText(/connection failed/i);
+    await panel.findAllByText(/connection failed/i);
     expect(panel.getAllByText(/rejected the api key/i).length).toBeGreaterThan(0);
   });
 
@@ -481,6 +511,132 @@ describe('the chat interface', () => {
 
     expect(within(header()).getByText(/Kaggle T4/)).toBeTruthy();
     expect(within(header()).getByText(/mock-model/)).toBeTruthy();
+  });
+
+  it('uses the same cause label and message in the chat and in Settings', async () => {
+    const message = 'The server rejected the API key (HTTP 401/403).';
+    const user = userEvent.setup();
+    renderApp();
+
+    await createProfile(user);
+
+    installFetchMock({
+      chatResponses: [
+        {
+          status: 502,
+          body: {
+            error: {
+              message,
+              kind: 'auth',
+              hint: 'Check the key and restart the server if it was rotated.',
+            },
+          },
+        },
+      ],
+      testResponses: [
+        {
+          ok: false,
+          baseUrl: 'http://127.0.0.1:8000/v1',
+          modelId: 'mock-model',
+          stages: [
+            { stage: 'transport', status: 'ok', message: 'The endpoint answered with HTTP 401.', httpStatus: 401 },
+            { stage: 'auth', status: 'failed', message, httpStatus: 401 },
+            { stage: 'models', status: 'failed', message, httpStatus: 401 },
+            { stage: 'model', status: 'not_run', message: 'Not checked.' },
+            { stage: 'inference', status: 'not_run', message: 'Not checked.' },
+            { stage: 'streaming', status: 'not_run', message: 'Not tested.' },
+          ],
+          errorKind: 'auth',
+          errorMessage: message,
+          errorHint: 'Check the key and restart the server if it was rotated.',
+        },
+      ],
+    });
+
+    await startConversation(user, 'Hello there');
+    const chatError = await screen.findByRole('alert');
+    expect(chatError).toHaveTextContent('Authentication failed');
+    expect(chatError).toHaveTextContent(message);
+
+    const panel = await openSettings(user);
+    const card = panel.getByRole('group', { name: /profile kaggle t4/i });
+    await user.click(within(card).getByRole('button', { name: /^edit$/i }));
+    await user.click(panel.getByRole('button', { name: /test connection/i }));
+
+    const results = await panel.findAllByText(message);
+    expect(results.length).toBeGreaterThan(0);
+    expect(panel.getAllByText('Authentication failed').length).toBeGreaterThan(0);
+  });
+
+  it('does not attach a failing draft test to the saved profile', async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await createProfile(user);
+
+    // The draft test fails; the profile that was already saved keeps its
+    // verified state until its own configuration is tested again.
+    installFetchMock({
+      testResponses: [
+        {
+          ok: false,
+          baseUrl: 'http://127.0.0.1:9999/v1',
+          modelId: '',
+          stages: [
+            { stage: 'transport', status: 'failed', message: 'The endpoint is not reachable.' },
+            { stage: 'auth', status: 'not_run', message: 'Not checked.' },
+            { stage: 'models', status: 'not_run', message: 'Not checked.' },
+            { stage: 'model', status: 'not_run', message: 'Not checked.' },
+            { stage: 'inference', status: 'not_run', message: 'Not checked.' },
+            { stage: 'streaming', status: 'not_run', message: 'Not tested.' },
+          ],
+          errorKind: 'network',
+          errorMessage: 'The endpoint is not reachable.',
+          errorHint: 'Check the tunnel address and that the notebook is running.',
+        },
+      ],
+    });
+
+    const panel = await openSettings(user);
+    const card = panel.getByRole('group', { name: /profile kaggle t4/i });
+    await user.click(within(card).getByRole('button', { name: /^edit$/i }));
+
+    const baseUrl = panel.getByLabelText(/base url/i);
+    await user.clear(baseUrl);
+    await user.type(baseUrl, 'http://127.0.0.1:9999');
+
+    await user.click(panel.getByRole('button', { name: /test connection/i }));
+    await panel.findAllByText(/connection failed/i);
+
+    await user.click(panel.getByRole('button', { name: /close the editor/i }));
+    await waitFor(() => expect(panel.queryByLabelText(/base url/i)).toBeNull());
+
+    // The draft never overwrote the verified state of the saved profile.
+    expect(within(card).getByText(/^connected$/i)).toBeTruthy();
+    expect(within(header()).queryByText(/9999/)).toBeNull();
+    expect(within(header()).getByRole('button', { name: /8000\/v1/ })).toBeTruthy();
+  });
+
+  it('requires a new test after the saved base URL changes', async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await createProfile(user);
+
+    const panel = await openSettings(user);
+    const card = panel.getByRole('group', { name: /profile kaggle t4/i });
+    await user.click(within(card).getByRole('button', { name: /^edit$/i }));
+
+    const baseUrl = panel.getByLabelText(/base url/i);
+    await user.clear(baseUrl);
+    await user.type(baseUrl, 'http://127.0.0.1:8443');
+    await user.click(panel.getByRole('button', { name: /save profile/i }));
+
+    await waitFor(() => expect(panel.queryByLabelText(/display name/i)).toBeNull());
+    const savedCard = panel.getByRole('group', { name: /profile kaggle t4/i });
+    expect(within(savedCard).getByText(/not tested|test needed/i)).toBeTruthy();
+    expect(within(savedCard).getByText(/8443\/v1/)).toBeTruthy();
+    expect(within(header()).getByRole('button', { name: /8443\/v1/ })).toBeTruthy();
   });
 });
 

@@ -11,6 +11,13 @@ describe('normalizeBaseUrl', () => {
     expect(normalizeBaseUrl('https://example.com/v1')).toBe('https://example.com/v1');
   });
 
+  it('collapses a pasted duplicate /v1 suffix', () => {
+    expect(normalizeBaseUrl('https://host.example/v1/v1')).toBe('https://host.example/v1');
+    expect(normalizeBaseUrl('https://host.example/openai/v1/v1/')).toBe(
+      'https://host.example/openai/v1',
+    );
+  });
+
   it('removes trailing slashes', () => {
     expect(normalizeBaseUrl('https://example.com/v1///')).toBe('https://example.com/v1');
   });

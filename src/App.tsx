@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { effectiveProfileTarget, resolveConnectionView } from '../shared/connection';
 import type { ChatMessage } from '../shared/domain';
 import { ChatView, type ConnectionState } from './components/ChatView';
 import { SettingsPanel, type SettingsTab } from './components/SettingsPanel';
@@ -194,30 +195,17 @@ export function App() {
   }, [newConversation, isWide, settingsOpen]);
 
   const pending = conversationId ? isPending(conversationId) : false;
-  const activeTest = activeProfile ? state.connectionTests[activeProfile.id] : undefined;
-
-  const connectionState: ConnectionState = !activeProfile
-    ? 'missing'
-    : activeTest === undefined
-      ? 'untested'
-      : activeTest.ok
-        ? 'connected'
-        : 'failed';
+  const connection = resolveConnectionView(state, activeProfile);
+  const connectionState: ConnectionState = connection.state;
 
   const connectionTone: StatusTone =
-    proxyOnline === false
-      ? 'danger'
-      : connectionState === 'connected'
-        ? 'ok'
-        : connectionState === 'failed'
-          ? 'danger'
-          : 'warning';
+    proxyOnline === false ? 'danger' : connection.tone;
 
   const connectionLabel = !activeProfile
     ? 'No connection profile'
-    : `${activeProfile.name} · ${activeProfile.modelId || 'first model of the server'} · ${
-        activeTest === undefined ? 'not tested' : activeTest.ok ? 'connected' : 'test failed'
-      }`;
+    : `${activeProfile.name} · ${effectiveProfileTarget(activeProfile).baseUrl} · ${
+        activeProfile.modelId || 'first model of the server'
+      } · ${connection.label}`;
 
   const effectiveTheme =
     state.preferences.theme === 'system'

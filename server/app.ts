@@ -15,7 +15,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { OpenAIClient } from '../shared/api/client';
-import { ApiError } from '../shared/api/errors';
+import { ApiError, redactSecrets } from '../shared/api/errors';
 import { joinApiPath } from '../shared/api/url';
 import type { ChatCompletionRequestBody, ChatMessageInput } from '../shared/api/types';
 import { parseInferenceParams } from '../shared/api/validation';
@@ -220,15 +220,31 @@ export function createApp(options: AppOptions = {}): App {
     const baseUrl = readString(body, 'baseUrl');
     const apiKey = readOptionalString(body, 'apiKey');
     const secretRef = readOptionalString(body, 'secretRef');
-    const model = readString(body, 'model').trim();
+    const requestedModel = readOptionalString(body, 'model') ?? '';
     const messages = readMessages(body);
     const { params } = parseInferenceParams(body.params);
     const timeoutMs = readTimeout(body);
 
-    if (!model) throw new HttpError(400, 'A model ID is required.');
-
     const target = { baseUrl, apiKey, secretRef };
     const resolved = await proxy.resolveTarget(target);
+
+    // An empty model ID means "the first model the server reports" (the
+    // documented profile default). It is resolved here instead of sending an
+    // empty model upstream or failing with a technical message.
+    let model = requestedModel.trim();
+    if (!model) {
+      const models = await proxy.listModels(target, timeoutMs);
+      model = models[0] ?? '';
+      if (!model) {
+        throw new HttpError(
+          400,
+          'The endpoint reports no models. Enter the model ID of the server in the profile.',
+          'not_found',
+          'Run "Discover models" in the connection settings, or type the model ID by hand.',
+        );
+      }
+    }
+
     const capabilities = await proxy.detectCapabilities(resolved.baseUrl, resolved.apiKey, timeoutMs);
 
     const wantsStream = params.stream === true;
@@ -313,11 +329,14 @@ export function createApp(options: AppOptions = {}): App {
             'The request was not forwarded to the target of the redirect.',
         );
       }
+      // The body of an error answer is untrusted server output. It must not
+      // be able to echo the key into the browser response.
       const detail = await upstream.text().catch(() => '');
+      const safeDetail = redactSecrets(detail.slice(0, 300), [resolved.apiKey]);
       throw new HttpError(
         upstream.status,
         `The upstream server returned HTTP ${upstream.status} for the streaming request.${
-          detail ? ` ${detail.slice(0, 300)}` : ''
+          safeDetail ? ` ${safeDetail}` : ''
         }`,
       );
     }

@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import { effectiveProfileTarget, resolveConnectionView } from '../../shared/connection';
 import type { Conversation } from '../../shared/domain';
 import { APP_VERSION } from '../../shared/version';
 import { formatTimestamp } from '../lib/id';
@@ -81,14 +82,14 @@ export function Sidebar({
   onNewConversation,
 }: SidebarProps) {
   const app = useApp();
-  const { conversations, preferences, profiles, connectionTests } = app.state;
+  const { conversations, preferences, profiles } = app.state;
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
 
   const activeProfile = profiles.find((profile) => profile.id === preferences.activeProfileId);
-  const activeTest = activeProfile ? connectionTests[activeProfile.id] : undefined;
+  const connection = resolveConnectionView(app.state, activeProfile);
 
   useEffect(() => {
     if (!confirmingId) return;
@@ -121,10 +122,8 @@ export function Sidebar({
     setRenamingId(null);
   };
 
-  const statusTone: StatusTone =
-    activeTest === undefined ? 'neutral' : activeTest.ok ? 'ok' : 'danger';
-  const statusText =
-    activeTest === undefined ? 'untested' : activeTest.ok ? 'connected' : 'test failed';
+  const statusTone: StatusTone = connection.tone;
+  const statusText = connection.label.toLowerCase();
 
   return (
     <>
@@ -330,7 +329,7 @@ export function Sidebar({
                 <span className="connection-card__status">{statusText}</span>
               </span>
               <span className="connection-card__model">
-                {hostOf(activeProfile.baseUrl)} ·{' '}
+                {hostOf(effectiveProfileTarget(activeProfile).baseUrl)} ·{' '}
                 {activeProfile.modelId || 'first model of the server'}
               </span>
               <span className="connection-card__badges">

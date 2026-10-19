@@ -16,8 +16,10 @@
 
 import { createHash } from 'node:crypto';
 
-import { ApiError } from '../shared/api/errors';
+import { ApiError, redactSecrets } from '../shared/api/errors';
 import { OpenAIClient } from '../shared/api/client';
+import { CONNECTION_STAGE_ORDER } from '../shared/connection';
+import { extractDelta, parseSseStream } from '../shared/api/stream';
 import { buildChatCompletionBody } from '../shared/api/requests';
 import type { InferenceParams, ServerCapabilities } from '../shared/api/requests';
 import { joinApiPath, normalizeBaseUrlDetailed, UrlValidationError } from '../shared/api/url';
@@ -28,7 +30,11 @@ import type {
   ChatMessageInput,
   ServerProps,
 } from '../shared/api/types';
-import type { ConnectionStageResult, ConnectionTestResult } from '../shared/domain';
+import type {
+  ConnectionStage,
+  ConnectionStageResult,
+  ConnectionTestResult,
+} from '../shared/domain';
 import type { ServerConfig } from './config';
 import type { Logger } from './logger';
 import type { SecretStore } from './secrets';
@@ -128,77 +134,166 @@ export class ProxyService {
   }
 
   /**
-   * Run a full connection test: model discovery followed by a real inference
-   * request. Every stage is reported separately so the UI can show what
-   * worked and what did not.
+   * Run a full connection test.
+   *
+   * Every step is reported on its own: reachability, authentication, the
+   * model list, the model itself, a real non-streaming inference and the
+   * streaming probe. `ok` is only true when the real inference succeeded;
+   * streaming is never implied by an HTTP 200 and stays "not run" until the
+   * dedicated probe verifies it.
    */
   async testConnection(
     target: UpstreamTarget,
     options: { model?: string; timeoutMs: number },
   ): Promise<ConnectionTestResult> {
+    const requestedBaseUrl = (target.baseUrl ?? '').trim();
     const { baseUrl, apiKey } = await this.resolveTarget(target);
+    const normalized = normalizeBaseUrlDetailed(requestedBaseUrl);
+    const baseUrlChanged = normalized.changed;
     const client = this.client(baseUrl, apiKey, options.timeoutMs);
     const stages: ConnectionStageResult[] = [];
 
-    let modelId = options.model?.trim() || '';
-    const discovered: string[] = [];
+    const finish = (
+      ok: boolean,
+      extra: Pick<
+        ConnectionTestResult,
+        'modelId' | 'capabilities' | 'errorKind' | 'errorMessage' | 'errorHint'
+      > = {},
+    ): ConnectionTestResult => ({
+      ok,
+      baseUrl,
+      requestedBaseUrl,
+      baseUrlChanged,
+      testedAt: new Date().toISOString(),
+      stages: completeStages(stages),
+      ...extra,
+    });
+
+    let discovered: string[];
 
     try {
       const { models } = await client.listModels();
-      discovered.push(...models.map((model) => model.id));
+      discovered = models.map((model) => model.id);
 
-      if (modelId && discovered.length > 0 && !discovered.includes(modelId)) {
+      stages.push({
+        stage: 'transport',
+        status: 'ok',
+        message: 'The endpoint answered the model list request.',
+      });
+      stages.push({
+        stage: 'auth',
+        status: 'ok',
+        message: apiKey
+          ? 'The endpoint accepted the API key.'
+          : 'The endpoint accepted the request without an API key.',
+      });
+      stages.push({
+        stage: 'models',
+        status: 'ok',
+        message: discovered.length
+          ? `Model list retrieved (${discovered.length} model(s)).`
+          : 'The endpoint answered with an empty model list.',
+      });
+    } catch (error) {
+      const apiError = toApiError(error);
+      const reachedServer = apiError.httpStatus !== undefined;
+
+      if (!reachedServer) {
         stages.push({
-          stage: 'models',
-          status: 'warning',
-          message: `The server is reachable, but "${modelId}" is not in the model list (${discovered.join(', ')}).`,
+          stage: 'transport',
+          status: 'failed',
+          message: apiError.message,
+        });
+        return finish(false, {
+          errorKind: apiError.kind,
+          errorMessage: apiError.message,
+          ...(apiError.hint ? { errorHint: apiError.hint } : {}),
+        });
+      }
+
+      stages.push({
+        stage: 'transport',
+        status: 'ok',
+        message: `The endpoint answered with HTTP ${apiError.httpStatus}.`,
+        ...(apiError.httpStatus !== undefined ? { httpStatus: apiError.httpStatus } : {}),
+      });
+
+      if (apiError.kind === 'auth') {
+        stages.push({
+          stage: 'auth',
+          status: 'failed',
+          message: apiError.message,
+          ...(apiError.httpStatus !== undefined ? { httpStatus: apiError.httpStatus } : {}),
         });
       } else {
         stages.push({
-          stage: 'models',
-          status: 'ok',
-          message: discovered.length
-            ? `Model list retrieved (${discovered.length} model(s)).`
-            : 'The server answered the model list request.',
+          stage: 'auth',
+          status: 'not_run',
+          message: `Authentication could not be verified because the model list request ended with HTTP ${apiError.httpStatus}.`,
         });
       }
 
-      if (!modelId) {
-        modelId = discovered[0] ?? '';
-      }
-    } catch (error) {
-      const apiError = toApiError(error);
       stages.push({
         stage: 'models',
         status: 'failed',
         message: apiError.message,
-        ...(apiError.httpStatus ? { httpStatus: apiError.httpStatus } : {}),
+        ...(apiError.httpStatus !== undefined ? { httpStatus: apiError.httpStatus } : {}),
       });
 
-      return {
-        ok: false,
-        baseUrl,
-        ...(modelId ? { modelId } : {}),
-        stages,
+      return finish(false, {
+        ...(options.model?.trim() ? { modelId: options.model.trim() } : {}),
         errorKind: apiError.kind,
         errorMessage: apiError.message,
         ...(apiError.hint ? { errorHint: apiError.hint } : {}),
-      };
+      });
+    }
+
+    let modelId = options.model?.trim() || '';
+    let modelWasAdvertised = false;
+
+    if (!modelId) {
+      modelId = discovered[0] ?? '';
+      if (modelId) {
+        modelWasAdvertised = true;
+        stages.push({
+          stage: 'model',
+          status: 'ok',
+          message: `No model was configured; the first model reported by the endpoint is used: ${modelId}.`,
+        });
+      }
+    } else if (discovered.includes(modelId)) {
+      modelWasAdvertised = true;
+      stages.push({
+        stage: 'model',
+        status: 'ok',
+        message: `The endpoint advertises the configured model ${modelId}.`,
+      });
+    } else if (discovered.length > 0) {
+      stages.push({
+        stage: 'model',
+        status: 'warning',
+        message: `"${modelId}" is not in the model list (${discovered.join(', ')}). The inference request decides whether it is usable.`,
+      });
+    } else {
+      stages.push({
+        stage: 'model',
+        status: 'warning',
+        message: `The endpoint reported no models. The inference request decides whether "${modelId}" is usable.`,
+      });
     }
 
     if (!modelId) {
       stages.push({
-        stage: 'inference',
-        status: 'skipped',
-        message: 'No model ID is known. Pick a model in the profile and test again.',
+        stage: 'model',
+        status: 'failed',
+        message: 'No model ID is available. The endpoint reported no models and no model was configured.',
       });
-      return {
-        ok: false,
-        baseUrl,
-        stages,
+      return finish(false, {
         errorKind: 'not_found',
         errorMessage: 'No model ID is available for the inference test.',
-      };
+        errorHint:
+          'The endpoint reported no models. Enter the model ID of the server in the profile and test again.',
+      });
     }
 
     try {
@@ -210,8 +305,25 @@ export class ProxyService {
         stream: false,
       });
 
-      if (!response.choices || response.choices.length === 0) {
+      const choice = response.choices?.[0];
+      if (!Array.isArray(response.choices) || response.choices.length === 0) {
         throw new ApiError('inference', 'The server accepted the request but returned no choices.');
+      }
+      if (!choice?.message) {
+        throw new ApiError(
+          'invalid_response',
+          'The server returned a completion without an assistant message.',
+        );
+      }
+
+      const content = choice.message.content ?? '';
+      const reasoning =
+        choice.message.reasoning_content ?? choice.message.reasoning ?? '';
+      if (!content.trim() && !reasoning.trim()) {
+        throw new ApiError(
+          'inference',
+          'The server returned an empty completion for the inference test.',
+        );
       }
 
       stages.push({
@@ -219,29 +331,45 @@ export class ProxyService {
         status: 'ok',
         message: 'A real chat completion was returned by the server.',
       });
+
+      // An alias that the model list did not advertise is confirmed by the
+      // inference itself. It is a working configuration, not a warning.
+      if (!modelWasAdvertised) {
+        const index = stages.findIndex((entry) => entry.stage === 'model');
+        if (index !== -1) {
+          stages[index] = {
+            stage: 'model',
+            status: 'ok',
+            message: `The model ${modelId} answered an inference request. It is not advertised in /v1/models (an alias is possible).`,
+          };
+        }
+      }
     } catch (error) {
       const apiError = toApiError(error);
       stages.push({
         stage: 'inference',
         status: 'failed',
         message: apiError.message,
-        ...(apiError.httpStatus ? { httpStatus: apiError.httpStatus } : {}),
+        ...(apiError.httpStatus !== undefined ? { httpStatus: apiError.httpStatus } : {}),
       });
-
-      return {
-        ok: false,
-        baseUrl,
+      return finish(false, {
         modelId,
-        stages,
         errorKind: apiError.kind,
         errorMessage: apiError.message,
         ...(apiError.hint ? { errorHint: apiError.hint } : {}),
-      };
+      });
     }
 
     const capabilities = await this.detectCapabilities(baseUrl, apiKey, options.timeoutMs);
+    stages.push({
+      stage: 'streaming',
+      status: capabilities.streamingVerified ? 'ok' : 'not_run',
+      message: capabilities.streamingVerified
+        ? 'Streaming was verified for this endpoint and credential earlier in this session.'
+        : 'Not tested. Run "Verify streaming support" to check Server-Sent Events separately.',
+    });
 
-    return { ok: true, baseUrl, modelId, stages, capabilities };
+    return finish(true, { modelId, capabilities });
   }
 
   /** Detect optional server capabilities. Failures are not fatal. */
@@ -367,17 +495,68 @@ export class ProxyService {
         return { supported: false, detail: 'The endpoint returned no response body.' };
       }
 
-      const reader = response.body.getReader();
-      const first = await reader.read();
-      await reader.cancel().catch(() => undefined);
+      // An HTTP 200 with a text/event-stream header is not enough: the
+      // events have to be readable, they have to carry answer text and the
+      // stream has to end with [DONE] or a finish reason. A keep-alive
+      // comment or a truncated stream must not verify streaming.
+      let characters = 0;
+      let finished = false;
+      let streamError: string | undefined;
+      let events = 0;
 
-      if (first.done || !first.value) {
+      try {
+        for await (const event of parseSseStream(response.body, controller.signal)) {
+          events += 1;
+          if (events > 500) {
+            streamError = 'The event stream did not finish within 500 events.';
+            break;
+          }
+
+          const delta = extractDelta(event);
+          if (delta.error) {
+            streamError = delta.error;
+            break;
+          }
+          if (delta.content) characters += delta.content.length;
+          if (delta.reasoning) characters += delta.reasoning.length;
+          if (delta.finishReason) {
+            finished = true;
+            break;
+          }
+        }
+      } catch (error) {
+        streamError = controller.signal.aborted
+          ? 'The streaming probe timed out before the answer was complete.'
+          : toApiError(error).message;
+      }
+
+      if (streamError) {
         this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
-        return { supported: false, detail: 'The event stream closed before any data arrived.' };
+        return { supported: false, detail: redactSecrets(streamError, [apiKey]) };
+      }
+
+      if (characters === 0) {
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        return {
+          supported: false,
+          detail: 'The event stream contained no answer text (keep-alive comments and empty deltas are not enough).',
+        };
+      }
+
+      if (!finished) {
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        return {
+          supported: false,
+          detail:
+            'The event stream ended without [DONE] or a finish reason; the answer may be truncated.',
+        };
       }
 
       this.storeCapability(key, { streamingVerified: true, streamingCheckedAt: Date.now() });
-      return { supported: true, detail: 'The endpoint delivered a text/event-stream response.' };
+      return {
+        supported: true,
+        detail: `The endpoint delivered ${characters} character(s) of a text/event-stream answer and ended it with a finish marker.`,
+      };
     } catch (error) {
       const apiError = toApiError(error);
       this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
@@ -412,6 +591,31 @@ export class ProxyService {
     const { body } = buildChatCompletionBody({ model, messages, params, capabilities });
     return body;
   }
+}
+
+/**
+ * Fill in every stage that the test did not reach, in the canonical order.
+ * The UI can therefore render the same six steps for every result.
+ */
+const STAGE_NOT_CHECKED: Record<ConnectionStage, string> = {
+  transport: 'The endpoint was not reached.',
+  auth: 'Not checked because the endpoint was not reached.',
+  models: 'Not checked because no model list was available.',
+  model: 'Not checked because no usable model was found.',
+  inference: 'Not checked because no usable model was found.',
+  streaming: 'Not tested. Run "Verify streaming support" to check Server-Sent Events separately.',
+};
+
+function completeStages(stages: ConnectionStageResult[]): ConnectionStageResult[] {
+  const byStage = new Map(stages.map((stage) => [stage.stage, stage]));
+  return CONNECTION_STAGE_ORDER.map(
+    (stage): ConnectionStageResult =>
+      byStage.get(stage) ?? {
+        stage,
+        status: 'not_run',
+        message: STAGE_NOT_CHECKED[stage],
+      },
+  );
 }
 
 function propsMentionReasoningEffort(props: ServerProps): boolean {

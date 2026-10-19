@@ -23,6 +23,12 @@ model. The rules this project follows:
 5. **A redirect never carries the key to another host.** The client follows
    redirects manually and refuses a redirect to a different origin as soon as
    an API key is configured (`shared/api/client.ts`).
+6. **Local helper scripts keep the key out of the command line.** The Windows
+   connection check (`tools/check-kaggle-connection.ps1`) reads the key with
+   `Read-Host -AsSecureString`, keeps it in memory, zeroes the unmanaged copy
+   and prints only a sanitized report. The launcher
+   (`scripts/start-windows.ps1` / `tools/launcher.mjs`) never reads a key at
+   all; the proxy owns the secret store.
 
 ## Where the key is stored
 

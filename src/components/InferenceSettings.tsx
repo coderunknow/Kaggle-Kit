@@ -19,6 +19,10 @@ import {
   type ReasoningEffort,
 } from '../../shared/api/requests';
 import { LIMITS, REASONING_EFFORTS } from '../../shared/api/validation';
+import {
+  effectiveProfileTarget,
+  resolveProfileCredential,
+} from '../../shared/connection';
 import type { ApiProfile } from '../../shared/domain';
 import { gateway } from '../lib/gateway';
 import { useApp } from '../state/AppProvider';
@@ -117,18 +121,10 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
     setProbing(true);
     setProbeResult(null);
     try {
-      const credential =
-        profile.credentialStorage === 'server'
-          ? { secretRef: profile.secretRef }
-          : {
-              apiKey:
-                profile.credentialStorage === 'browser'
-                  ? app.state.browserKeys[profile.id]
-                  : app.state.sessionKeys[profile.id],
-            };
+      const credential = resolveProfileCredential(profile, app.state);
 
       const result = await gateway.probeStreaming({
-        baseUrl: profile.baseUrl,
+        baseUrl: effectiveProfileTarget(profile).baseUrl,
         model: profile.modelId || undefined,
         timeoutMs: profile.timeoutMs,
         ...credential,
