@@ -1,0 +1,10 @@
+# DESIGN_LOG.md (append-only)
+
+## 2026-10-19 — Qwen system-prompt research & synthesis
+- **Objective:** Exhaustively inventory `asgeirtj/system_prompts_leaks`, extract reusable behavioral patterns, remove capability-suppressing restrictions, and produce an original Qwen-optimized system prompt with evaluation.
+- **Target discovery:** Workspace contained only `LICENSE` (commit `7430590`). No Qwen app, model config, template, tools, or tests exist. Integration is therefore blocked by missing project context; no model/engine/context claims were invented.
+- **Sources:** Primary repo @ `dfa2e2855f65a8982b3360d6bd12eeabc049355f` (1,310 files machine-inventoried, 23 deep-read); Qwen official docs (ChatML, Qwen3 no-default-system); Anthropic published-prompt corroboration. Provenance split in `research/qwen-system-prompt/SOURCE_EVIDENCE.md`.
+- **Decisions:** (1) Core prompt stays tool/date/model-detail-free; template owns serialization & schemas. (2) One conditional module per runtime, never stacked. (3) Brief single safety section replaces repeated mega-blocks; authorized-security calibration preserved. (4) Word caps & ask-first gates removed as unnecessary limitations (classified in `PROMPT_ANALYSIS.md`).
+- **Files changed:** Created `research/qwen-system-prompt/` (`SYSTEM_PROMPT.md`, `system_prompt.txt`, `modules/*`, `PROMPT_INVENTORY.json`, `build_inventory.py`, `SOURCE_EVIDENCE.md`, `PROMPT_ANALYSIS.md`, `PROMPT_EVALUATION.md`, `eval/*`, `examples/integrate_qwen.py`) and this log. No existing files modified (none existed besides LICENSE).
+- **Verified results:** Inventory generation ✅ (1,310 records); `eval/run_eval.py --dry-run` ✅ (structure + hygiene checks pass); integration example executes ✅. Model benchmark ❌ not run — no deployment/GPU/endpoint; all effectiveness claims labelled hypotheses.
+- **Incomplete / blockers:** Live baseline-vs-candidate evaluation requires the real Qwen deployment (model id, engine, tools). Full line-by-line human reading of all 882 markdown files not done (near-duplicates deduplicated by hash; coverage stated in SOURCE_EVIDENCE.md).
