@@ -1,0 +1,152 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { ApiError } from './errors';
+import { OpenAIClient } from './client';
+
+const API_KEY = 'super-secret-key-value';
+
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...headers },
+  });
+}
+
+describe('OpenAIClient', () => {
+  it('sends the API key in the Authorization header only', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: 'model-a' }] }));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+
+    await client.listModels();
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://example.com/v1/models');
+    expect(url).not.toContain(API_KEY);
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_KEY}`);
+  });
+
+  it('omits the Authorization header when no key is configured', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [] }));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    await client.listModels();
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it('never places the key in the request URL', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'hi' } }] }));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+
+    await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain(API_KEY);
+    expect(String(init.body)).not.toContain(API_KEY);
+  });
+
+  it('classifies 401 as an authentication error', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ error: { message: 'invalid api key' } }, 401));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).kind).toBe('auth');
+    expect((error as ApiError).httpStatus).toBe(401);
+  });
+
+  it('classifies 404 as not found', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: 'no route' }, 404));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('not_found');
+  });
+
+  it('classifies 500 as a server error', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('server');
+  });
+
+  it('reports invalid JSON as an invalid response', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('<html>nope</html>', { status: 200 }));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('invalid_response');
+  });
+
+  it('reports an empty body as an invalid response', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('invalid_response');
+  });
+
+  it('reports a network failure as blocked by CORS or proxy', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('cors_or_proxy');
+  });
+
+  it('reports a timeout when the request exceeds the timeout', async () => {
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+    );
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl, timeoutMs: 20 });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('timeout');
+  });
+
+  it('reports an external abort as cancelled', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+    );
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl, timeoutMs: 5_000 });
+
+    const promise = client.listModels({ signal: controller.signal });
+    controller.abort();
+
+    const error = await promise.catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('aborted');
+  });
+
+  it('redacts the API key from error messages', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ error: { message: `bad key ${API_KEY}` } }, 401));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+
+    const error = (await client.listModels().catch((caught: unknown) => caught)) as ApiError;
+    expect(error.message).not.toContain(API_KEY);
+    expect(error.message).toContain('[redacted]');
+  });
+
+  it('rejects an empty API key', () => {
+    expect(() => new OpenAIClient({ baseUrl: 'https://example.com', apiKey: '   ' })).toThrow(ApiError);
+  });
+
+  it('returns null from props() when the endpoint is missing', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: 'not found' }, 404));
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+    await expect(client.props()).resolves.toBeNull();
+  });
+});
