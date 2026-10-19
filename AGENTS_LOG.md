@@ -282,3 +282,80 @@ therefore a set of labelled hypotheses, not a measured improvement. The
 inventoried corpus's authenticity was not confirmed against vendor
 documentation, which is unreachable from the sandbox.
 
+
+---
+
+## 2026-10-19 – Release `v0.1.0-dev1` (preparation on the pull request branch)
+
+**Task.** Merge pull request #1, tag the result as `v0.1.0-dev1` and publish
+a prerelease whose assets are built, verified and uploaded by a workflow in
+the repository.
+
+**State of the branch when the work started.** Pull request #2 (the research
+of the system prompts) had been merged into `main` in the meantime, so the
+branch of pull request #1 conflicted. The conflict was only in
+`AGENTS_LOG.md` and `DESIGN_LOG.md`. Both files are append only, so both
+entries were kept: the entry of the remediation first, the entry of the
+research after it. `src/components/ProfileForm.tsx` and
+`src/components/App.test.tsx` merged without a conflict and now contain the
+insert button of the recommended Qwen prompt *and* the manual model id.
+
+**What was added.**
+
+* `.github/workflows/release.yml` – the release automation. It builds the
+  assets from the tagged commit, validates them, publishes them to a
+  prerelease and verifies the upload. The details are in the entry of
+  `DESIGN_LOG.md`.
+* `tools/build_notebook.py`, `tools/build_manifest.py`,
+  `tools/build_release_report.py`, `tools/validate_release.py`,
+  `tools/run_checks.py` and `tools/release-dry-run.sh` – the tools of the
+  release. They only use the standard library of Python 3.
+* `tools/test_release_tools.py` – 13 tests that prove that the validator
+  refuses a release that is incomplete, corrupt, inconsistent or that carries
+  a secret, and that the generator of the notebook refuses a source with a
+  literal key.
+* `docs/release/environment.json` and `docs/release-notes/0.1.0-dev1.md` – the
+  environments that were tested and the ones that were not, and the release
+  notes of the version.
+* `server/app.ts` – the streaming request of the proxy does not follow a
+  redirect of the upstream any more, like every other request of the server.
+  A redirect could have sent the prompt and the key to a host that is not
+  allowed to see them.
+* `server/app.streaming.test.ts` – the regression test of that change. It
+  starts a second server as the target of the redirect and proves that the
+  target is not reached. The test fails against the old implementation.
+* `package.json` and `shared/api/client.ts` – the version is `0.1.0-dev1`,
+  it has to match the tag.
+
+**Checks that were run.**
+
+* `npm run typecheck` – passed.
+* `npm run lint` – passed, no findings.
+* `npm test` – 155 tests in 16 files, all passed.
+* `npm run build` – passed.
+* `npm run check:integration` – 14 of 14.
+* `python3 -m unittest discover -s notebooks -p "test_*.py"` – 39 tests.
+* `python3 -m unittest discover -s tools -p "test_*.py"` – 13 tests.
+* `tools/release-dry-run.sh` – the staged release was valid.
+
+**Bugs and problems found while doing it.**
+
+1. The first version of the secret scan of the release flagged the test
+   fixture `API_KEY = 'test-key-not-to-be-persisted'` and the example
+   `sk-test-ABC123SECRET` of the research corpus. A test fixture is not a
+   secret. The scan now only counts a value as a secret when it is at least
+   32 characters long and looks like a random token (it has to contain a
+   digit, a small and a large letter and its entropy has to be high enough).
+   A scan of the whole tree with a low threshold was used to confirm that the
+   only hits are these fixtures.
+2. The first version of the validator took the *name* of the assignment
+   instead of its value, so it would never have found a secret. The test
+   `test_refuses_an_archive_with_a_secret` found it.
+3. The variable of the release notes shadowed the list of the notes in the
+   validator, so the check of the published assets ended with an
+   `AttributeError`. The test of a published asset that differs found it.
+
+**Not verified.** The release has not been published at the time of this
+entry; the merge, the tag and the published assets are recorded in a later
+entry. The behaviour on a real Kaggle GPU runtime, with a real model, a real
+Quick Tunnel and a real browser is not verified by the checks above.

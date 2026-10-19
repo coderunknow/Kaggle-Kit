@@ -114,12 +114,31 @@ npm run check          # all three
 npm run build          # type check, build the client, bundle the backend
 npm run check:integration   # drives the built application against the mock upstream
 python3 -m unittest discover -s notebooks -p "test_*.py"   # deployment script tests
+python3 -m unittest discover -s tools -p "test_*.py"        # tests of the release tools
 ```
 
 The same checks run on every push and pull request in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml). They need no secret,
 no GPU, no weights and no tunnel. The notebook tests need the `requests`
 package (`pip install requests`).
+
+## Releases
+
+A release is built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+from the tagged commit: the workflow runs the checks, builds the application,
+stages the assets, validates them and uploads them to a prerelease of the same
+tag. Nothing is uploaded by hand.
+
+```bash
+git tag v0.1.0-dev1 <commit> && git push origin v0.1.0-dev1
+```
+
+The version of `package.json` has to match the tag and the release notes have
+to exist in `docs/release-notes/<version>.md`. Every release contains the
+notebook with the deployment cell, the application bundle, the source archive,
+a `manifest.json` with the size and the SHA-256 of every asset, a
+`SHA256SUMS` file and a `verification-report.json` with the checks that were
+executed. `tools/release-dry-run.sh` runs the same steps locally.
 
 ## Project layout
 

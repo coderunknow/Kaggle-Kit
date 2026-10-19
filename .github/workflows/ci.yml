@@ -84,3 +84,6 @@ jobs:
 
       - name: Run the notebook tests
         run: python3 -m unittest discover -s notebooks -p "test_*.py" -v
+
+      - name: Run the tests of the release tools
+        run: python3 -m unittest discover -s tools -p "test_*.py" -v

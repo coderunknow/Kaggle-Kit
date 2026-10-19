@@ -21,7 +21,8 @@ python3 tools/run_checks.py --output checks.json \
   --command "npm run typecheck" \
   --command "npm run lint" \
   --command "npm test" \
-  --command "python3 -m unittest discover -s notebooks -p 'test_*.py'"
+  --command "python3 -m unittest discover -s notebooks -p 'test_*.py'" \
+  --command "python3 -m unittest discover -s tools -p 'test_*.py'"
 
 echo "== build =="
 npm run build

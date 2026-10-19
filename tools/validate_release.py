@@ -42,7 +42,7 @@ FORBIDDEN_DIRECTORIES = ("node_modules/", ".git/", ".data/", "__pycache__/")
 # a secret when it looks like a random token: a test fixture such as
 # "test-key-not-to-be-persisted" is not a secret.
 SECRET_ASSIGNMENT = re.compile(
-    r"""(?i)(api[_-]?key|access[_-]?token|secret|password)\s*=\s*["']([^"'\n]{16,})["']"""
+    r"""(?i)(?:api[_-]?key|access[_-]?token|secret|password)\s*=\s*["']([^"'\n]{16,})["']"""
 )
 SECRET_BEARER = re.compile(r"(?i)bearer\s+([A-Za-z0-9_\-]{16,})")
 SECRET_SK = re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}")
@@ -51,7 +51,10 @@ SECRET_PRIVATE_KEY = re.compile(r"^-----BEGIN [A-Z ]*PRIVATE KEY-----", re.MULTI
 
 def looks_like_a_token(value: str) -> bool:
     """True when the value looks like a random token and not like a word."""
-    if len(value) < 20:
+    if len(value) < 32:
+        # A real key of this project is 43 characters long (secrets.token_urlsafe
+        # of 32 bytes). Shorter values are examples of a documentation or a
+        # test, not a key.
         return False
     if not re.fullmatch(r"[A-Za-z0-9_\-=+/]+", value):
         return False
@@ -90,7 +93,8 @@ def check_no_secrets(name: str, data: bytes, problems: list) -> None:
         return
     for pattern in (SECRET_ASSIGNMENT, SECRET_BEARER, SECRET_SK):
         for match in pattern.finditer(text):
-            if looks_like_a_token(match.group(match.lastindex or 1)):
+            value = match.group(1) if match.lastindex else match.group(0)
+            if looks_like_a_token(value):
                 problems.append(f"{name}: the file contains something that looks like a secret")
                 return
     if SECRET_PRIVATE_KEY.search(text):
@@ -259,13 +263,13 @@ def validate(stage: Path, version: str, tag: str, source_sha: str, downloaded: P
     notes.append(f"the source archive contains {len(members)} entries")
 
     # 7. The release notes of this version are free of secrets.
-    notes = Path(f"docs/release-notes/{version}.md")
-    if not notes.is_file():
-        problems.append(f"the release notes {notes} are missing")
+    notes_file = Path(f"docs/release-notes/{version}.md")
+    if not notes_file.is_file():
+        problems.append(f"the release notes {notes_file} are missing")
     else:
-        check_no_secrets(notes.name, notes.read_bytes(), problems)
-        if "{{SOURCE_SHA}}" not in notes.read_text(encoding="utf-8"):
-            problems.append(f"the release notes {notes} do not contain the commit placeholder")
+        check_no_secrets(notes_file.name, notes_file.read_bytes(), problems)
+        if "{{SOURCE_SHA}}" not in notes_file.read_text(encoding="utf-8"):
+            problems.append(f"the release notes {notes_file} do not contain the commit placeholder")
 
     # 8. The downloaded assets are the ones that were built.
     if downloaded is not None:
