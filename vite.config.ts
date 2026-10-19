@@ -14,7 +14,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: Number.parseInt(process.env.KAGGLE_KIT_CLIENT_PORT ?? '5173', 10),
     strictPort: false,
     proxy: {
       '/api': {
