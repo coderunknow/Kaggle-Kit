@@ -341,3 +341,110 @@ The parts that cannot be verified in the sandbox, with the exact steps:
 * The component tests run in jsdom. They are not a browser test; the real
   rendering, the copy button, the keyboard navigation and the small screen
   layout are still unverified in a real browser.
+
+
+## 2026-10-19 – System prompt research and Qwen prompt optimization
+
+### Objective (as received)
+
+Investigate `asgeirtj/system_prompts_leaks` exhaustively, inventory its prompt
+files with provenance, analyse what makes the prompts work, remove restrictions
+that suppress capability without protecting anyone, synthesize an original
+system prompt for the Qwen deployment in this repository, integrate it, test it
+and document the result honestly.
+
+### Starting point
+
+The branch that contains this application had no research directory and no
+system prompt; the profile editor accepted free text and sent nothing by
+default. A second arena branch (`arena/a434278f-kaggle-kit`) contained research
+for a *standalone* prompt without access to this application. It was not merged:
+its target assumptions (no application, no integration point) do not match this
+branch. The research here was written against the code in this repository.
+
+### Decision 1 – establish the target from the code, not from the model name
+
+Everything in `SOURCE_EVIDENCE.md` §1 is read from `notebooks/qwen3_8_27b_api.py`,
+`shared/api/*`, `src/state/useChat.ts` and `server/*`, plus the pinned
+`llama.cpp` server README. The important consequences: there is **no tool
+channel**, the system prompt is **one message and only when non-empty**, the
+chat template is applied by the server, and the context is **8 192 tokens**.
+A prompt written for a 500 KB agent harness would be wrong here.
+
+### Decision 2 – inventory everything, read selectively, say which is which
+
+`build_inventory.py` classifies all 1 304 text files (233 system prompts, 76
+instruction fragments, 886 skills, 43 supporting documents, …), hashes them,
+finds 128 exact duplicates and 14 near-duplicate clusters, and records
+provenance and compatibility per file. `inspected_files.json` records which 19
+files were read end to end and which 15 were read at section level. The
+analysis states the coverage instead of claiming exhaustiveness.
+
+### Decision 3 – measure before asserting
+
+`analyze_corpus.py` produces the numbers quoted in `PROMPT_ANALYSIS.md`
+(theme shares per behavioural group, restriction census, recurring directive
+extraction). Two examples that changed the design: hard word caps appear in only
+11% of prompts and are a terminal constraint, and hardcoded dates appear in 40%
+of prompts and are a staleness bug rather than a feature.
+
+### Decision 4 – the prompt is small, one message, and tool-free
+
+1 017 estimated tokens (12.4% of the window), original text, no template tokens,
+no tool schemas, no date, no cutoff, no persona. The optional tool and
+summarisation appendices live in `SYSTEM_PROMPT.md` and are explicitly not
+pasted, because the runtime cannot execute them.
+
+### Decision 5 – integrate through the existing form, not the default
+
+The recommended prompt is inserted by a button in the profile editor rather than
+made the default for every profile: the application talks to any
+OpenAI-compatible endpoint, and a Qwen-specific prompt is wrong for the mock
+server or for another model. An empty field keeps meaning "no system message",
+which is the pre-existing behaviour and is now pinned by a test. The text has a
+single source of truth in `shared/prompts/qwen.ts`; `SYSTEM_PROMPT.md` mirrors
+it and a test fails on drift.
+
+### Decision 6 – do not evaluate without a model
+
+The evaluation suite (17 cases, 36 objective checks, 45 manual criteria) and its
+runner are part of the deliverable, but this environment has no GPU, no weights
+and no endpoint. `PROMPT_EVALUATION.md` labels every claim about model behaviour
+as an untested hypothesis and records the dry-run output verbatim.
+
+### Validation (executed)
+
+* `npm run typecheck` – passed.
+* `npm run lint` – passed, no findings.
+* `npm test` – **96 tests in 11 files**, all passed (85 before this work).
+  New: 9 prompt-invariant tests, 2 end-to-end tests that the inserted prompt
+  becomes `messages[0]` exactly once, and that an empty field still sends no
+  system message.
+* `python3 research/qwen-system-prompt/eval/run_eval.py --dry-run` – suite
+  valid: 17 cases, 36 auto checks, 45 manual criteria, prompt SHA-256
+  `2f52bd9a1c9c1935`.
+* Inventory and census regenerated from the clone; counts as reported in
+  `PROMPT_INVENTORY.json` and `corpus_analysis.json`.
+
+### Incomplete and blocked
+
+* **No model run.** No GPU, no GGUF file, `huggingface.co` is not reachable and
+  no endpoint was provided. The baseline/candidate comparison is prepared, not
+  executed; no score is claimed.
+* **No vendor-document verification of any leaked prompt.** Only GitHub, npm and
+  PyPI are reachable; provenance is classified, not confirmed.
+* **The token count is an estimate** from characters (3.6 chars/token), not a
+  count from the Qwen tokenizer.
+* **A real browser click-through of the new button** was covered by jsdom
+  component tests only.
+
+### Open questions
+
+* Should `Current date: YYYY-MM-DD (UTC)` be injected at request time? It would
+  fix a real gap (the model has no clock and the corpus shows 40% of prompts
+  hardcode one), but it changes every profile and belongs to the product owner.
+* Should the app ship a prompt *per profile* from a small set (tool-free,
+  coding, research) instead of a single recommended prompt? The research found
+  that conditioning modules on real capabilities matters; today there is exactly
+  one capability set.
+
