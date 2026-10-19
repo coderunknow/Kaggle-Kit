@@ -1,0 +1,86 @@
+# Continuous integration for Kaggle-Kit.
+#
+# The workflow needs no secrets, no GPU, no model weights and no tunnel: it
+# installs the dependencies, runs the static checks, the test suite (browser
+# and Python) and the production build.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: typecheck, lint, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install the dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (browser and server)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Integration check of the built application
+        run: npm run check:integration
+
+      - name: Check the whitespace of the diff
+        run: |
+          git diff --check
+          base="origin/${{ github.base_ref || 'main' }}"
+          if git rev-parse --verify "$base" >/dev/null 2>&1; then
+            git diff --check "$base...HEAD"
+          fi
+
+  python:
+    name: notebook tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the test dependencies
+        run: python3 -m pip install --upgrade requests
+
+      - name: Run the notebook tests
+        run: python3 -m unittest discover -s notebooks -p "test_*.py" -v
