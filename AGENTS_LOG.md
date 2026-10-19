@@ -499,3 +499,45 @@ summary of an earlier session.
   Cloudflare Quick Tunnel. Those checks remain stubs and a mock upstream.
 * The release assets of this version are not downloaded here after
   publication; the workflow's own verification step compares them.
+
+---
+
+## 2026-10-19 – publication record of v0.1.0-dev2
+
+**The published release.**
+
+* <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev2> -
+  a prerelease, published at 2026-10-19T10:05:47Z.
+* Pull request [#5](https://github.com/coderunknow/Kaggle-Kit/pull/5) was
+  merged with `--merge`; the merge commit is
+  `475ba25e08cf5e4b2ac2d463ff725df1022d76a2`, and the tag
+  `v0.1.0-dev2` (tag object `68b315f5ca28c742a12fa1fbefbfa99ecce68023`)
+  points at exactly that commit.
+* The release workflow
+  [run 39234842770](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39234842770)
+  succeeded in every step, including the publication and the verification of
+  the published assets. The merge commit was green in
+  [run 39234827441](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39234827441).
+* The assets: `v0.1.0-dev2-notebook.ipynb` (83 561 bytes),
+  `v0.1.0-dev2-app.zip` (914 010), `v0.1.0-dev2-source.zip` (594 182),
+  `manifest.json` (1 901), `SHA256SUMS` (439) and
+  `verification-report.json` (7 684). The SHA-256 of every file is in the
+  entry of `DESIGN_LOG.md`.
+
+**Checks that ran in the release workflow.** Typecheck, lint, 202 tests in 24
+files, the build, 14 of 14 integration checks, 39 notebook tests (7 skipped),
+15 tests of the release tools, the validation of the staged assets and the
+comparison of the published assets with the built ones. All passed.
+
+**Notes.**
+
+* The external "Kilo Code Review" check reported `action_required` because the
+  third-party account has insufficient credits; it produced no code finding
+  and did not block the merge.
+* The assets and the logs of the run could not be downloaded from this
+  environment (`release-assets.githubusercontent.com` and the log host are not
+  reachable). The evidence for the file comparison is the successful
+  "Verify the published release" step of the workflow and the digests that the
+  GitHub API reports for the assets.
+* Not verified: a real Kaggle GPU, the model download, real inference, a real
+  Quick Tunnel and a real browser.
