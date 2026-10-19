@@ -47,4 +47,30 @@ describe('parseSseStream', () => {
 
     expect(events).toHaveLength(1);
   });
+
+  it('reads a stream that uses CRLF line ends', async () => {
+    const stream = streamOf([
+      'data: {"choices":[{"delta":{"content":"a"}}]}\r\n\r\n',
+      'data: {"choices":[{"delta":{"content":"b"}}]}\r\n\r\n',
+      'data: [DONE]\r\n\r\n',
+    ]);
+
+    const events = [];
+    for await (const event of parseSseStream(stream)) events.push(event);
+
+    expect(events).toHaveLength(3);
+    expect(extractDelta(events[0]!).content).toBe('a');
+    expect(extractDelta(events[2]!).finishReason).toBe('stop');
+  });
+
+  it('reads a frame that is split over several chunks', async () => {
+    const stream = streamOf(['data: {"choices":[{"delta":', '{"content":"split"}}]}\n', '\n']);
+
+    const events = [];
+    for await (const event of parseSseStream(stream)) events.push(event);
+
+    expect(events).toHaveLength(1);
+    expect(extractDelta(events[0]!).content).toBe('split');
+  });
+
 });

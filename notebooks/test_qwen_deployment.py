@@ -2,36 +2,50 @@
 Tests for the Kaggle deployment script.
 
 The tests only cover the parts that can run without a GPU: flag selection,
-model discovery, the resume logic of the downloader and the runtime bundle
-that connects the deployment to the chat interface.
+model discovery, the resume logic of the downloader, the safe extraction of
+archives, the state of a running server and the runtime bundle that connects
+the deployment to the chat interface.
 
     python3 -m unittest discover -s notebooks -p "test_*.py"
+
+The tests that need ``requests`` are skipped when the package is missing.
 """
 
 from __future__ import annotations
 
 import http.server
+import io
 import json
 import os
 import socketserver
 import sys
+import tarfile
 import tempfile
 import threading
+import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import qwen3_8_27b_api as nb  # noqa: E402
 
+REQUESTS_READY = nb.REQUESTS_AVAILABLE
+
 
 class FakeResponse:
     """Minimal stand in for the parts of ``requests.Response`` that are used."""
 
-    def __init__(self, payload: bytes, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: bytes,
+        status_code: int = 200,
+        headers: dict | None = None,
+    ) -> None:
         self._payload = payload
         self.status_code = status_code
-        self.headers = {"content-type": "application/octet-stream"}
+        self.headers = headers or {"content-type": "application/octet-stream"}
 
     def __enter__(self) -> "FakeResponse":
         return self
@@ -46,12 +60,16 @@ class FakeResponse:
     def raise_for_status(self) -> None:
         return None
 
+    def json(self):
+        return json.loads(self._payload.decode("utf-8"))
+
 
 class FakeSession:
     """A session that serves a payload and records the range requests."""
 
-    def __init__(self, payload: bytes) -> None:
+    def __init__(self, payload: bytes, headers: dict | None = None) -> None:
         self.payload = payload
+        self.headers = headers or {"content-type": "application/octet-stream"}
         self.ranges: list = []
 
     def get(self, url, headers=None, stream=False, allow_redirects=True, timeout=None):
@@ -60,7 +78,7 @@ class FakeSession:
         raw_range = (headers or {}).get("Range")
         if raw_range and raw_range.startswith("bytes="):
             offset = int(raw_range.split("=", 1)[1].split("-", 1)[0])
-        return FakeResponse(self.payload[offset:], 206 if offset else 200)
+        return FakeResponse(self.payload[offset:], 206 if offset else 200, dict(self.headers))
 
 
 class FlagSelectionTests(unittest.TestCase):
@@ -72,52 +90,79 @@ class FlagSelectionTests(unittest.TestCase):
         self.assertIn("--reasoning-effort", flags)
         self.assertNotIn("--not-a-flag", flags)
 
-    def test_command_only_contains_supported_flags(self) -> None:
+    def _launch(self, supported_text: str, variant: dict, **kwargs):
         config = nb.DeploymentConfig()
         config.root = Path("/tmp/qwen-test")
-        binary = Path("/tmp/llama-server")
-        model = Path("/tmp/model.gguf")
-
-        supported = nb.server_flags("--ctx-size N --n-gpu-layers N --host H --port P --api-key K")
-        command = nb.build_server_command(
-            config,
-            binary,
-            model,
-            "secret",
-            supported,
-            {"ctx": 8192, "mtp": True, "reasoning": True},
-        )
-
-        self.assertIn("--ctx-size", command)
-        self.assertNotIn("--split-mode", command)
-        self.assertNotIn("--tensor-split", command)
-        self.assertNotIn("--flash-attn", command)
-        self.assertNotIn("--reasoning-effort", command)
-        self.assertNotIn("--spec-type", command)
-        self.assertNotIn("--jinja", command)
-
-    def test_command_adds_mtp_and_reasoning_when_supported(self) -> None:
-        config = nb.DeploymentConfig()
-        supported = nb.server_flags(
-            "--ctx-size N --split-mode M --tensor-split T --cache-type-k T "
-            "--cache-type-v T --flash-attn on --jinja --reasoning-effort <value> "
-            "--spec-type T --spec-draft-n-max N"
-        )
-        command = nb.build_server_command(
+        supported = nb.server_flags(supported_text)
+        return nb.build_server_command(
             config,
             Path("/tmp/llama-server"),
             Path("/tmp/model.gguf"),
             "secret",
             supported,
+            variant,
+            **kwargs,
+        )
+
+    def test_command_only_contains_supported_flags(self) -> None:
+        launch = self._launch(
+            "--ctx-size N --n-gpu-layers N --host H --port P --api-key K",
             {"ctx": 8192, "mtp": True, "reasoning": True},
         )
 
-        self.assertIn("--split-mode", command)
-        self.assertIn("layer", command)
-        self.assertIn("--tensor-split", command)
-        self.assertIn("--reasoning-effort", command)
-        self.assertIn("medium", command)
-        self.assertIn("draft-mtp", command)
+        self.assertIn("--ctx-size", launch.command)
+        self.assertNotIn("--split-mode", launch.command)
+        self.assertNotIn("--tensor-split", launch.command)
+        self.assertNotIn("--flash-attn", launch.command)
+        self.assertNotIn("--reasoning-effort", launch.command)
+        self.assertNotIn("--spec-type", launch.command)
+        self.assertNotIn("--jinja", launch.command)
+
+    def test_command_adds_mtp_and_reasoning_when_supported(self) -> None:
+        launch = self._launch(
+            "--ctx-size N --split-mode M --tensor-split T --cache-type-k T "
+            "--cache-type-v T --flash-attn on --jinja --reasoning-effort <value> "
+            "--spec-type T --spec-draft-n-max N",
+            {"ctx": 8192, "mtp": True, "reasoning": True},
+        )
+
+        self.assertIn("--split-mode", launch.command)
+        self.assertIn("layer", launch.command)
+        self.assertIn("--tensor-split", launch.command)
+        self.assertIn("--reasoning-effort", launch.command)
+        self.assertIn("medium", launch.command)
+        self.assertIn("draft-mtp", launch.command)
+
+        # The applied options describe what the server really got.
+        self.assertTrue(launch.applied["mtp"])
+        self.assertTrue(launch.applied["reasoning"])
+        self.assertEqual(launch.applied["ctx"], 8192)
+        self.assertEqual(launch.applied["split_mode"], "layer")
+        self.assertEqual(launch.dropped, [])
+
+    def test_unsupported_mtp_is_not_reported_as_enabled(self) -> None:
+        launch = self._launch(
+            "--ctx-size N --n-gpu-layers N --host H --port P --api-key K",
+            {"ctx": 8192, "mtp": True, "reasoning": True},
+        )
+
+        self.assertNotIn("--spec-type", launch.command)
+        self.assertFalse(launch.applied["mtp"])
+        self.assertIn("mtp", launch.dropped)
+        self.assertIn("reasoning", launch.dropped)
+        self.assertFalse(launch.applied["reasoning"])
+
+    def test_the_api_key_is_read_from_a_file_when_the_build_supports_it(self) -> None:
+        launch = self._launch(
+            "--ctx-size N --n-gpu-layers N --host H --port P --api-key-file F",
+            {"ctx": 8192, "mtp": False, "reasoning": False},
+            api_key_file=Path("/tmp/qwen-test/api_key.txt"),
+        )
+
+        self.assertIn("--api-key-file", launch.command)
+        self.assertNotIn("--api-key", launch.command)
+        self.assertNotIn("secret", " ".join(launch.command))
+        self.assertEqual(launch.applied["api_key_source"], "file")
 
     def test_variants_start_with_the_verified_configuration(self) -> None:
         config = nb.DeploymentConfig()
@@ -125,6 +170,25 @@ class FlagSelectionTests(unittest.TestCase):
         self.assertEqual(variants[0]["ctx"], 8192)
         self.assertTrue(variants[0]["mtp"])
         self.assertTrue(any(not variant["mtp"] for variant in variants))
+
+    def test_usable_variants_drop_a_duplicate_when_mtp_is_not_supported(self) -> None:
+        config = nb.DeploymentConfig()
+        variants = nb.server_variants(config)
+
+        with_mtp = nb.usable_variants(
+            variants, nb.server_flags("--ctx-size N --reasoning-effort <value>")
+        )
+        self.assertEqual(len(with_mtp), len(variants) - 1)
+        self.assertFalse(any(variant["mtp"] for variant in with_mtp))
+
+        with_mtp_support = nb.usable_variants(
+            variants,
+            nb.server_flags(
+                "--ctx-size N --spec-type T --spec-draft-n-max N --reasoning-effort <value>"
+            ),
+        )
+        self.assertEqual(len(with_mtp_support), len(variants))
+        self.assertTrue(with_mtp_support[0]["mtp"])
 
 
 class ModelDiscoveryTests(unittest.TestCase):
@@ -216,6 +280,215 @@ class DownloadTests(unittest.TestCase):
             )
             self.assertEqual(session.ranges, [])
 
+    def test_an_html_error_page_is_refused(self) -> None:
+        session = FakeSession(
+            b"<html><body>Not found</body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "asset.bin"
+            with self.assertRaises(RuntimeError):
+                nb.download_resumable(
+                    session,
+                    "https://example.invalid/asset.bin",
+                    destination,
+                    min_bytes=1,
+                    attempts=1,
+                )
+            self.assertFalse(destination.exists())
+
+    def test_a_truncated_download_is_refused(self) -> None:
+        # The server announces more bytes than it sends.
+        session = FakeSession(
+            b"short", headers={"content-type": "application/octet-stream", "content-length": "999"}
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "asset.bin"
+            with self.assertRaises(RuntimeError):
+                nb.download_resumable(
+                    session,
+                    "https://example.invalid/asset.bin",
+                    destination,
+                    min_bytes=1,
+                    attempts=1,
+                )
+            self.assertFalse(destination.exists())
+
+
+class ArchiveExtractionTests(unittest.TestCase):
+    def _archive(self, members) -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, content, kind in members:
+                info = tarfile.TarInfo(name)
+                info.size = len(content)
+                if kind == "symlink":
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = content.decode()
+                    info.size = 0
+                archive.addfile(info, io.BytesIO(content) if kind != "symlink" else None)
+        return buffer.getvalue()
+
+    def test_a_normal_archive_is_extracted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "archive.tar.gz"
+            archive_path.write_bytes(self._archive([("bin/llama-server", b"binary", "file")]))
+
+            names = nb.extract_archive(archive_path, root / "out")
+
+            self.assertIn("bin/llama-server", names)
+            self.assertEqual((root / "out" / "bin" / "llama-server").read_bytes(), b"binary")
+
+    def test_an_archive_cannot_write_outside_the_target_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "evil.tar.gz"
+            archive_path.write_bytes(
+                self._archive([("../escaped.txt", b"owned", "file")])
+            )
+
+            with self.assertRaises(RuntimeError):
+                nb.extract_archive(archive_path, root / "out")
+
+            self.assertFalse((root / "escaped.txt").exists())
+
+    def test_an_archive_cannot_use_a_link_out_of_the_target_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "evil.tar.gz"
+            archive_path.write_bytes(
+                self._archive([("link", b"/etc/passwd", "symlink")])
+            )
+
+            with self.assertRaises(RuntimeError):
+                nb.extract_archive(archive_path, root / "out")
+
+            self.assertFalse((root / "out" / "link").exists())
+
+
+class ServerStateTests(unittest.TestCase):
+    def test_the_decision_matrix(self) -> None:
+        self.assertEqual(
+            nb.decide_server_action(
+                port_busy=False, owned=False, healthy=False, compatible=False
+            ),
+            nb.ACTION_START,
+        )
+        self.assertEqual(
+            nb.decide_server_action(
+                port_busy=True, owned=True, healthy=True, compatible=True
+            ),
+            nb.ACTION_REUSE,
+        )
+        self.assertEqual(
+            nb.decide_server_action(
+                port_busy=True, owned=True, healthy=True, compatible=False
+            ),
+            nb.ACTION_RESTART,
+        )
+        self.assertEqual(
+            nb.decide_server_action(
+                port_busy=True, owned=True, healthy=False, compatible=True
+            ),
+            nb.ACTION_RESTART,
+        )
+        self.assertEqual(
+            nb.decide_server_action(
+                port_busy=True, owned=False, healthy=True, compatible=True
+            ),
+            nb.ACTION_CONFLICT,
+        )
+
+    def test_a_foreign_process_is_never_stopped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.DeploymentConfig()
+            config.root = Path(directory)
+
+            # The test process itself is not a llama-server.
+            state = {"pid": os.getpid()}
+            self.assertFalse(nb.owns_process(state))
+            self.assertFalse(nb.stop_owned_server(config, state))
+            self.assertTrue(nb.process_alive(os.getpid()))
+
+    def test_a_state_without_a_process_is_not_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.DeploymentConfig()
+            config.root = Path(directory)
+
+            self.assertFalse(nb.owns_process(None))
+            self.assertFalse(nb.owns_process({"pid": 0}))
+            self.assertFalse(nb.owns_process({"pid": 999_999_999}))
+            self.assertFalse(nb.stop_owned_server(config, {"pid": 999_999_999}))
+
+    def test_the_state_and_the_key_are_stored_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.DeploymentConfig()
+            config.root = Path(directory)
+
+            key_path = nb.write_api_key(config, "super-secret")
+            self.assertEqual(os.stat(key_path).st_mode & 0o777, 0o600)
+            self.assertEqual(nb.read_api_key(config), "super-secret")
+
+            state_path = nb.write_server_state(
+                config,
+                {
+                    "pid": 1234,
+                    "port": 8000,
+                    "fingerprint": "abc",
+                    "applied": {"ctx": 8192, "mtp": True},
+                },
+            )
+            self.assertEqual(os.stat(state_path).st_mode & 0o777, 0o600)
+            self.assertNotIn("super-secret", state_path.read_text())
+
+            state = nb.read_server_state(config)
+            self.assertEqual(state["pid"], 1234)
+            self.assertEqual(state["applied"]["ctx"], 8192)
+
+            nb.clear_server_state(config)
+            self.assertIsNone(nb.read_server_state(config))
+
+    def test_the_fingerprint_changes_with_the_configuration(self) -> None:
+        config = nb.DeploymentConfig()
+        base = nb.deployment_fingerprint(config, Path("/tmp/a.gguf"), Path("/tmp/llama-server"))
+        same = nb.deployment_fingerprint(config, Path("/tmp/a.gguf"), Path("/tmp/llama-server"))
+        other_model = nb.deployment_fingerprint(
+            config, Path("/tmp/b.gguf"), Path("/tmp/llama-server")
+        )
+        self.assertEqual(base, same)
+        self.assertNotEqual(base, other_model)
+
+        config.ctx_size = 4096
+        self.assertNotEqual(
+            base, nb.deployment_fingerprint(config, Path("/tmp/a.gguf"), Path("/tmp/llama-server"))
+        )
+
+    def test_a_free_port_is_reported_as_free(self) -> None:
+        with socket_holder() as (host, port):
+            self.assertTrue(nb.port_in_use(host, port))
+        self.assertFalse(nb.port_in_use(host, port))
+
+
+class socket_holder:
+    """A context manager that holds a listening socket."""
+
+    def __init__(self) -> None:
+        import socket
+
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(1)
+
+    def __enter__(self):
+        return self._socket.getsockname()
+
+    def __exit__(self, *args) -> bool:
+        self._socket.close()
+        return False
+
 
 class RuntimeBundleTests(unittest.TestCase):
     def test_the_key_is_only_written_to_the_key_file(self) -> None:
@@ -233,7 +506,7 @@ class RuntimeBundleTests(unittest.TestCase):
                 "super-secret",
                 "model-a",
                 model,
-                {"ctx": 8192, "mtp": True, "reasoning": True},
+                {"ctx": 8192, "mtp": True, "reasoning": True, "reasoning_effort": "medium"},
                 "https://example.trycloudflare.com",
                 Path("/tmp/llama-server"),
             )
@@ -247,7 +520,372 @@ class RuntimeBundleTests(unittest.TestCase):
             self.assertNotIn("super-secret", json.dumps(profile))
             self.assertEqual(runtime["context_size"], 8192)
             self.assertTrue(runtime["mtp_speculative_decoding"])
+            self.assertEqual(runtime["reasoning_effort"], "medium")
             self.assertEqual(profile["model"], "model-a")
+
+    def test_the_runtime_reports_only_the_applied_options(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = nb.DeploymentConfig()
+            config.root = root
+            config.model_dir.mkdir(parents=True, exist_ok=True)
+
+            model = config.model_dir / config.model_file
+            model.write_bytes(b"GGUF" + b"0" * 2048)
+
+            paths = nb.write_runtime_bundle(
+                config,
+                "super-secret",
+                "model-a",
+                model,
+                {
+                    "ctx": 4096,
+                    "mtp": False,
+                    "reasoning": False,
+                    "reasoning_effort": None,
+                    "unsupported_options": ["mtp", "reasoning"],
+                },
+                None,
+                Path("/tmp/llama-server"),
+            )
+
+            runtime = json.loads(paths["runtime"].read_text())
+            self.assertFalse(runtime["mtp_speculative_decoding"])
+            self.assertIsNone(runtime["reasoning_effort"])
+            self.assertEqual(runtime["context_size"], 4096)
+            self.assertEqual(runtime["unsupported_options"], ["mtp", "reasoning"])
+            self.assertIsNone(runtime["public_base_url"])
+            self.assertFalse(runtime["public_endpoint_verified"])
+
+
+class BusyPort:
+    """A port that is used once and free afterwards, like after a restart."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, host: str, port: int) -> bool:
+        self.calls += 1
+        return self.calls == 1
+
+
+class MainFlowTests(unittest.TestCase):
+    """The flow of a rerun: start, reuse, restart and conflict."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+        self.config = nb.DeploymentConfig()
+        self.config.root = self.root
+        self.config.enable_tunnel = False
+        # model_dir and bin_root are derived from the root.
+        self.config.model_dir.mkdir(parents=True, exist_ok=True)
+
+        self.model = self.config.model_dir / self.config.model_file
+        self.model.write_bytes(b"GGUF" + b"0" * 2048)
+
+        self.started: list = []
+        self.stopped: list = []
+
+        patches = [
+            ("build_session", lambda: object()),
+            ("check_gpus", lambda config: ["GPU 0: T4", "GPU 1: T4"]),
+            ("get_server_binary", lambda session, config: Path("/tmp/llama-server")),
+            ("find_saved_model", lambda config: self.model),
+            ("probe_local_streaming", lambda *args, **kwargs: True),
+            ("start_public_tunnel", lambda *args, **kwargs: None),
+            ("owns_process", lambda state: True),
+            ("stop_owned_server", self._stop),
+            ("start_server", self._start),
+        ]
+        self._patchers = []
+        for name, replacement in patches:
+            patcher = unittest.mock.patch.object(nb, name, replacement)
+            patcher.start()
+            self._patchers.append(patcher)
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self.directory.cleanup()
+
+    def _stop(self, config, state):
+        self.stopped.append(state)
+        return True
+
+    def _start(self, session, config, binary, model_path, api_key, **kwargs):
+        self.started.append(api_key)
+        return "model-a", {
+            "ctx": 8192,
+            "mtp": False,
+            "reasoning": False,
+            "n_gpu_layers": 99,
+            "unsupported_options": ["mtp"],
+        }
+
+    def _main(self, **patches):
+        import contextlib
+        import io
+
+        # Every name is patched exactly once: a second patch of the same
+        # attribute would leave the first replacement behind.
+        active = {
+            "port_in_use": lambda host, port: False,
+            "server_healthy": lambda *args, **kwargs: False,
+        }
+        active.update(patches)
+
+        patchers = []
+        for name, replacement in active.items():
+            patcher = unittest.mock.patch.object(nb, name, replacement)
+            patcher.start()
+            patchers.append(patcher)
+
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                result = nb.main(self.config)
+        finally:
+            for patcher in patchers:
+                patcher.stop()
+
+        return result, buffer.getvalue()
+
+    def test_a_fresh_deployment_starts_a_server_with_a_new_key(self) -> None:
+        result, output = self._main()
+
+        self.assertEqual(len(self.started), 1)
+        self.assertFalse(result["server_reused"])
+        self.assertEqual(result["api_key"], self.started[0])
+        self.assertIn("started in this run", output)
+        self.assertIn("Local inference:  verified with a real chat completion", output)
+
+        # The key of the new server is stored with mode 0600.
+        key_path = self.root / "api_key.txt"
+        self.assertEqual(key_path.read_text().strip(), result["api_key"])
+        self.assertEqual(os.stat(key_path).st_mode & 0o777, 0o600)
+
+    def test_a_healthy_server_of_a_previous_run_is_reused(self) -> None:
+        nb.write_api_key(self.config, "existing-key")
+        nb.write_server_state(
+            self.config,
+            {
+                "pid": 4242,
+                "port": 8000,
+                "model_id": "model-a",
+                "fingerprint": nb.deployment_fingerprint(
+                    self.config, self.model, Path("/tmp/llama-server")
+                ),
+                "applied": {"ctx": 8192, "mtp": True, "reasoning": True},
+            },
+        )
+
+        result, output = self._main(
+            port_in_use=BusyPort(),
+            server_healthy=lambda *args, **kwargs: True,
+        )
+
+        self.assertEqual(self.started, [])
+        self.assertTrue(result["server_reused"])
+        self.assertEqual(result["api_key"], "existing-key")
+        self.assertIn("reused from a previous run", output)
+
+    def test_a_server_with_a_different_configuration_is_restarted(self) -> None:
+        nb.write_api_key(self.config, "old-key")
+        nb.write_server_state(
+            self.config,
+            {
+                "pid": 4242,
+                "port": 8000,
+                "model_id": "model-a",
+                "fingerprint": "a-different-configuration",
+                "applied": {"ctx": 4096, "mtp": False, "reasoning": False},
+            },
+        )
+
+        result, output = self._main(
+            port_in_use=BusyPort(),
+            server_healthy=lambda *args, **kwargs: True,
+        )
+
+        self.assertEqual(len(self.started), 1)
+        self.assertNotEqual(result["api_key"], "old-key")
+        self.assertTrue(result["key_rotated"])
+        self.assertEqual(len(self.stopped), 1)
+        self.assertIn("The API key was rotated", output)
+
+    def test_a_server_that_does_not_answer_is_restarted(self) -> None:
+        nb.write_api_key(self.config, "old-key")
+        nb.write_server_state(
+            self.config,
+            {
+                "pid": 4242,
+                "port": 8000,
+                "model_id": "model-a",
+                "fingerprint": nb.deployment_fingerprint(
+                    self.config, self.model, Path("/tmp/llama-server")
+                ),
+                "applied": {"ctx": 8192, "mtp": True, "reasoning": True},
+            },
+        )
+
+        result, _ = self._main(
+            port_in_use=BusyPort(),
+            server_healthy=lambda *args, **kwargs: False,
+        )
+
+        self.assertEqual(len(self.started), 1)
+        self.assertTrue(result["key_rotated"])
+        self.assertEqual(len(self.stopped), 1)
+
+    def test_a_foreign_process_on_the_port_is_never_stopped(self) -> None:
+        import contextlib
+        import io
+
+        with unittest.mock.patch.object(nb, "owns_process", lambda state: False):
+            with unittest.mock.patch.object(nb, "port_in_use", lambda host, port: True):
+                buffer = io.StringIO()
+                with self.assertRaises(RuntimeError) as caught:
+                    with contextlib.redirect_stdout(buffer):
+                        nb.main(self.config)
+
+        self.assertIn("did not start", str(caught.exception))
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.stopped, [])
+
+
+@unittest.skipUnless(REQUESTS_READY, "the requests package is not installed")
+class PublicEndpointTests(unittest.TestCase):
+    """The public route is verified against a local HTTP server."""
+
+    def setUp(self) -> None:
+        self.state = {"models_status": 200, "chat_status": 200, "body": None, "delay": 0}
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):  # noqa: N802 - http.server API
+                if outer.state["delay"]:
+                    time.sleep(outer.state["delay"])
+                if self.path.endswith("/v1/models"):
+                    self._send(
+                        outer.state["models_status"],
+                        json.dumps({"data": [{"id": "model-a"}]}).encode(),
+                    )
+                else:
+                    self._send(404, b"{}")
+
+            def do_POST(self):  # noqa: N802 - http.server API
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                outer.state["seen_auth"] = self.headers.get("Authorization")
+                outer.state["seen_path"] = self.path
+                if outer.state["delay"]:
+                    time.sleep(outer.state["delay"])
+                if outer.state["body"] is not None:
+                    self._send(outer.state["chat_status"], outer.state["body"])
+                    return
+                payload = json.dumps(
+                    {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+                ).encode()
+                self._send(outer.state["chat_status"], payload)
+
+            def _send(self, status: int, body: bytes) -> None:
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # The client gave up (timeout test).
+                    pass
+
+            def log_message(self, *args):  # noqa: D102 - silence the test server
+                return
+
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+            block_on_close = False
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.url = f"http://{host}:{port}"
+        # A session without the retry adapter: a timeout has to be seen.
+        self.session = nb.requests.Session()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_a_working_public_route_is_verified_with_a_chat_completion(self) -> None:
+        result = nb.verify_public_endpoint(self.session, self.url, "the-key", "model-a")
+
+        self.assertTrue(result["models_ok"])
+        self.assertTrue(result["inference_ok"])
+        self.assertEqual(result["kind"], "ok")
+        self.assertEqual(self.state["seen_path"], "/v1/chat/completions")
+        self.assertEqual(self.state["seen_auth"], "Bearer the-key")
+
+    def test_an_authentication_failure_is_reported(self) -> None:
+        self.state["models_status"] = 401
+        result = nb.verify_public_endpoint(self.session, self.url, "the-key", "model-a")
+
+        self.assertFalse(result["models_ok"])
+        self.assertFalse(result["inference_ok"])
+        self.assertEqual(result["kind"], "auth")
+        self.assertNotIn("the-key", result["detail"])
+
+    def test_an_upstream_error_is_reported(self) -> None:
+        self.state["chat_status"] = 500
+        result = nb.verify_public_endpoint(self.session, self.url, "the-key", "model-a")
+
+        self.assertTrue(result["models_ok"])
+        self.assertFalse(result["inference_ok"])
+        self.assertEqual(result["kind"], "upstream")
+
+    def test_a_malformed_answer_is_reported(self) -> None:
+        self.state["body"] = b"not json"
+        result = nb.verify_public_endpoint(self.session, self.url, "the-key", "model-a")
+
+        self.assertFalse(result["inference_ok"])
+        self.assertEqual(result["kind"], "invalid_response")
+
+    def test_an_answer_without_choices_is_reported(self) -> None:
+        self.state["body"] = json.dumps({"choices": []}).encode()
+        result = nb.verify_public_endpoint(self.session, self.url, "the-key", "model-a")
+
+        self.assertFalse(result["inference_ok"])
+        self.assertEqual(result["kind"], "invalid_response")
+
+    def test_an_unreachable_endpoint_is_reported(self) -> None:
+        with socket_holder() as (host, port):
+            dead = f"http://{host}:{port}"
+
+        result = nb.verify_public_endpoint(self.session, dead, "the-key", "model-a")
+
+        self.assertFalse(result["inference_ok"])
+        self.assertEqual(result["kind"], "unreachable")
+        self.assertNotIn("the-key", result["detail"])
+
+    def test_a_timeout_is_reported(self) -> None:
+        self.state["delay"] = 2.0
+        result = nb.verify_public_endpoint(
+            self.session,
+            self.url,
+            "the-key",
+            "model-a",
+            timeout=(1, 1),
+            completion_timeout=(1, 1),
+        )
+
+        self.assertFalse(result["inference_ok"])
+        self.assertEqual(result["kind"], "timeout")
 
 
 class RangeServerTests(unittest.TestCase):

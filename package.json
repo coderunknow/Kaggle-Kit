@@ -1,6 +1,6 @@
 {
   "name": "kaggle-kit",
-  "version": "0.1.0",
+  "version": "0.1.0-dev1",
   "private": true,
   "description": "Kaggle deployment notebook + browser chat client for an OpenAI-compatible llama.cpp server",
   "type": "module",
@@ -12,6 +12,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite",
     "build": "npm run typecheck && vite build && npm run build:server",
+    "check:integration": "node tools/integration-check.mjs",
     "start": "node dist/server/index.js",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit",

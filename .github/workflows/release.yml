@@ -1,0 +1,287 @@
+# Release automation for Kaggle-Kit.
+#
+# The workflow builds the release artifacts from the *tagged* commit, verifies
+# them, publishes them to a GitHub prerelease and verifies the upload. It is
+# the only supported way to produce a release: nothing is uploaded by hand.
+#
+# Trigger: a push of a version tag (`v*`).
+#
+#   git tag v0.1.0-dev1 <commit> && git push origin v0.1.0-dev1
+#
+# The assets of a release are:
+#
+#   v<version>-notebook.ipynb   the Kaggle notebook with the deployment cell
+#   v<version>-app.zip          the production build (client + backend)
+#   v<version>-source.zip       the source of the tagged commit
+#   manifest.json               every asset with its size and SHA-256
+#   SHA256SUMS                  the checksums of every asset of the release
+#   verification-report.json    the checks that were executed and their result
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build the release from'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  release:
+    name: build, verify and publish the release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve the release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "The tag '$TAG' is not a version tag (v<major>.<minor>.<patch>[-<suffix>])." >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          TAG_SHA="$(git rev-list -n 1 "$TAG")"
+          if [ "$TAG_SHA" != "$SOURCE_SHA" ]; then
+            echo "The tag $TAG points at $TAG_SHA but the checkout is $SOURCE_SHA." >&2
+            exit 1
+          fi
+          if [ -f package.json ]; then
+            MANIFEST_VERSION="$(node -p "require('./package.json').version")"
+            if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+              echo "package.json says '$MANIFEST_VERSION' but the tag says '$VERSION'." >&2
+              echo "The version metadata has to match the tag." >&2
+              exit 1
+            fi
+          fi
+          if [ ! -f "docs/release-notes/$VERSION.md" ]; then
+            echo "The release notes docs/release-notes/$VERSION.md are missing." >&2
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "source_sha=$SOURCE_SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG from $SOURCE_SHA"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the dependencies
+        run: |
+          npm ci
+          python3 -m pip install --upgrade requests
+
+      - name: Validate the source
+        run: |
+          set -euo pipefail
+          python3 tools/run_checks.py --output checks.json \
+            --command "npm run typecheck" \
+            --command "npm run lint" \
+            --command "npm test" \
+            --command "python3 -m unittest discover -s notebooks -p 'test_*.py'" \
+            --command "python3 -m unittest discover -s tools -p 'test_*.py'"
+
+      - name: Build the application
+        run: |
+          set -euo pipefail
+          npm run build
+          ls -la dist/client dist/server
+
+      - name: Check the built application
+        run: |
+          set -euo pipefail
+          npm run check:integration
+
+      - name: Stage the release artifacts
+        id: stage
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          SOURCE_SHA="${{ steps.meta.outputs.source_sha }}"
+          STAGE="release"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+
+          # 1. The notebook deliverable: the deployment script of the tagged
+          #    commit, wrapped in a notebook that Kaggle can open.
+          python3 tools/build_notebook.py \
+            --source notebooks/qwen3_8_27b_api.py \
+            --output "$STAGE/$TAG-notebook.ipynb" \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA"
+
+          # 2. The production build: the built client and the bundled backend.
+          APP_DIR="$STAGE/app"
+          mkdir -p "$APP_DIR/dist"
+          cp -r dist/client "$APP_DIR/dist/client"
+          mkdir -p "$APP_DIR/dist/server"
+          cp dist/server/index.js "$APP_DIR/dist/server/index.js"
+          cp package.json "$APP_DIR/package.json"
+          cp README.md "$APP_DIR/README.md"
+          cp LICENSE "$APP_DIR/LICENSE"
+          printf '%s\n' \
+            'Kaggle-Kit application bundle' \
+            '' \
+            '  node dist/server/index.js' \
+            '' \
+            'The backend serves the built client and the API on http://127.0.0.1:8787.' \
+            'It has no runtime dependencies. Set KAGGLE_KIT_PORT, KAGGLE_KIT_HOST,' \
+            'KAGGLE_KIT_ALLOWED_HOSTS or KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS to change the defaults.' \
+            > "$APP_DIR/README-RUN.txt"
+          ( cd "$APP_DIR" && zip -qr "../$TAG-app.zip" . )
+          rm -rf "$APP_DIR"
+
+          # 3. The source archive of the tagged commit.
+          git archive --format=zip --prefix="kaggle-kit-$VERSION/" \
+            -o "$STAGE/$TAG-source.zip" "$SOURCE_SHA"
+
+          # 4. The report of the checks that were executed.
+          python3 tools/build_release_report.py \
+            --stage "$STAGE" \
+            --checks checks.json \
+            --environment docs/release/environment.json \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --output "$STAGE/verification-report.json"
+
+          # 5. The manifest and the checksums of the release.
+          python3 tools/build_manifest.py \
+            --stage "$STAGE" \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --output "$STAGE/manifest.json" \
+            --checksums "$STAGE/SHA256SUMS"
+
+          ls -la "$STAGE"
+
+      - name: Validate the staged artifacts
+        run: |
+          set -euo pipefail
+          python3 tools/validate_release.py \
+            --stage release \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --source-sha "${{ steps.meta.outputs.source_sha }}"
+
+      - name: Publish the GitHub prerelease
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cd release
+
+          # The release notes are a template: the commit of the release is
+          # written into them before they are published.
+          sed "s/{{SOURCE_SHA}}/$SOURCE_SHA/g" "docs/release-notes/$VERSION.md" > release-notes.md
+          if ! grep -q "$SOURCE_SHA" release-notes.md; then
+            echo "The rendered release notes do not contain the commit $SOURCE_SHA." >&2
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+            DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            if [ "$PRERELEASE" != "true" ] || [ "$DRAFT" != "false" ]; then
+              echo "The release $TAG exists but is not a published prerelease (prerelease=$PRERELEASE, draft=$DRAFT)." >&2
+              echo "Refusing to change an existing release." >&2
+              exit 1
+            fi
+            echo "The prerelease $TAG exists, the assets are uploaded to it."
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" \
+              --title "$TAG" \
+              --prerelease \
+              --notes-file release-notes.md
+            echo "The prerelease $TAG was created."
+          fi
+
+          # Upload every asset. An asset that is already on the release is not
+          # overwritten: the verification step below compares the checksums.
+          for asset in "$TAG-notebook.ipynb" "$TAG-app.zip" "$TAG-source.zip" \
+                        manifest.json SHA256SUMS verification-report.json; do
+            [ -f "$asset" ] || { echo "The asset $asset is missing." >&2; exit 1; }
+            if gh release view "$TAG" --json assets --jq ".assets[].name" | grep -Fxq "$asset"; then
+              echo "The asset $asset is already on the release, it is not replaced."
+              continue
+            fi
+            gh release upload "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+            echo "Uploaded $asset"
+          done
+
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            echo "The release $TAG is not marked as a prerelease." >&2
+            exit 1
+          fi
+
+          TAG_SHA="$(git rev-list -n 1 "$TAG")"
+          if [ "$TAG_SHA" != "$SOURCE_SHA" ]; then
+            echo "The published release does not point at the built commit." >&2
+            exit 1
+          fi
+
+          # Every asset has to be on the release, downloadable and to match the
+          # checksum of the artifact that was built.
+          rm -rf downloaded
+          mkdir -p downloaded
+          gh release download "$TAG" --dir downloaded --repo "$GITHUB_REPOSITORY"
+
+          python3 tools/validate_release.py \
+            --stage release \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --downloaded downloaded
+
+          echo "The release $TAG is published and verified."

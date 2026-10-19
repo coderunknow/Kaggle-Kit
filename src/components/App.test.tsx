@@ -16,6 +16,8 @@ interface RecordedCall {
 
 interface FetchMockOptions {
   chatResponses?: Array<{ status: number; body: unknown } | 'hang'>;
+  /** Answer the chat request with an event stream. */
+  streaming?: boolean;
 }
 
 const calls: RecordedCall[] = [];
@@ -54,7 +56,11 @@ function installFetchMock(options: FetchMockOptions = {}): void {
           { stage: 'models', status: 'ok', message: 'Model list retrieved (1 model(s)).' },
           { stage: 'inference', status: 'ok', message: 'A real chat completion was returned.' },
         ],
-        capabilities: { streamingVerified: false, reasoningEffortSupported: false, notes: [] },
+        capabilities: {
+          streamingVerified: Boolean(options.streaming),
+          reasoningEffortSupported: false,
+          notes: [],
+        },
       });
     }
 
@@ -67,6 +73,22 @@ function installFetchMock(options: FetchMockOptions = {}): void {
     }
 
     if (url === '/api/proxy/chat') {
+      if (options.streaming) {
+        const encoder = new TextEncoder();
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'),
+            );
+            // The stream stays open until the request is aborted.
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+
       const next = chatResponses[chatIndex] ?? { status: 200, body: defaultCompletion() };
       chatIndex += 1;
 
@@ -409,6 +431,32 @@ describe('the chat interface', () => {
 
     await screen.findByText(/connection failed/i);
     expect(screen.getAllByText(/rejected the api key/i).length).toBeGreaterThan(0);
+  });
+
+  it('lets the user type a model ID that the server did not report', async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(within(header()).getByRole('button', { name: /settings/i }));
+    await user.click(await screen.findByRole('button', { name: /add profile/i }));
+
+    await user.type(screen.getByLabelText(/display name/i), 'Kaggle T4');
+    await user.clear(screen.getByLabelText(/base url/i));
+    await user.type(screen.getByLabelText(/base url/i), 'http://127.0.0.1:8000');
+    await user.type(screen.getByLabelText(/api key/i), API_KEY);
+
+    await user.click(screen.getByRole('button', { name: /discover models/i }));
+    await waitFor(() => expect(screen.getByLabelText(/model id/i).tagName).toBe('SELECT'));
+
+    await user.selectOptions(screen.getByLabelText(/model id/i), '__custom__');
+
+    const manual = screen.getByLabelText(/model id \(typed by hand\)/i);
+    await user.type(manual, 'my-own-model');
+
+    await user.click(screen.getByRole('button', { name: /save profile/i }));
+    await waitFor(() => expect(screen.queryByLabelText(/display name/i)).toBeNull());
+
+    expect(within(header()).getByText(/my-own-model/)).toBeTruthy();
   });
 
   it('shows the active model and the profile in the header', async () => {

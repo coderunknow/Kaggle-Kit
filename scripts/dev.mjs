@@ -8,6 +8,15 @@
 import { spawn } from 'node:child_process';
 
 const BACKEND_PORT = process.env.KAGGLE_KIT_PORT ?? '8787';
+const CLIENT_PORT = process.env.KAGGLE_KIT_CLIENT_PORT ?? '5173';
+
+// The backend only accepts browser requests from its own origin. The Vite
+// dev server forwards the original Origin header, so the dev origin has to
+// be allowed explicitly.
+const DEV_ORIGINS = [
+  `http://localhost:${CLIENT_PORT}`,
+  `http://127.0.0.1:${CLIENT_PORT}`,
+].join(',');
 
 const processes = [];
 
@@ -54,5 +63,8 @@ process.on('SIGTERM', shutdown);
 
 run('backend', 'npx', ['tsx', 'watch', 'server/index.ts'], {
   KAGGLE_KIT_PORT: BACKEND_PORT,
+  KAGGLE_KIT_ALLOWED_ORIGINS: process.env.KAGGLE_KIT_ALLOWED_ORIGINS ?? DEV_ORIGINS,
 });
-run('client', 'npx', ['vite', '--host', '0.0.0.0']);
+run('client', 'npx', ['vite', '--host', '0.0.0.0'], {
+  KAGGLE_KIT_CLIENT_PORT: CLIENT_PORT,
+});

@@ -23,6 +23,12 @@ import { loadServerConfig, type ServerConfig } from './config';
 import { createLogger, type Logger } from './logger';
 import { HttpError, readJsonBody, sendError, sendJson } from './http';
 import { ProxyService } from './proxy';
+import {
+  assertJsonContentType,
+  isAllowedOrigin,
+  resolveWithinDirectory,
+  watchForDisconnect,
+} from './requestPolicy';
 import { SecretStore } from './secrets';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -102,6 +108,19 @@ export function createApp(options: AppOptions = {}): App {
     const route = `${method} ${url.pathname}`;
 
     try {
+      // A browser page on another origin must not be able to use this proxy.
+      const origin = isAllowedOrigin(request, { allowedOrigins: config.allowedOrigins });
+      if (!origin.allowed) {
+        sendError(response, 403, origin.reason ?? 'The origin is not allowed.', {
+          kind: 'bad_request',
+        });
+        return;
+      }
+
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        assertJsonContentType(request);
+      }
+
       switch (route) {
         case 'GET /api/health': {
           sendJson(response, 200, {
@@ -236,17 +255,24 @@ export function createApp(options: AppOptions = {}): App {
       return;
     }
 
-    await streamChat(request, response, resolved, upstreamBody);
+    await streamChat(response, resolved, upstreamBody, timeoutMs);
   }
 
   async function streamChat(
-    request: http.IncomingMessage,
     response: http.ServerResponse,
     resolved: { baseUrl: string; apiKey?: string },
     upstreamBody: ChatCompletionRequestBody,
+    timeoutMs: number,
   ): Promise<void> {
     const controller = new AbortController();
-    request.on('close', () => controller.abort());
+
+    // A disconnect of the *client* cancels the upstream request. The `close`
+    // event of the request must not be used for this: it also fires when the
+    // request body was received completely.
+    const stopWatching = watchForDisconnect(response, () => controller.abort());
+
+    // A stream that never ends must not hold the connection forever.
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -254,17 +280,45 @@ export function createApp(options: AppOptions = {}): App {
     };
     if (resolved.apiKey) headers.Authorization = `Bearer ${resolved.apiKey}`;
 
-    const upstream = await fetch(joinApiPath(resolved.baseUrl, '/chat/completions'), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ ...upstreamBody, stream: true }),
-      signal: controller.signal,
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(joinApiPath(resolved.baseUrl, '/chat/completions'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ ...upstreamBody, stream: true }),
+        signal: controller.signal,
+        // Redirects are not followed: a redirect could send the prompt and
+        // the key to a host that is not allowed to see them.
+        redirect: 'manual',
+      });
+    } catch (error) {
+      clearTimeout(timeout);
+      stopWatching();
+      if (controller.signal.aborted) {
+        throw new HttpError(499, 'The client cancelled the request.');
+      }
+      throw new HttpError(
+        502,
+        `The upstream server could not be reached: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     if (!upstream.ok) {
+      clearTimeout(timeout);
+      stopWatching();
+      if ([301, 302, 303, 307, 308].includes(upstream.status)) {
+        throw new HttpError(
+          502,
+          'The upstream server answered the streaming request with a redirect. ' +
+            'The request was not forwarded to the target of the redirect.',
+        );
+      }
+      const detail = await upstream.text().catch(() => '');
       throw new HttpError(
         upstream.status,
-        `The upstream server returned HTTP ${upstream.status} for the streaming request.`,
+        `The upstream server returned HTTP ${upstream.status} for the streaming request.${
+          detail ? ` ${detail.slice(0, 300)}` : ''
+        }`,
       );
     }
 
@@ -276,6 +330,8 @@ export function createApp(options: AppOptions = {}): App {
     });
 
     if (!upstream.body) {
+      clearTimeout(timeout);
+      stopWatching();
       response.end();
       return;
     }
@@ -288,11 +344,33 @@ export function createApp(options: AppOptions = {}): App {
         if (value) response.write(Buffer.from(value));
       }
     } catch (error) {
+      // The stream broke. Tell the client instead of ending it silently, so a
+      // failed generation is not mistaken for a complete answer.
+      const aborted = controller.signal.aborted;
       logger.warn('The streaming upstream connection failed', {
         message: error instanceof Error ? error.message : String(error),
+        aborted,
       });
+
+      if (!response.writableEnded) {
+        response.write(
+          `data: ${JSON.stringify({
+            error: {
+              message: aborted
+                ? 'The request was cancelled.'
+                : 'The upstream connection failed while the answer was streamed.',
+            },
+          })}\n\n`,
+        );
+      }
     } finally {
-      response.end();
+      clearTimeout(timeout);
+      stopWatching();
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock?.();
+      if (!response.writableEnded) {
+        response.end();
+      }
     }
   }
 
@@ -380,10 +458,18 @@ async function serveStatic(
   response: http.ServerResponse,
   clientDir: string,
 ): Promise<void> {
-  const relative = decodeURIComponent(pathname).replace(/^\/+/, '');
-  const candidate = path.resolve(clientDir, relative === '' ? 'index.html' : relative);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    sendError(response, 400, 'The path is not correctly encoded.');
+    return;
+  }
 
-  if (!candidate.startsWith(path.resolve(clientDir))) {
+  const relative = decoded.replace(/^\/+/, '');
+  const candidate = resolveWithinDirectory(clientDir, relative === '' ? 'index.html' : relative);
+
+  if (!candidate) {
     sendError(response, 403, 'Forbidden path.');
     return;
   }

@@ -209,6 +209,12 @@ export const gateway = {
       if (delta.finishReason) finishReason = delta.finishReason;
     }
 
+    // A stream that was cancelled is not a finished answer. Reporting it as
+    // complete would show a truncated answer as if the model had finished.
+    if (options.signal?.aborted) {
+      throw new ApiError('aborted', 'The request was cancelled.');
+    }
+
     options.callbacks?.onDone?.({ finishReason });
 
     return {

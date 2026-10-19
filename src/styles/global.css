@@ -535,6 +535,14 @@ a {
   font-weight: 600;
 }
 
+/* A second label inside a field, for the manual model input. */
+.field__label--sub {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-subtle);
+  margin-top: var(--space-1);
+}
+
 .field__hint {
   font-size: 12px;
   color: var(--text-subtle);

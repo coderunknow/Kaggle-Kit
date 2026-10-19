@@ -29,6 +29,18 @@ Design rules that the implementation follows:
 * **No embedded secrets.** The API key is generated at runtime and stored in a
   ``0600`` file. It is printed once, in the final summary, because the
   operator has to copy it into the chat interface.
+* **One server per notebook.** The running server is described by
+  ``server-state.json`` (process id, port, model, applied options). A rerun
+  reuses a healthy server whose configuration still matches, restarts a
+  server that this cell started itself but that no longer fits, and never
+  touches a process that this cell did not start.
+* **Reported state is applied state.** The runtime bundle and the summary
+  only report options that were really passed to the binary. A plain
+  inference test proves that the model works; it never proves that
+  speculative decoding is active.
+* **The public route is tested on its own.** The public endpoint is verified
+  with an authenticated chat completion over the tunnel, separately from the
+  local server.
 
 Environment (Kaggle):
 
@@ -38,11 +50,13 @@ Environment (Kaggle):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -138,6 +152,15 @@ class DeploymentConfig:
 # --------------------------------------------------------------------------
 
 _LOG_PREFIX = "[qwen]"
+
+STATE_FILE_NAME = "server-state.json"
+KEY_FILE_NAME = "api_key.txt"
+
+# What the cell may do with the port of the local server.
+ACTION_START = "start"
+ACTION_REUSE = "reuse"
+ACTION_RESTART = "restart"
+ACTION_CONFLICT = "conflict"
 
 
 def log(message: str) -> None:
@@ -240,8 +263,22 @@ def download_resumable(
 
                 response.raise_for_status()
 
+                content_type = (response.headers.get("content-type") or "").lower()
+                if content_type.startswith("text/html"):
+                    raise IOError(
+                        "The server answered with an HTML page instead of the file."
+                    )
+
                 append = offset > 0 and response.status_code == 206
                 mode = "ab" if append else "wb"
+
+                # The length the server announces. A range answer only
+                # announces the remaining bytes.
+                expected: Optional[int] = None
+                raw_length = response.headers.get("content-length")
+                if raw_length and str(raw_length).strip().isdigit():
+                    announced = int(str(raw_length).strip())
+                    expected = announced + offset if append else announced
 
                 with open(part, mode) as handle:
                     for chunk in response.iter_content(chunk_size=4 * 1024 * 1024):
@@ -250,6 +287,12 @@ def download_resumable(
 
             if not part.exists() or part.stat().st_size < min_bytes:
                 raise IOError("The downloaded file is too small or incomplete.")
+
+            if expected is not None and part.stat().st_size != expected:
+                raise IOError(
+                    "The download was truncated: the server announced "
+                    f"{expected} bytes, {part.stat().st_size} bytes arrived."
+                )
 
             if verify_tar and not _is_valid_tar(part):
                 raise IOError("The downloaded archive is not a readable tar file.")
@@ -283,6 +326,74 @@ def _is_valid_tar(path: Path) -> bool:
             return bool(archive.getmembers())
     except Exception:  # noqa: BLE001
         return False
+
+
+def _is_within(base: Path, target: Path) -> bool:
+    """True when ``target`` is ``base`` or lives inside of it."""
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def safe_extract(archive: tarfile.TarFile, destination: Path) -> List[str]:
+    """
+    Extract an archive without letting it write outside of ``destination``.
+
+    Every member is checked before a single byte is written:
+
+    * the name of a member must stay inside the destination,
+    * a symbolic or hard link must point inside the destination,
+    * device files and named pipes are refused.
+
+    Returns the names of the extracted members.
+    """
+    destination = Path(destination).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+
+    for member in archive.getmembers():
+        name = member.name
+        if name.startswith("/") or ".." in Path(name).parts:
+            raise RuntimeError(
+                f"The archive contains an unsafe path ({name!r}); it was not extracted."
+            )
+
+        target = (destination / name).resolve()
+        if not _is_within(destination, target):
+            raise RuntimeError(
+                f"The archive would write outside of the target directory ({name!r}); "
+                "it was not extracted."
+            )
+
+        if member.issym() or member.islnk():
+            if member.islnk():
+                link_target = (destination / member.linkname).resolve()
+            else:
+                link_target = (target.parent / member.linkname).resolve()
+            if not _is_within(destination, link_target):
+                raise RuntimeError(
+                    f"The archive contains a link that points outside of the target "
+                    f"directory ({name!r}); it was not extracted."
+                )
+
+        if member.isdev() or member.isfifo():
+            raise RuntimeError(
+                f"The archive contains a device or pipe ({name!r}); it was not extracted."
+            )
+
+    names = [member.name for member in archive.getmembers()]
+    try:
+        archive.extractall(destination, filter="data")
+    except TypeError:  # pragma: no cover - Python without the extraction filter
+        archive.extractall(destination)
+    return names
+
+
+def extract_archive(archive_path: Path, destination: Path) -> List[str]:
+    """Open a tar.gz archive and extract it safely."""
+    with tarfile.open(archive_path, "r:gz") as archive:
+        return safe_extract(archive, destination)
 
 
 # --------------------------------------------------------------------------
@@ -424,8 +535,12 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
 
         for archive in (main_archive, cuda_archive):
             log(f"Extracting {archive.name}...")
-            with tarfile.open(archive, "r:gz") as tar:
-                tar.extractall(build_dir)
+            try:
+                extract_archive(archive, build_dir)
+            except RuntimeError as exc:
+                warn(f"The archive {archive.name} was not extracted: {exc}")
+                archive.unlink(missing_ok=True)
+                continue
             archive.unlink(missing_ok=True)
 
         env = library_env(config.bin_root)
@@ -453,6 +568,25 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
     )
 
 
+@dataclass
+class ServerLaunch:
+    """
+    A start-up command and the options that are really applied.
+
+    ``applied`` is the source of truth for the runtime bundle and for the
+    summary: an option is only listed when the flag was really passed to the
+    binary. ``dropped`` lists the requested options the build does not
+    understand.
+    """
+
+    command: List[str]
+    applied: Dict[str, Any]
+    dropped: List[str] = field(default_factory=list)
+
+
+MTP_FLAGS = ("--spec-type", "--spec-draft-n-max")
+
+
 def build_server_command(
     config: DeploymentConfig,
     binary: Path,
@@ -460,13 +594,33 @@ def build_server_command(
     api_key: str,
     supported: set,
     variant: Dict[str, Any],
-) -> List[str]:
+    api_key_file: Optional[Path] = None,
+) -> ServerLaunch:
     """
     Build the start-up command, using only the flags the build supports.
 
     ``variant`` selects the context size and whether speculative decoding
-    (MTP) is attempted.
+    (MTP) is attempted. The returned object also reports which options were
+    applied, so the runtime bundle never claims more than the server has.
     """
+    dropped: List[str] = []
+    applied: Dict[str, Any] = {
+        "ctx": int(variant["ctx"]),
+        "n_gpu_layers": config.n_gpu_layers,
+        "parallel": config.parallel,
+        "batch_size": config.batch_size,
+        "ubatch_size": config.ubatch_size,
+        "mtp": False,
+        "reasoning": False,
+        "split_mode": None,
+        "tensor_split": None,
+        "cache_type_k": None,
+        "cache_type_v": None,
+        "flash_attn": False,
+        "jinja": False,
+        "api_key_source": None,
+    }
+
     command = [
         str(binary),
         "--model",
@@ -475,8 +629,18 @@ def build_server_command(
         config.host,
         "--port",
         str(config.port),
-        "--api-key",
-        api_key,
+    ]
+
+    # The key is read from a file when the build supports it, so it does not
+    # show up in the process list of the machine.
+    if "--api-key-file" in supported and api_key_file is not None:
+        command += ["--api-key-file", str(api_key_file)]
+        applied["api_key_source"] = "file"
+    else:
+        command += ["--api-key", api_key]
+        applied["api_key_source"] = "argument"
+
+    command += [
         "--n-gpu-layers",
         str(config.n_gpu_layers),
         "--ctx-size",
@@ -493,34 +657,66 @@ def build_server_command(
     # unified memory pool.
     if "--split-mode" in supported:
         command += ["--split-mode", config.split_mode]
+        applied["split_mode"] = config.split_mode
+    elif config.split_mode:
+        dropped.append("split_mode")
+
     if "--tensor-split" in supported:
         command += ["--tensor-split", config.tensor_split]
+        applied["tensor_split"] = config.tensor_split
+    elif config.tensor_split:
+        dropped.append("tensor_split")
+
     if "--cache-type-k" in supported:
         command += ["--cache-type-k", config.cache_type_k]
+        applied["cache_type_k"] = config.cache_type_k
+    else:
+        dropped.append("cache_type_k")
+
     if "--cache-type-v" in supported:
         command += ["--cache-type-v", config.cache_type_v]
+        applied["cache_type_v"] = config.cache_type_v
+    else:
+        dropped.append("cache_type_v")
+
     if "--flash-attn" in supported:
         command += ["--flash-attn", "on"]
+        applied["flash_attn"] = True
+
     if "--jinja" in supported:
         command.append("--jinja")
+        applied["jinja"] = True
 
     # Reasoning effort is a start-up flag in llama.cpp.
-    if variant.get("reasoning") and "--reasoning-effort" in supported:
-        command += ["--reasoning-effort", config.reasoning_effort]
+    if variant.get("reasoning"):
+        if "--reasoning-effort" in supported:
+            command += ["--reasoning-effort", config.reasoning_effort]
+            applied["reasoning"] = True
+            applied["reasoning_effort"] = config.reasoning_effort
+        else:
+            dropped.append("reasoning")
+            log("This build has no --reasoning-effort option; the server default is used.")
 
     # Speculative decoding with the MTP head of the model.
     if variant.get("mtp"):
-        if "--spec-type" in supported and "--spec-draft-n-max" in supported:
+        if all(flag in supported for flag in MTP_FLAGS):
             command += [
                 "--spec-type",
                 "draft-mtp",
                 "--spec-draft-n-max",
                 str(config.mtp_draft_n_max),
             ]
+            applied["mtp"] = True
+            applied["mtp_draft_n_max"] = config.mtp_draft_n_max
         else:
-            log("This build does not support MTP speculative decoding, using plain inference.")
+            dropped.append("mtp")
+            log(
+                "This build does not support MTP speculative decoding "
+                f"({', '.join(flag for flag in MTP_FLAGS if flag not in supported)} "
+                "is missing); plain inference is used."
+            )
 
-    return command
+    return ServerLaunch(command=command, applied=applied, dropped=dropped)
 
 
 def server_variants(config: DeploymentConfig) -> List[Dict[str, Any]]:
@@ -537,6 +733,35 @@ def server_variants(config: DeploymentConfig) -> List[Dict[str, Any]]:
         {"ctx": 4096, "mtp": False, "reasoning": False},
     ]
     return variants
+
+
+def usable_variants(
+    variants: List[Dict[str, Any]], supported: set
+) -> List[Dict[str, Any]]:
+    """
+    The variants that are really different for this build.
+
+    A variant that needs an option the build does not understand is reduced
+    to the same behaviour as the variant without that option, so it is only
+    tried once.
+    """
+    result: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    for variant in variants:
+        reduced = dict(variant)
+        if reduced.get("mtp") and not all(flag in supported for flag in MTP_FLAGS):
+            reduced["mtp"] = False
+        if reduced.get("reasoning") and "--reasoning-effort" not in supported:
+            reduced["reasoning"] = False
+
+        marker = (reduced.get("ctx"), bool(reduced.get("mtp")), bool(reduced.get("reasoning")))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(reduced)
+
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -627,12 +852,210 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
 
 
 # --------------------------------------------------------------------------
+# Server state
+# --------------------------------------------------------------------------
+
+
+def state_file(config: DeploymentConfig) -> Path:
+    """The file that describes the server this cell started."""
+    return config.root / STATE_FILE_NAME
+
+
+def key_file(config: DeploymentConfig) -> Path:
+    """The file that holds the API key of the running server (mode 0600)."""
+    return config.root / KEY_FILE_NAME
+
+
+def read_server_state(config: DeploymentConfig) -> Optional[Dict[str, Any]]:
+    """Read the state of a previously started server, if there is one."""
+    try:
+        raw = state_file(config).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_server_state(config: DeploymentConfig, state: Dict[str, Any]) -> Path:
+    """Write the state of the running server."""
+    path = state_file(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # The state never contains the API key.
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def clear_server_state(config: DeploymentConfig) -> None:
+    state_file(config).unlink(missing_ok=True)
+
+
+def write_api_key(config: DeploymentConfig, api_key: str) -> Path:
+    """Store the API key of the running server, readable by the owner only."""
+    path = key_file(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(api_key + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def read_api_key(config: DeploymentConfig) -> Optional[str]:
+    """Read the stored API key, if there is one."""
+    try:
+        value = key_file(config).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def process_alive(pid: int) -> bool:
+    """True when a process with this id exists."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def process_cmdline(pid: int) -> str:
+    """The command line of a process, or an empty string when it is unknown."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+
+
+def owns_process(state: Optional[Dict[str, Any]]) -> bool:
+    """
+    True when the recorded process is still the ``llama-server`` of this cell.
+
+    The check looks at the command line, so a process id that was reused by an
+    unrelated program is never treated as our server.
+    """
+    if not state:
+        return False
+    try:
+        pid = int(state.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not process_alive(pid):
+        return False
+    cmdline = process_cmdline(pid)
+    if not cmdline:
+        # No /proc (not Linux): the recorded pid is the only evidence.
+        return True
+    return "llama-server" in cmdline
+
+
+def port_in_use(host: str, port: int, timeout: float = 1.0) -> bool:
+    """True when something is listening on the address."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        return sock.connect_ex((host, port)) == 0
+
+
+def deployment_fingerprint(
+    config: DeploymentConfig, model_path: Path, binary: Path
+) -> str:
+    """
+    A digest of the inputs that decide whether a running server still fits.
+
+    The digest is about the *request*, not about the result: a server that
+    had to fall back to a smaller context is still the server of this
+    configuration and is reused.
+    """
+    payload = {
+        "model_file": str(model_path),
+        "binary": str(binary),
+        "host": config.host,
+        "port": config.port,
+        "ctx_size": config.ctx_size,
+        "enable_mtp": bool(config.enable_mtp),
+        "reasoning_effort": config.reasoning_effort,
+        "n_gpu_layers": config.n_gpu_layers,
+        "split_mode": config.split_mode,
+        "tensor_split": config.tensor_split,
+    }
+    blob = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def decide_server_action(
+    *, port_busy: bool, owned: bool, healthy: bool, compatible: bool
+) -> str:
+    """
+    What the cell may do with the local port.
+
+    * ``start``    - nothing is listening, a new server is started,
+    * ``reuse``    - our own server is running, healthy and still fits,
+    * ``restart``  - our own server is running but is unhealthy or outdated,
+    * ``conflict`` - somebody else uses the port; the cell does not touch it.
+    """
+    if not port_busy:
+        return ACTION_START
+    if not owned:
+        return ACTION_CONFLICT
+    if healthy and compatible:
+        return ACTION_REUSE
+    return ACTION_RESTART
+
+
+def stop_owned_server(config: DeploymentConfig, state: Optional[Dict[str, Any]]) -> bool:
+    """
+    Stop the server of a previous run of this cell.
+
+    Only a process that is recorded in the state file *and* is still a
+    ``llama-server`` is stopped. A foreign process is never touched.
+    """
+    if not owns_process(state):
+        return False
+
+    try:
+        pid = int((state or {}).get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+
+    log(f"Stopping the llama-server of a previous run (pid {pid}).")
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        return False
+
+    for _ in range(20):
+        if not process_alive(pid):
+            return True
+        time.sleep(0.5)
+
+    warn(f"The process {pid} did not stop, it is killed now.")
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
+    return True
+
+
+# --------------------------------------------------------------------------
 # Server
 # --------------------------------------------------------------------------
 
 
 def server_healthy(session: requests.Session, config: DeploymentConfig, api_key: str) -> bool:
-    """True when a server with this API key answers on the local port."""
+    """
+    True when a server with this API key answers on the local port.
+
+    The key is the one of the *running* server: a server that was started
+    with a different key is not healthy for this key and is not reused.
+    """
     try:
         health = session.get(f"{config.local_url}/health", timeout=(3, 5))
         if health.status_code != 200:
@@ -642,9 +1065,14 @@ def server_healthy(session: requests.Session, config: DeploymentConfig, api_key:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=(5, 15),
         )
-        return models.status_code == 200
-    except requests.RequestException:
+        if models.status_code != 200:
+            return False
+        payload = models.json()
+    except (requests.RequestException, ValueError):
         return False
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return bool(data)
 
 
 def stop_process(process: Optional[subprocess.Popen]) -> None:
@@ -671,11 +1099,15 @@ def start_server(
     binary: Path,
     model_path: Path,
     api_key: str,
+    fingerprint: str = "",
+    api_key_file: Optional[Path] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Start the server and prove that it answers a real request.
 
-    Returns the model id and the configuration that worked.
+    Returns the model id and the options that were really applied. The
+    options come from the start-up command, not from the request: a fallback
+    to a smaller context or a build without MTP support is reported as such.
     """
     log_path = config.root / "llama-server.log"
     env = library_env(config.bin_root)
@@ -693,25 +1125,48 @@ def start_server(
     supported = server_flags(help_text)
     log(f"The build supports {len(supported)} command line options.")
 
-    for variant in server_variants(config):
-        command = build_server_command(
-            config, binary, model_path, api_key, supported, variant
+    variants = usable_variants(server_variants(config), supported)
+
+    for variant in variants:
+        launch = build_server_command(
+            config, binary, model_path, api_key, supported, variant, api_key_file
         )
+        applied = launch.applied
         label = (
-            f"ctx={variant['ctx']}, "
-            f"MTP={'on' if variant.get('mtp') else 'off'}, "
-            f"reasoning={'on' if variant.get('reasoning') else 'off'}"
+            f"ctx={applied['ctx']}, "
+            f"MTP={'on' if applied['mtp'] else 'off'}, "
+            f"reasoning={'on' if applied['reasoning'] else 'off'}"
         )
         log(f"Starting llama-server: {label}")
+        if launch.dropped:
+            log(f"Not supported by this build: {', '.join(launch.dropped)}.")
 
         with open(log_path, "w") as log_file:
             process = subprocess.Popen(
-                command,
+                launch.command,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 env=env,
                 start_new_session=True,
             )
+
+        # The state is written before the first check, so an interrupted run
+        # still knows which process belongs to this cell.
+        write_server_state(
+            config,
+            {
+                "pid": process.pid,
+                "host": config.host,
+                "port": config.port,
+                "model_path": str(model_path),
+                "binary": str(binary),
+                "fingerprint": fingerprint,
+                "applied": applied,
+                "dropped": launch.dropped,
+                "log_file": str(log_path),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        )
 
         ready = False
         for _ in range(150):
@@ -733,13 +1188,17 @@ def start_server(
             log(f"Running the inference test for {label}...")
             content = smoke_test(session, config, api_key, model_id)
             log(f"The inference test passed ({label}): {content!r}")
-            return model_id, dict(variant)
+            state = read_server_state(config) or {}
+            state.update({"model_id": model_id})
+            write_server_state(config, state)
+            return model_id, dict(applied)
         except Exception as exc:  # noqa: BLE001
             warn(f"The inference test of {label} failed: {type(exc).__name__}: {exc}")
 
         stop_process(process)
         warn(tail_log(log_path))
 
+    clear_server_state(config)
     raise RuntimeError(
         "The model did not pass the start-up and the inference test. The log "
         "above shows why. Common causes: not enough VRAM for the context "
@@ -893,25 +1352,181 @@ def start_public_tunnel(session: requests.Session, config: DeploymentConfig) -> 
 
 
 def verify_public_endpoint(
-    session: requests.Session, public_url: str, api_key: str
-) -> Tuple[bool, str]:
+    session: requests.Session,
+    public_url: str,
+    api_key: str,
+    model_id: Optional[str] = None,
+    timeout: Tuple[int, int] = (10, 30),
+    completion_timeout: Tuple[int, int] = (10, 90),
+) -> Dict[str, Any]:
     """
     Check that the tunnel really forwards API calls.
 
-    The local server answering is not enough: the public path has to be
-    verified separately.
+    The local server answering is not enough, so the public route is tested on
+    its own: first the model list, then a real chat completion with a small
+    output limit. The result keeps the two steps apart, so a reachable but
+    broken public route is not reported as a working one.
+
+    The API key is only sent in the ``Authorization`` header. It never
+    appears in a URL or in a message of this function.
     """
+    result: Dict[str, Any] = {
+        "models_ok": False,
+        "inference_ok": False,
+        "kind": "unknown",
+        "detail": "",
+    }
+    base = public_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key}"}
+
     try:
-        response = session.get(
-            f"{public_url}/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=(10, 30),
-        )
-        if response.status_code == 200:
-            return True, "The public endpoint answered a model list request."
-        return False, f"The public endpoint answered with HTTP {response.status_code}."
+        response = session.get(f"{base}/v1/models", headers=headers, timeout=timeout)
+    except requests.Timeout:
+        result["kind"] = "timeout"
+        result["detail"] = "The public endpoint did not answer in time."
+        return result
     except requests.RequestException as exc:
-        return False, f"The public endpoint is not reachable: {type(exc).__name__}: {exc}"
+        result["kind"] = "unreachable"
+        result["detail"] = f"The public endpoint is not reachable ({type(exc).__name__})."
+        return result
+
+    if response.status_code in (401, 403):
+        result["kind"] = "auth"
+        result["detail"] = (
+            f"The public endpoint rejected the API key (HTTP {response.status_code})."
+        )
+        return result
+
+    if response.status_code != 200:
+        result["kind"] = "upstream"
+        result["detail"] = f"The public endpoint answered with HTTP {response.status_code}."
+        return result
+
+    try:
+        payload = response.json()
+    except ValueError:
+        result["kind"] = "invalid_response"
+        result["detail"] = "The public endpoint did not answer with JSON."
+        return result
+
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not models:
+        result["kind"] = "invalid_response"
+        result["detail"] = "The public endpoint returned an empty model list."
+        return result
+
+    result["models_ok"] = True
+    model = model_id or (models[0] or {}).get("id")
+
+    try:
+        completion = session.post(
+            f"{base}/v1/chat/completions",
+            headers={**headers, "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+                "max_tokens": 8,
+                "temperature": 0,
+                "stream": False,
+            },
+            timeout=completion_timeout,
+        )
+    except requests.Timeout:
+        result["kind"] = "timeout"
+        result["detail"] = "The public chat completion did not answer in time."
+        return result
+    except requests.RequestException as exc:
+        result["kind"] = "unreachable"
+        result["detail"] = f"The public chat completion failed ({type(exc).__name__})."
+        return result
+
+    if completion.status_code in (401, 403):
+        result["kind"] = "auth"
+        result["detail"] = (
+            f"The public endpoint rejected the API key for the chat completion "
+            f"(HTTP {completion.status_code})."
+        )
+        return result
+
+    if completion.status_code != 200:
+        result["kind"] = "upstream"
+        result["detail"] = (
+            f"The public chat completion answered with HTTP {completion.status_code}."
+        )
+        return result
+
+    try:
+        data = completion.json()
+    except ValueError:
+        result["kind"] = "invalid_response"
+        result["detail"] = "The public chat completion did not answer with JSON."
+        return result
+
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not choices:
+        result["kind"] = "invalid_response"
+        result["detail"] = "The public chat completion returned no choices."
+        return result
+
+    content = ((choices[0] or {}).get("message") or {}).get("content")
+    if not isinstance(content, str):
+        result["kind"] = "invalid_response"
+        result["detail"] = "The public chat completion returned no answer text."
+        return result
+
+    result["inference_ok"] = True
+    result["kind"] = "ok"
+    result["detail"] = "The public endpoint answered an authenticated chat completion."
+    return result
+
+
+def probe_public_streaming(
+    session: requests.Session, public_url: str, api_key: str, model_id: str
+) -> Tuple[bool, str]:
+    """
+    Check whether the *public* route delivers a Server-Sent Event stream.
+
+    A Quick Tunnel does not forward a streaming answer; the result is
+    reported separately from the local streaming support, because a working
+    local stream says nothing about the public route.
+    """
+    base = public_url.rstrip("/")
+    try:
+        response = session.post(
+            f"{base}/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model_id,
+                "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+                "max_tokens": 8,
+                "temperature": 0,
+                "stream": True,
+            },
+            timeout=(10, 60),
+            stream=True,
+        )
+    except requests.Timeout:
+        return False, "The public streaming probe timed out."
+    except requests.RequestException as exc:
+        return False, f"The public streaming probe failed ({type(exc).__name__})."
+
+    if response.status_code != 200:
+        return False, f"The public streaming probe answered with HTTP {response.status_code}."
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "text/event-stream" not in content_type:
+        return False, (
+            "The public endpoint answered with "
+            f"\"{content_type or 'unknown'}\" instead of an event stream."
+        )
+
+    for chunk in response.iter_content(chunk_size=1024):
+        if chunk:
+            return True, "The public endpoint delivers an event stream."
+    return False, "The public event stream was empty."
 
 
 # --------------------------------------------------------------------------
@@ -924,9 +1539,14 @@ def write_runtime_bundle(
     api_key: str,
     model_id: str,
     model_path: Path,
-    variant: Dict[str, Any],
+    applied: Dict[str, Any],
     public_url: Optional[str],
     binary: Path,
+    *,
+    local_streaming: Optional[bool] = None,
+    public_status: Optional[Dict[str, Any]] = None,
+    reused: bool = False,
+    server_pid: Optional[int] = None,
 ) -> Dict[str, Path]:
     """
     Write the files that connect this deployment to the chat interface.
@@ -935,28 +1555,46 @@ def write_runtime_bundle(
     * ``runtime.json`` - the start-up configuration of the server,
     * ``profile.json`` - a profile that can be pasted into the chat client.
 
-    The key is never written into ``runtime.json`` or ``profile.json``.
+    The key is never written into ``runtime.json`` or ``profile.json``. The
+    runtime file only reports the options that were really applied to the
+    server.
     """
     config.root.mkdir(parents=True, exist_ok=True)
 
-    key_path = config.root / "api_key.txt"
-    key_path.write_text(api_key + "\n", encoding="utf-8")
-    key_path.chmod(0o600)
+    key_path = write_api_key(config, api_key)
 
+    public = public_status or {}
     runtime = {
         "model": model_id,
         "model_file": str(model_path),
         "model_bytes": model_path.stat().st_size if model_path.exists() else None,
-        "context_size": variant.get("ctx"),
-        "reasoning_effort": config.reasoning_effort if variant.get("reasoning") else None,
-        "mtp_speculative_decoding": bool(variant.get("mtp")),
-        "gpu_layer_offload": config.n_gpu_layers,
-        "split_mode": config.split_mode,
-        "tensor_split": config.tensor_split,
+        "context_size": applied.get("ctx"),
+        "reasoning_effort": applied.get("reasoning_effort"),
+        "reasoning_applied": bool(applied.get("reasoning")),
+        "mtp_speculative_decoding": bool(applied.get("mtp")),
+        "mtp_draft_n_max": applied.get("mtp_draft_n_max"),
+        "gpu_layer_offload": applied.get("n_gpu_layers", config.n_gpu_layers),
+        "split_mode": applied.get("split_mode"),
+        "tensor_split": applied.get("tensor_split"),
+        "cache_type_k": applied.get("cache_type_k"),
+        "cache_type_v": applied.get("cache_type_v"),
+        "flash_attn": bool(applied.get("flash_attn")),
+        "unsupported_options": list(applied.get("unsupported_options") or []),
         "local_base_url": config.local_api_url,
         "public_base_url": f"{public_url}/v1" if public_url else None,
+        "local_streaming_supported": local_streaming,
+        "public_endpoint_verified": bool(public.get("inference_ok")),
+        "public_verification": public.get("detail"),
+        "public_streaming_supported": public.get("streaming_supported"),
+        "reused_existing_server": bool(reused),
+        "server_pid": server_pid,
         "server_binary": str(binary),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "mtp_note": (
+            "The MTP draft head is enabled with --spec-type/--spec-draft-n-max. "
+            "The start-up test proves that the server answers; it does not measure "
+            "the effect of the speculative decoding."
+        ),
     }
     runtime_path = config.root / "runtime.json"
     runtime_path.write_text(json.dumps(runtime, indent=2) + "\n", encoding="utf-8")
@@ -979,17 +1617,19 @@ def write_runtime_bundle(
 
 
 def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
-    """Deploy the model and return the resulting runtime information."""
+    """
+    Deploy the model and return the resulting runtime information.
+
+    The cell can be run again: a healthy server of a previous run is reused
+    when its configuration still fits, a server of this cell that no longer
+    fits is restarted with a new key, and a process that this cell did not
+    start is never touched.
+    """
     config = config or DeploymentConfig()
     for directory in (config.root, config.model_dir, config.bin_root):
         directory.mkdir(parents=True, exist_ok=True)
 
     session = build_session()
-
-    # The key is generated for this session only. It is never stored in the
-    # repository and never written into the log output.
-    api_key = secrets.token_urlsafe(32)
-    headers = {"Authorization": f"Bearer {api_key}"}
 
     check_gpus(config)
 
@@ -1001,52 +1641,156 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
     else:
         model_path = download_model(session, config)
 
-    if server_healthy(session, config, api_key):
-        log("A healthy llama-server is already running, it is reused.")
-        model_id = list_models(session, config, api_key)
-        variant = {"ctx": config.ctx_size, "mtp": config.enable_mtp, "reasoning": True}
+    fingerprint = deployment_fingerprint(config, model_path, binary)
+    state = read_server_state(config)
+    owned = owns_process(state)
+    busy = port_in_use(config.host, config.port)
+    stored_key = read_api_key(config)
+    healthy = bool(stored_key) and busy and server_healthy(session, config, stored_key)
+    compatible = bool(state) and state.get("fingerprint") == fingerprint
+
+    action = decide_server_action(
+        port_busy=busy, owned=owned, healthy=healthy, compatible=compatible
+    )
+    log(f"Local server decision: {action} (port busy: {busy}, own process: {owned}).")
+
+    reused = False
+    rotated = False
+    server_pid: Optional[int] = None
+
+    if action == ACTION_CONFLICT:
+        raise RuntimeError(
+            f"The port {config.port} on {config.host} is used by a process that this "
+            "cell did not start. The cell never stops a foreign process. Stop that "
+            "process, or use another port in DeploymentConfig, and rerun the cell."
+        )
+
+    if action == ACTION_REUSE:
+        api_key = stored_key or ""
+        model_id = (state or {}).get("model_id") or list_models(session, config, api_key)
+        applied = dict((state or {}).get("applied") or {})
+        server_pid = (state or {}).get("pid")
+        reused = True
+        log("The llama-server of a previous run is healthy and still fits; it is reused.")
     else:
-        model_id, variant = start_server(session, config, binary, model_path, api_key)
+        if action == ACTION_RESTART:
+            stop_owned_server(config, state)
+            for _ in range(20):
+                if not port_in_use(config.host, config.port):
+                    break
+                time.sleep(0.5)
+            rotated = True
+            log("The server of the previous run does not fit this configuration any more.")
+        elif state:
+            clear_server_state(config)
+
+        # A new server gets a new key. The key of a running server is never
+        # changed behind the back of the user.
+        api_key = secrets.token_urlsafe(32)
+        write_api_key(config, api_key)
+        model_id, applied = start_server(
+            session,
+            config,
+            binary,
+            model_path,
+            api_key,
+            fingerprint=fingerprint,
+            api_key_file=key_file(config),
+        )
+        server_pid = (read_server_state(config) or {}).get("pid")
 
     local_streaming = probe_local_streaming(session, config, api_key, model_id)
     log(f"Local streaming supported: {local_streaming}")
 
     public_url: Optional[str] = None
-    public_verified = False
-    public_detail = "The public tunnel was not started."
+    public_status: Dict[str, Any] = {
+        "models_ok": False,
+        "inference_ok": False,
+        "kind": "no_tunnel",
+        "detail": "The public tunnel was not started.",
+        "streaming_supported": None,
+    }
+
     if config.enable_tunnel:
         public_url = start_public_tunnel(session, config)
         if public_url:
-            public_verified, public_detail = verify_public_endpoint(session, public_url, api_key)
-            if not public_verified:
-                warn(f"The public endpoint is not usable yet: {public_detail}")
+            public_status = verify_public_endpoint(session, public_url, api_key, model_id)
+            if public_status.get("inference_ok"):
+                supported, detail = probe_public_streaming(
+                    session, public_url, api_key, model_id
+                )
+                public_status["streaming_supported"] = supported
+                public_status["streaming_detail"] = detail
+            else:
+                warn(f"The public endpoint is not usable yet: {public_status.get('detail')}")
         else:
             warn("No public URL was returned. The local API stays available.")
 
+    applied = dict(applied)
+    applied["unsupported_options"] = (state or {}).get("dropped") or []
+
     paths = write_runtime_bundle(
-        config, api_key, model_id, model_path, variant, public_url, binary
+        config,
+        api_key,
+        model_id,
+        model_path,
+        applied,
+        public_url,
+        binary,
+        local_streaming=local_streaming,
+        public_status=public_status,
+        reused=reused,
+        server_pid=server_pid,
     )
+
+    public_verified = bool(public_status.get("inference_ok"))
+    public_detail = str(public_status.get("detail") or "")
+    public_streaming = public_status.get("streaming_supported")
 
     print("\n" + "=" * 60)
     print("QWEN API STATUS")
     print("=" * 60)
     print(f"Model:            {model_id}")
     print(f"Model file:       {model_path}")
-    print(f"Context size:     {variant.get('ctx')}")
-    print(f"Reasoning effort: {config.reasoning_effort if variant.get('reasoning') else 'server default'}")
-    print(f"MTP decoding:     {'enabled' if variant.get('mtp') else 'disabled'}")
+    print(f"Context size:     {applied.get('ctx')}")
+    if applied.get("reasoning"):
+        print(f"Reasoning effort: {applied.get('reasoning_effort')} (start-up flag)")
+    else:
+        print("Reasoning effort: server default (not changed by this cell)")
+    print(
+        "MTP decoding:     "
+        + (
+            f"enabled (--spec-type draft-mtp, --spec-draft-n-max "
+            f"{applied.get('mtp_draft_n_max')})"
+            if applied.get("mtp")
+            else "disabled"
+        )
+    )
+    if applied.get("unsupported_options"):
+        print(f"Not supported:    {', '.join(applied['unsupported_options'])}")
     print(f"Local endpoint:   {config.local_api_url}")
+    print(
+        "Local server:     "
+        + ("reused from a previous run" if reused else "started in this run")
+    )
+    print("Local inference:  verified with a real chat completion")
+    print(f"Local streaming:  {'supported' if local_streaming else 'not supported'}")
     print(f"Public endpoint:  {f'{public_url}/v1' if public_url else 'unavailable'}")
     if public_url:
-        print(f"Public status:    {public_detail}")
-    print(f"Local streaming:  {'supported' if local_streaming else 'not supported'}")
+        print(f"Public route:     {public_detail}")
+        if public_streaming is True:
+            print("Public streaming: supported")
+        elif public_streaming is False:
+            print("Public streaming: not supported (use the non streaming mode)")
     print(f"llama-server:     {binary}")
     print(f"Runtime info:     {paths['runtime']}")
     print(f"Profile template: {paths['profile']}")
     print("-" * 60)
-    print("The API key is generated for this session only.")
-    print(f"It is stored in {paths['api_key']} (mode 0600).")
-    print("Copy it into the chat interface; rotate it by restarting the cell.")
+    if rotated:
+        print("The API key was rotated because the server was restarted.")
+        print("The old key does not work any more; use the new key below.")
+    print(f"The API key is stored in {paths['api_key']} (mode 0600).")
+    print("Copy it into the chat interface. Do not publish this output.")
     print(f"API key: {api_key}")
     print("=" * 60)
 
@@ -1058,8 +1802,17 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
         "public_url": f"{public_url}/v1" if public_url else None,
         "public_verified": public_verified,
         "public_detail": public_detail,
+        "public_streaming_supported": public_streaming,
         "local_streaming": local_streaming,
-        "variant": variant,
+        "server_reused": reused,
+        "key_rotated": rotated,
+        "server_pid": server_pid,
+        "applied": applied,
+        "variant": {
+            "ctx": applied.get("ctx"),
+            "mtp": bool(applied.get("mtp")),
+            "reasoning": bool(applied.get("reasoning")),
+        },
         "paths": {name: str(path) for name, path in paths.items()},
     }
 

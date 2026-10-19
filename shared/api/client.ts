@@ -33,6 +33,17 @@ export interface OpenAIClientOptions {
   timeoutMs?: number;
   /** Injection point for tests. */
   fetchImpl?: FetchLike;
+  /**
+   * Maximum number of redirects that are followed. Redirects are followed
+   * manually so that every hop can be validated.
+   */
+  maxRedirects?: number;
+  /**
+   * Called with every redirect target. Returning `false` refuses the
+   * redirect. A redirect to a different origin is always refused when an API
+   * key is configured, so the key can never leak to another host.
+   */
+  validateRedirect?: (target: string) => boolean;
 }
 
 export interface RequestOptions {
@@ -56,6 +67,8 @@ export class OpenAIClient {
   private readonly apiKey?: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: FetchLike;
+  private readonly maxRedirects: number;
+  private readonly validateRedirect?: (target: string) => boolean;
 
   constructor(options: OpenAIClientOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
@@ -65,6 +78,8 @@ export class OpenAIClient {
     this.apiKey = options.apiKey?.trim() || undefined;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.maxRedirects = options.maxRedirects ?? 5;
+    this.validateRedirect = options.validateRedirect;
   }
 
   /** The base URL without the `/v1` suffix, for display purposes. */
@@ -149,13 +164,63 @@ export class OpenAIClient {
     }
 
     let response: Response;
+    let currentUrl = url;
+    let currentMethod = init.method;
+    let currentBody = init.body;
+
     try {
-      response = await this.fetchImpl(url, {
-        method: init.method,
-        headers,
-        body: init.body,
-        signal: controller.signal,
-      });
+      for (let hop = 0; ; hop += 1) {
+        const hopHeaders: Record<string, string> = { ...headers };
+        if (currentMethod === 'GET') delete hopHeaders['Content-Type'];
+
+        response = await this.fetchImpl(currentUrl, {
+          method: currentMethod,
+          headers: hopHeaders,
+          body: currentBody,
+          signal: controller.signal,
+          // Redirects are followed manually so that every hop is validated.
+          redirect: 'manual',
+        });
+
+        const location = response.headers.get('location');
+        const isRedirect = [301, 302, 303, 307, 308].includes(response.status) && Boolean(location);
+
+        if (!isRedirect || hop >= this.maxRedirects) {
+          if (isRedirect) {
+            throw new ApiError(
+              'bad_request',
+              'The endpoint redirected too many times.',
+              { hint: 'Check the base URL of the endpoint.' },
+            );
+          }
+          break;
+        }
+
+        const target = this.resolveRedirect(currentUrl, location as string);
+
+        if (this.apiKey && new URL(target).origin !== new URL(this.baseUrl).origin) {
+          throw new ApiError(
+            'bad_request',
+            'The endpoint tried to redirect to a different origin. The API key is not sent to another host.',
+            { hint: 'Point the profile at the final URL of the endpoint.' },
+          );
+        }
+
+        if (this.validateRedirect && !this.validateRedirect(target)) {
+          throw new ApiError(
+            'bad_request',
+            `The endpoint redirected to ${new URL(target).host}, which is not on the allow list of this proxy.`,
+            { hint: 'Add the host to KAGGLE_KIT_ALLOWED_HOSTS or use a different endpoint.' },
+          );
+        }
+
+        // 303 (and 301/302 for POST) turn the request into a GET.
+        if (response.status === 303 || (currentMethod === 'POST' && [301, 302].includes(response.status))) {
+          currentMethod = 'GET';
+          currentBody = undefined;
+        }
+        currentUrl = target;
+      }
     } catch (error) {
       if (timedOut) {
         throw new ApiError(
@@ -167,7 +232,8 @@ export class OpenAIClient {
       if (options.signal?.aborted) {
         throw new ApiError('aborted', 'The request was cancelled.', { cause: error });
       }
-      throw this.toNetworkError(error, url);
+      if (error instanceof ApiError) throw error;
+      throw this.toNetworkError(error, currentUrl);
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onExternalAbort);
@@ -197,10 +263,19 @@ export class OpenAIClient {
     }
   }
 
+  /** Resolve a redirect target against the current URL. */
+  private resolveRedirect(currentUrl: string, location: string): string {
+    try {
+      return new URL(location, currentUrl).toString();
+    } catch {
+      throw new ApiError('invalid_response', 'The endpoint returned an unusable redirect target.');
+    }
+  }
+
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'User-Agent': 'Kaggle-Kit/0.1',
+      'User-Agent': 'Kaggle-Kit/0.1.0-dev1',
     };
 
     for (const [key, value] of Object.entries(extra ?? {})) {

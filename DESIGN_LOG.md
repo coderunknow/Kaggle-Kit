@@ -190,6 +190,159 @@ unknown routes and the absence of the key in the answers and in the logs.
 
 ---
 
+## 2026-10-19 — Remediation of PR #1 (append only)
+
+This entry records the second pass over the branch `arena/b94557e7-kaggle-kit`.
+The entries above are unchanged.
+
+### 7. Decisions
+
+**7.1 The deployment cell owns exactly one server, and it only ever stops a
+process it started itself.** A new file `server-state.json` describes the
+running server: process id, host, port, model, binary, a digest of the
+requested configuration (`fingerprint`) and the options that were really
+applied (`applied`). The cell reads the file, checks whether the recorded
+process is still alive *and* still a `llama-server` (the command line is
+read from `/proc/<pid>/cmdline`), and then decides:
+
+| Situation | Action |
+| --- | --- |
+| nothing is listening | `start` – a new server with a new key |
+| our own server, healthy, configuration still fits | `reuse` – the key stays valid |
+| our own server, unhealthy or outdated | `restart` – the old process is stopped, a new key is created |
+| something else is listening | `conflict` – the cell reports it and stops, it never kills a foreign process |
+
+The digest is built from the *request* (model file, binary, host, port,
+context size, MTP, reasoning effort, GPU split) and not from the result, so
+a server that had to fall back to a smaller context is still the server of
+this configuration and is reused instead of being restarted on every run.
+
+**7.2 The key belongs to the server process.** `api_key.txt` (mode `0600`)
+holds the key of the server that is running. A reuse keeps the key, a
+restart rotates it and the summary says so. The key is handed to
+`llama-server` through `--api-key-file` when the installed build supports
+it, so it does not appear in the process list.
+
+**7.3 Only the applied options are reported.** `build_server_command()`
+returns a `ServerLaunch` with the command, the `applied` options and the
+`dropped` options. `runtime.json` and the summary are built from `applied`,
+so a build without `--spec-type` is reported as `MTP decoding: disabled`.
+The smoke test stays a plain chat completion: it proves that the model
+answers and it never claims that speculative decoding is active.
+`usable_variants()` removes a variant that becomes identical to another one
+after the unsupported options are removed, so a build without MTP support
+does not start the same configuration twice.
+
+**7.4 The public route is verified on its own.** `verify_public_endpoint()`
+does a model list request *and* an authenticated chat completion with a
+small output limit over the tunnel, validates the structure of the answer
+and classifies the failure (`auth`, `upstream`, `timeout`, `unreachable`,
+`invalid_response`). The public streaming support is probed separately from
+the local one, because a Quick Tunnel does not forward an event stream while
+the local server does. The local state is kept when the public route fails
+and the summary never claims a complete success.
+
+**7.5 The backend refuses browser requests from another origin.** A request
+with an `Origin` header must come from the origin of the server itself or
+from `KAGGLE_KIT_ALLOWED_ORIGINS`; a request with a body must use
+`Content-Type: application/json`. Both are cheap, they do not need a
+token, and they remove the cross site request forgery risk of a proxy that
+binds to the loopback interface.
+
+**7.6 The upstream policy stays open by default and is explicit when it is
+closed.** A blanket restriction would break the main use case (an arbitrary
+OpenAI-compatible endpoint, a `llama-server` on `127.0.0.1`). The controls
+are therefore opt-in and documented: `KAGGLE_KIT_ALLOWED_HOSTS` (with
+`*.example.com` patterns and normalized host names) and
+`KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`. The client follows redirects
+manually, validates every hop against the same policy and refuses a
+redirect to another origin as soon as an API key is configured, so the key
+can never leak and the allow list cannot be bypassed with a redirect.
+
+**7.7 The containment check is a path check, not a text check.** The static
+file handler resolves the request against the client directory and compares
+the result with `path.relative`. A traversal, an absolute path, a null byte
+and a sibling directory with the same prefix are all refused. The check was
+not "block `..`": the encoded slash (`%2f`) reaches the file resolution
+through the URL parser, so the text of the path says nothing about where the
+file ends up.
+
+**7.8 The disconnect of a client is detected on the response.** The `close`
+event of the *request* fires when the request body was received, not when
+the client goes away; the `close` event of the *response* fires when the
+connection is gone. A response that was written completely is not a
+disconnect. The upstream request is aborted, the reader of the upstream body
+is closed and the stream has a timeout.
+
+**7.9 The download is only accepted when it is the file.** An HTML answer is
+refused, the announced `Content-Length` is compared with the number of
+bytes that arrived, and the archives are extracted with a validated member
+list: no absolute path, no `..`, no link that points outside of the target
+directory, no device file. No checksum is invented: the release assets of
+`llama.cpp` do not ship one that could be verified here, so the integrity
+that *is* checked is the one that can be checked (the size, the tar
+structure, the magic bytes of the model file).
+
+### 8. Validation (2026-10-19)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Install | `npm ci` | exit 0, `found 0 vulnerabilities` |
+| Types | `npm run typecheck` | exit 0 |
+| Lint | `npm run lint` | exit 0 |
+| Tests | `npm test` | exit 0, 143 tests in 15 files |
+| Build | `npm run build` | exit 0 |
+| Built application | `npm run check:integration` | exit 0, 14/14 checks |
+| Notebook | `python3 -m unittest discover -s notebooks -p "test_*.py"` | exit 0, 39 tests |
+| Whitespace | `git diff --check` | exit 0 |
+
+The six security tests of `server/app.security.test.ts` and the cancellation
+test of `server/app.streaming.test.ts` were run against the **old**
+implementation as well: they fail there and pass with the fix. The other
+new tests are new behaviour and have no predecessor.
+
+### 9. What a maintainer has to run on Kaggle
+
+The parts that cannot be verified in the sandbox, with the exact steps:
+
+1. **GPU detection** – run the cell with *GPU T4 x2* and check the log
+   `Detected 2 GPU(s)`. With one GPU the cell has to abort with the
+   actionable message.
+2. **Binary and model** – the log has to show `llama.cpp is ready: …` and
+   `The model is ready: … (12.12 GB)`. The second run has to show
+   `Reusing the model: …`.
+3. **Start-up** – the summary has to show the context size that was applied
+   and `MTP decoding: enabled (--spec-type draft-mtp, --spec-draft-n-max 2)`
+   on a build that supports the flags, `MTP decoding: disabled` and
+   `Not supported: mtp` on a build that does not.
+4. **Real inference** – `Local inference: verified with a real chat
+   completion` and an answer in the log of the smoke test.
+5. **Public inference** – `Public route: The public endpoint answered an
+   authenticated chat completion.` and `Public streaming: not supported`.
+6. **Rerun** – run the cell a second time in the same session: the summary
+   has to show `Local server: reused from a previous run` and the *same*
+   key. Change `ctx_size` and run it again: the summary has to show
+   `Local server: started in this run` and `The API key was rotated …`.
+7. **Failure and cleanup** – occupy the port with another process and run
+   the cell: it has to report the conflict and stop, without killing the
+   foreign process.
+
+### 10. Remaining limits
+
+* The allow list of the upstream works on the host name, not on the address
+  it resolves to. A host that resolves to a private address is not detected
+  (DNS rebinding). This is a documented trade-off of a tool that has to
+  reach a `llama-server` on the loopback interface.
+* Any program on the machine can talk to the backend. The origin check stops
+  a page of another site, not a local program. The backend has to stay on the
+  loopback interface.
+* The MTP flags are reported as *applied*, not as *measured*. The effect of
+  the speculative decoding on the answer is not measured by the smoke test.
+* The component tests run in jsdom. They are not a browser test; the real
+  rendering, the copy button, the keyboard navigation and the small screen
+  layout are still unverified in a real browser.
+
+
 ## 2026-10-19 – System prompt research and Qwen prompt optimization
 
 ### Objective (as received)
@@ -294,3 +447,107 @@ as an untested hypothesis and records the dry-run output verbatim.
   coding, research) instead of a single recommended prompt? The research found
   that conditioning modules on real capabilities matters; today there is exactly
   one capability set.
+
+
+---
+
+## 2026-10-19 – Release preparation for `v0.1.0-dev1`
+
+### What this entry covers
+
+The preparation of the first prerelease on the branch
+`arena/b94557e7-kaggle-kit` (pull request #1). The merge, the tag and the
+published release are recorded in a later entry, because the outcome was not
+known when this entry was written.
+
+### The release is built by a workflow, not by hand
+
+`.github/workflows/release.yml` is the only supported way to publish a
+release. It is triggered by a push of a version tag and
+
+1. checks out the tagged commit and refuses a tag whose commit is not the
+   commit of the checkout,
+2. refuses a tag whose version differs from the version of `package.json`,
+3. runs the checks of the project and records every command, its exit code
+   and its output in `checks.json`,
+4. builds the application and drives the built bundle against the mock
+   upstream,
+5. stages the assets in `release/`:
+   * `v<version>-notebook.ipynb` – the deployment script of the tagged commit
+     as a notebook that Kaggle can open, generated by
+     `tools/build_notebook.py`. The generator refuses a source that contains
+     a literal key.
+   * `v<version>-app.zip` – the built client, the bundled backend, the
+     package file, the licence and the instructions to run it.
+   * `v<version>-source.zip` – `git archive` of the tagged commit.
+   * `verification-report.json` – the commands that were executed, their
+     result, the commit and the environments that were tested and the ones
+     that were not (`docs/release/environment.json`).
+   * `manifest.json` – every asset with its size, its SHA-256, the build
+     commands and the platform requirements.
+   * `SHA256SUMS` – the checksums of every asset of the release except the
+     file itself.
+6. validates the staged assets with `tools/validate_release.py` and refuses
+   the release when an asset is missing, empty, unexpected, corrupt, when the
+   manifest or the checksum file does not match, when the notebook does not
+   match the deployment script of the commit, when an archive contains a key
+   file or something that looks like a secret, or when the release notes are
+   missing,
+7. creates the prerelease for the tag (or uses the existing one, but never
+   changes a stable release into a prerelease and never replaces an asset
+   that is already published),
+8. downloads the published assets again and compares every one of them with
+   the artifact that was built. The workflow fails when they differ.
+
+The permissions of the workflow are `contents: write`, nothing else. The
+token stays in the platform, no key and no tunnel URL is written into the
+source or into an archive.
+
+### A redirect of the upstream was still followed in the stream
+
+The review of the diff for the release found that the *streaming* request of
+the proxy used a plain `fetch` without `redirect: 'manual'`, while the other
+requests of the server already refused a redirect. A malicious or a broken
+upstream could answer the streaming request with a redirect and the proxy
+would have sent the prompt - and the authorization header - to the target of
+the redirect. The request now uses `redirect: 'manual'` and a redirect is
+answered with `502` and an explanation instead of being followed. The
+regression test in `server/app.streaming.test.ts` starts a second server as
+the target of the redirect and proves that it is not reached; the test fails
+against the old implementation.
+
+### The trust boundary of the proxy (unchanged, documented)
+
+The backend binds to the loopback interface by default. The check of the
+origin of a request is protection against cross site requests, it is *not* an
+authentication: every program on the machine can use the proxy. The upstream
+is not restricted by default, the allow list `KAGGLE_KIT_ALLOWED_HOSTS` has
+to be set explicitly, and a name that is allowed can be changed by DNS after
+the check, so the allow list does not protect against DNS rebinding. These
+limits are stated in the release notes and in `docs/security.md`; they were
+not changed by this release, because a restriction that breaks a legitimate
+arbitrary endpoint is worse than a documented limit.
+
+### Validation (executed on the branch, before the merge)
+
+* `npm run typecheck` – passed.
+* `npm run lint` – passed, no findings.
+* `npm test` – **155 tests in 16 files**, all passed (154 before the redirect
+  fix, 143 before the merge with the research branch).
+* `npm run build` – passed.
+* `npm run check:integration` – **14 of 14**, the built bundle against the
+  mock upstream.
+* `python3 -m unittest discover -s notebooks -p "test_*.py"` – **39 tests**,
+  all passed.
+* `python3 -m unittest discover -s tools -p "test_*.py"` – **13 tests**, all
+  passed; they prove that the validator refuses a release that is incomplete,
+  corrupt, inconsistent or that carries a secret.
+* `tools/release-dry-run.sh` – the steps of the workflow that do not need
+  GitHub, the staged release was valid.
+
+### Not verified
+
+The behaviour of the release on a real Kaggle GPU runtime, with a real model,
+a real Cloudflare Quick Tunnel and a real browser is **not** verified. The
+automated checks run against stubs, a mock upstream and jsdom. The release
+notes of the version state this for every point that is not covered.
