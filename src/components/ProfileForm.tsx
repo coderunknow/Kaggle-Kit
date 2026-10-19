@@ -8,10 +8,20 @@
 
 import { useMemo, useState } from 'react';
 
-import { describeErrorKind } from '../../shared/api/errors';
-import type { ServerCapabilities } from '../../shared/api/requests';
+import { ApiError, describeErrorKind } from '../../shared/api/errors';
 import { validateProfileDraft } from '../../shared/api/validation';
 import type { ApiProfile, ConnectionTestResult, CredentialStorage } from '../../shared/domain';
+import {
+  CONNECTION_STAGE_LABELS,
+  CONNECTION_STAGE_ORDER,
+  CONNECTION_STAGE_STATUS_LABELS,
+  connectionFailureResult,
+  effectiveProfileTarget,
+  profileConfigFingerprint,
+  profileFingerprint,
+  resolveProfileCredential,
+  type CredentialSnapshot,
+} from '../../shared/connection';
 import {
   QWEN_SYSTEM_PROMPT,
   QWEN_SYSTEM_PROMPT_ID,
@@ -65,15 +75,37 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<string[]>([]);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<ConnectionTestResult | undefined>(
-    app.state.connectionTests[profile.id],
-  );
-  const [testError, setTestError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | undefined>(() => {
+    const stored = app.state.connectionTests[profile.id];
+    const credential = resolveProfileCredential(profile, app.state);
+    return stored && stored.configFingerprint === profileFingerprint(profile, credential)
+      ? stored
+      : undefined;
+  });
+  const [testedConfig, setTestedConfig] = useState<string | undefined>(() => {
+    const stored = app.state.connectionTests[profile.id];
+    const credential = resolveProfileCredential(profile, app.state);
+    return stored && stored.configFingerprint === profileFingerprint(profile, credential)
+      ? profileConfigFingerprint(profile)
+      : undefined;
+  });
+  const [testAttached, setTestAttached] = useState(false);
+  const [testSnapshot, setTestSnapshot] = useState<
+    | {
+        config: string;
+        /** The key that was typed for the test; empty when the stored key was used. */
+        typedKey: string;
+        result: ConnectionTestResult;
+      }
+    | undefined
+  >(undefined);
+  const [formError, setFormError] = useState<string | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [draftModels, setDraftModels] = useState<string[] | undefined>(undefined);
 
-  const discoveredModels = app.state.discoveredModels[profile.id] ?? [];
+  const discoveredModels = draftModels ?? app.state.discoveredModels[profile.id] ?? [];
 
   // A model that is not in the discovered list can only be typed by hand.
   const [manualModel, setManualModel] = useState(
@@ -116,7 +148,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
   };
 
   /** The credential that would be used for this form state. */
-  const credentialFor = (): { apiKey?: string; secretRef?: string } => {
+  const credentialFor = (): CredentialSnapshot => {
     switch (form.credentialStorage) {
       case 'session':
         return { apiKey: form.apiKey.trim() || app.state.sessionKeys[profile.id] };
@@ -156,6 +188,27 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     credentialStorage: form.credentialStorage,
   });
 
+  const savedCredential = resolveProfileCredential(profile, app.state);
+  const savedFingerprint = profileFingerprint(profile, savedCredential);
+  const savedConfig = profileConfigFingerprint(profile);
+  const draftProfile = effectiveProfile();
+  const draftConfig = profileConfigFingerprint(draftProfile);
+  const typedKey = form.apiKey.trim();
+
+  /**
+   * A test may only update the stored state of the saved profile when it ran
+   * against exactly that saved configuration and its saved credential. A
+   * typed key, a new profile and any unsaved field make the result local to
+   * this editor.
+   */
+  const canAttachTest =
+    !isNew &&
+    !typedKey &&
+    form.credentialStorage === profile.credentialStorage &&
+    draftConfig === savedConfig;
+
+  const testIsCurrent = testResult !== undefined && testedConfig === draftConfig;
+
   const handleSave = async () => {
     if (!validation.ok) {
       setErrors(validation.errors);
@@ -164,27 +217,79 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     setErrors({});
     setNotes(validation.notes);
     setSaving(true);
+    setFormError(null);
 
     const target = effectiveProfile();
+    const usedTypedKey = Boolean(typedKey);
 
     try {
       const secretRef = await storeServerSecret();
+      const savedProfile: ApiProfile = { ...target, secretRef };
 
-      app.saveProfile({ ...target, secretRef });
+      app.saveProfile(savedProfile);
       // A brand new profile becomes the active one so the chat can use it.
       // Editing an existing profile must not silently change the selection.
       if (isNew) app.selectProfile(target.id);
 
-      if (form.credentialStorage === 'session' && form.apiKey.trim()) {
-        app.setSessionKey(profile.id, form.apiKey.trim());
+      if (form.credentialStorage === 'session' && typedKey) {
+        app.setSessionKey(profile.id, typedKey);
       }
-      if (form.credentialStorage === 'browser' && form.apiKey.trim()) {
-        app.setBrowserKey(profile.id, form.apiKey.trim());
+      if (form.credentialStorage === 'browser' && typedKey) {
+        app.setBrowserKey(profile.id, typedKey);
+      }
+
+      // The result may only be attached when the credential that was tested
+      // is exactly the credential that is now being saved.
+      const sameCredential =
+        testSnapshot !== undefined &&
+        (testSnapshot.typedKey !== '' ? typedKey === testSnapshot.typedKey : typedKey === '');
+      const matchingTest =
+        testSnapshot !== undefined &&
+        profileConfigFingerprint(savedProfile) === testSnapshot.config &&
+        sameCredential;
+
+      if (matchingTest && testSnapshot) {
+        const savedCredentialForTest: CredentialSnapshot =
+          savedProfile.credentialStorage === 'server'
+            ? { secretRef }
+            : {
+                apiKey:
+                  savedProfile.credentialStorage === 'browser'
+                    ? app.state.browserKeys[profile.id] ?? typedKey
+                    : app.state.sessionKeys[profile.id] ?? typedKey,
+              };
+        const fingerprint = profileFingerprint(savedProfile, savedCredentialForTest);
+
+        // Dispatch after the profile and the key, so this result belongs to
+        // the configuration that was just saved instead of being wiped by
+        // the invalidation of the previous one.
+        app.dispatch({
+          type: 'connectionTest/set',
+          profileId: profile.id,
+          result: { ...testSnapshot.result, configFingerprint: fingerprint },
+        });
+        if (testSnapshot.result.capabilities) {
+          app.dispatch({
+            type: 'capabilities/set',
+            profileId: profile.id,
+            capabilities: testSnapshot.result.capabilities,
+          });
+        } else {
+          app.dispatch({ type: 'capabilities/clear', profileId: profile.id });
+        }
+      } else if (form.credentialStorage === 'server' && usedTypedKey) {
+        // The key was written but the test does not describe the saved
+        // configuration. Never leave an older "connected" state behind.
+        app.dispatch({ type: 'connection/invalidate', profileId: profile.id, models: true });
+      }
+
+      if (isNew && draftModels) {
+        app.dispatch({ type: 'models/set', profileId: target.id, models: draftModels });
       }
 
       onSaved();
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : String(error));
+      setFormError(error instanceof Error ? error.message : String(error));
     } finally {
       setSaving(false);
     }
@@ -197,13 +302,15 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     }
     setErrors({});
     setTesting(true);
-    setTestError(null);
+    setFormError(null);
 
     const target = effectiveProfile();
+    const credential = credentialFor();
+    const usedTypedKey = Boolean(typedKey);
+    const attach = canAttachTest;
+    const attachFingerprint = savedFingerprint;
 
     try {
-      const credential = credentialFor();
-
       const result = await gateway.testConnection({
         baseUrl: target.baseUrl,
         model: target.modelId || undefined,
@@ -211,22 +318,77 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
         ...credential,
       });
 
-      setTestResult(result);
-      app.dispatch({ type: 'connectionTest/set', profileId: profile.id, result });
-
-      if (result.capabilities) {
-        app.dispatch({
-          type: 'capabilities/set',
-          profileId: profile.id,
-          capabilities: result.capabilities,
-        });
-      }
-
+      // The proxy used the first model when the profile had none. Reflect
+      // that in the form so the saved profile names the model that was
+      // actually tested.
       if (result.modelId && !target.modelId) {
         update('modelId', result.modelId);
       }
+
+      const testedProfile: ApiProfile = {
+        ...target,
+        // A failed test may not name a model; keep the configured one so the
+        // result still belongs to the configuration that was just tested.
+        modelId: result.modelId || target.modelId,
+      };
+
+      setTestResult(result);
+      setTestedConfig(profileConfigFingerprint(testedProfile));
+      setTestAttached(attach);
+      setTestSnapshot({
+        config: profileConfigFingerprint(testedProfile),
+        typedKey: usedTypedKey ? typedKey : '',
+        result,
+      });
+
+      if (attach) {
+        app.dispatch({
+          type: 'connectionTest/set',
+          profileId: profile.id,
+          result: { ...result, configFingerprint: attachFingerprint },
+        });
+        if (result.capabilities) {
+          app.dispatch({
+            type: 'capabilities/set',
+            profileId: profile.id,
+            capabilities: result.capabilities,
+          });
+        } else {
+          // A failed test must never leave a streaming verification behind.
+          app.dispatch({ type: 'capabilities/clear', profileId: profile.id });
+        }
+      }
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : String(error));
+      const apiError = error instanceof ApiError ? error : undefined;
+      const targetInfo = effectiveProfileTarget(target);
+      const failure = connectionFailureResult({
+        requestedBaseUrl: targetInfo.requestedBaseUrl,
+        baseUrl: targetInfo.baseUrl,
+        baseUrlChanged: targetInfo.changed,
+        errorKind: apiError?.kind ?? 'unknown',
+        errorMessage:
+          apiError?.message ?? (error instanceof Error ? error.message : String(error)),
+        ...(apiError?.hint ? { errorHint: apiError.hint } : {}),
+        ...(apiError?.httpStatus !== undefined ? { httpStatus: apiError.httpStatus } : {}),
+      });
+
+      setTestResult(failure);
+      setTestedConfig(profileConfigFingerprint(target));
+      setTestAttached(attach);
+      setTestSnapshot({
+        config: profileConfigFingerprint(target),
+        typedKey: usedTypedKey ? typedKey : '',
+        result: failure,
+      });
+
+      if (attach) {
+        app.dispatch({
+          type: 'connectionTest/set',
+          profileId: profile.id,
+          result: { ...failure, configFingerprint: attachFingerprint },
+        });
+        app.dispatch({ type: 'capabilities/clear', profileId: profile.id });
+      }
     } finally {
       setTesting(false);
     }
@@ -239,22 +401,30 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     }
     setErrors({});
     setDiscovering(true);
-    setTestError(null);
+    setFormError(null);
+
+    const target = effectiveProfile();
+    const credential = credentialFor();
 
     try {
-      const credential = credentialFor();
-
       const models = await gateway.listModels({
-        baseUrl: validation.normalizedBaseUrl ?? form.baseUrl,
-        timeoutMs: profile.timeoutMs,
+        baseUrl: target.baseUrl,
+        timeoutMs: target.timeoutMs,
         ...credential,
       });
-      app.dispatch({ type: 'models/set', profileId: profile.id, models });
+
+      if (canAttachTest) {
+        app.dispatch({ type: 'models/set', profileId: profile.id, models });
+      } else {
+        setDraftModels(models);
+      }
+
       if (models.length > 0 && !form.modelId) {
         update('modelId', models[0] as string);
+        setManualModel(false);
       }
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : String(error));
+      setFormError(error instanceof Error ? error.message : String(error));
     } finally {
       setDiscovering(false);
     }
@@ -323,6 +493,15 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           answers on <code>http://127.0.0.1:8000/v1</code>. A missing <code>/v1</code> is added
           automatically.
         </span>
+        {validation.normalizedBaseUrl &&
+        validation.normalizedBaseUrl !== form.baseUrl.trim() ? (
+          <span className="field__hint">
+            Entered: <code>{form.baseUrl.trim()}</code>
+            <br />
+            Effective base URL: <code>{validation.normalizedBaseUrl}</code> — the connection test
+            and the chat use this value.
+          </span>
+        ) : null}
         {errors.baseUrl ? <span className="field__error">{errors.baseUrl}</span> : null}
       </div>
 
@@ -546,17 +725,38 @@ npm start`}
           <Icon name="refresh" size={13} />
           {discovering ? 'Loading…' : 'Discover models'}
         </button>
-        <span className="text-subtle">Tests use the values above, even before saving.</span>
+        <span className="text-subtle">
+          Tests use the values above. A test of unsaved values is shown here only; it does not
+          change the saved profile&apos;s status.
+        </span>
       </div>
 
-      {testError ? (
+      {formError ? (
         <div className="notice notice--danger" style={{ marginBottom: 12 }}>
-          <strong>The test could not be completed</strong>
-          {testError}
+          <strong>The action could not be completed</strong>
+          {formError}
         </div>
       ) : null}
 
-      {testResult ? <TestResultView result={testResult} /> : null}
+      {testResult && !testIsCurrent ? (
+        <div className="notice notice--info" style={{ marginBottom: 12 }}>
+          <strong>The form changed since the last test</strong>
+          Run <em>Test connection</em> again to check the values that are shown now.
+        </div>
+      ) : null}
+
+      {testResult && testIsCurrent ? (
+        <>
+          {!testAttached ? (
+            <div className="notice notice--info" style={{ marginBottom: 12 }}>
+              <strong>This test used unsaved values</strong>
+              Save the profile to use this configuration. The saved profile keeps its previous
+              status until then.
+            </div>
+          ) : null}
+          <TestResultView result={testResult} />
+        </>
+      ) : null}
 
       <div className="row row--between form-footer">
         {isNew ? (
@@ -595,18 +795,46 @@ npm start`}
 }
 
 export function TestResultView({ result }: { result: ConnectionTestResult }) {
+  const orderedStages = CONNECTION_STAGE_ORDER.map((stage) =>
+    result.stages.find((entry) => entry.stage === stage),
+  ).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
+  const streaming = result.stages.find((entry) => entry.stage === 'streaming');
+
   return (
     <div className="test-result" aria-live="polite">
       <div className="row">
         <Badge tone={result.ok ? 'ok' : 'danger'}>
-          {result.ok ? 'Connection works' : 'Connection failed'}
+          {result.ok ? 'Connected' : 'Connection failed'}
         </Badge>
+        {result.ok ? <Badge tone="info">inference verified</Badge> : null}
         {result.modelId ? <Badge tone="info">model: {result.modelId}</Badge> : null}
-        {result.capabilities?.streamingVerified ? <Badge tone="ok">streaming verified</Badge> : null}
+        {streaming?.status === 'ok' ? (
+          <Badge tone="ok">streaming verified</Badge>
+        ) : (
+          <Badge tone="neutral">streaming not verified</Badge>
+        )}
       </div>
 
+      {result.baseUrl ? (
+        <div className="field__hint">
+          Tested endpoint: <code>{result.baseUrl}</code>
+          {result.baseUrlChanged && result.requestedBaseUrl ? (
+            <>
+              <br />
+              Entered: <code>{result.requestedBaseUrl}</code> (normalized before the test)
+            </>
+          ) : null}
+          {result.testedAt ? (
+            <>
+              <br />
+              Tested at {new Date(result.testedAt).toLocaleString()}
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
       <ul className="result-list">
-        {result.stages.map((stage) => (
+        {orderedStages.map((stage) => (
           <li key={stage.stage} className="result-item">
             <div className="result-item__label">
               <Badge
@@ -620,8 +848,11 @@ export function TestResultView({ result }: { result: ConnectionTestResult }) {
                         : 'neutral'
                 }
               >
-                {stage.stage}
+                {CONNECTION_STAGE_LABELS[stage.stage]}
               </Badge>
+              <span className="text-subtle">
+                {CONNECTION_STAGE_STATUS_LABELS[stage.status]}
+              </span>
               {stage.httpStatus ? <span className="text-subtle">HTTP {stage.httpStatus}</span> : null}
             </div>
             <div>{stage.message}</div>
@@ -639,5 +870,3 @@ export function TestResultView({ result }: { result: ConnectionTestResult }) {
     </div>
   );
 }
-
-export type { ServerCapabilities };

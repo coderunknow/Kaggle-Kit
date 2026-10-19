@@ -11,6 +11,8 @@
     "the Cloudflare Quick Tunnel, the public endpoint and the download of the model from the public URL",
     "the behaviour of the browser interface in a real browser (the component tests run in jsdom, not in a browser)",
     "the measured effect of the multi token prediction option on the answer quality and the speed",
-    "the behaviour of the deployment script on a machine without the tools of the Kaggle image"
+    "the behaviour of the deployment script on a machine without the tools of the Kaggle image",
+    "the PowerShell launcher on a real Windows machine (its Node logic is tested on Linux; the wrapper is covered by static checks only)",
+    "a real Kaggle endpoint from the environment that built this release (the sandbox blocks outbound TLS; the user-run check is recorded separately in the release notes)"
   ]
 }

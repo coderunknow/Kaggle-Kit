@@ -9,7 +9,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-0.1.0-dev2}"
+VERSION="${1:-0.1.0-dev3}"
 TAG="${2:-v$VERSION}"
 SOURCE_SHA="$(git rev-parse HEAD)"
 STAGE="release"
@@ -47,14 +47,23 @@ cp dist/server/index.js "$APP_DIR/dist/server/index.js"
 cp package.json "$APP_DIR/package.json"
 cp README.md "$APP_DIR/README.md"
 cp LICENSE "$APP_DIR/LICENSE"
+mkdir -p "$APP_DIR/scripts" "$APP_DIR/tools" "$APP_DIR/docs"
+cp scripts/start-windows.ps1 "$APP_DIR/scripts/start-windows.ps1"
+cp tools/launcher.mjs "$APP_DIR/tools/launcher.mjs"
+cp docs/windows-launcher.md "$APP_DIR/docs/windows-launcher.md"
 printf '%s\n' \
   'Kaggle-Kit application bundle' \
   '' \
+  'Windows (one command):' \
+  '  powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1' \
+  '' \
+  'Any platform:' \
   '  node dist/server/index.js' \
   '' \
   'The backend serves the built client and the API on http://127.0.0.1:8787.' \
-  'It has no runtime dependencies. Set KAGGLE_KIT_PORT, KAGGLE_KIT_HOST,' \
-  'KAGGLE_KIT_ALLOWED_HOSTS or KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS to change the defaults.' \
+  'It has no runtime dependencies, so node_modules is not required.' \
+  'Set KAGGLE_KIT_PORT, KAGGLE_KIT_HOST, KAGGLE_KIT_ALLOWED_HOSTS or' \
+  'KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS to change the defaults.' \
   > "$APP_DIR/README-RUN.txt"
 ( cd "$APP_DIR" && zip -qr "../$TAG-app.zip" . )
 rm -rf "$APP_DIR"

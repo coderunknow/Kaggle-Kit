@@ -37,8 +37,8 @@ manifest_tool = load("build_manifest")
 notebook_tool = load("build_notebook")
 report_tool = load("build_release_report")
 
-VERSION = "0.1.0-dev2"
-TAG = "v0.1.0-dev2"
+VERSION = "0.1.0-dev3"
+TAG = "v0.1.0-dev3"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -83,7 +83,7 @@ class ReleaseFixture(unittest.TestCase):
         with zipfile.ZipFile(self.stage / f"{TAG}-app.zip", "w") as archive:
             archive.writestr("dist/client/index.html", "<!doctype html><title>Kaggle-Kit</title>")
             archive.writestr("dist/server/index.js", "console.log('backend');\n")
-            archive.writestr("package.json", '{"name":"kaggle-kit","version":"0.1.0-dev2"}')
+            archive.writestr("package.json", '{"name":"kaggle-kit","version":"0.1.0-dev3"}')
             archive.writestr("README.md", "# Kaggle-Kit\n")
             archive.writestr("LICENSE", "MIT\n")
 
@@ -244,6 +244,30 @@ class ValidatorTests(ReleaseFixture):
         self.assertTrue(any("does not contain" in problem for problem in problems), problems)
 
 
+class ConnectionCheckScriptTests(unittest.TestCase):
+    """The Windows check must never turn the key into a command line value."""
+
+    def setUp(self) -> None:
+        self.script = (ROOT / "tools" / "check-kaggle-connection.ps1").read_text(encoding="utf-8")
+
+    def test_reads_the_key_with_hidden_input_and_zeroes_it(self) -> None:
+        self.assertIn("-AsSecureString", self.script)
+        self.assertIn("SecureStringToBSTR", self.script)
+        self.assertIn("ZeroFreeBSTR", self.script)
+
+    def test_has_no_key_parameter_and_never_prints_the_key(self) -> None:
+        self.assertNotIn("[string]$ApiKey", self.script)
+        self.assertNotIn("Write-Host $script:ApiKey", self.script)
+        self.assertNotIn("Write-Output $script:ApiKey", self.script)
+        self.assertIn("Mask-Url", self.script)
+
+    def test_performs_all_three_real_requests(self) -> None:
+        self.assertIn("$base/models", self.script)
+        self.assertIn("$base/chat/completions", self.script)
+        self.assertIn("stream = $true", self.script)
+        self.assertIn("stream = $false", self.script)
+
+
 class ScanTests(unittest.TestCase):
     def test_the_tools_of_the_release_do_not_contain_a_secret(self) -> None:
         # The tools of the release are part of the source archive. The scan
@@ -257,7 +281,7 @@ class ScanTests(unittest.TestCase):
     def test_the_release_notes_do_not_contain_a_secret(self) -> None:
         problems: list = []
         validator.check_no_secrets(
-            "0.1.0-dev2.md", (ROOT / "docs" / "release-notes" / "0.1.0-dev2.md").read_bytes(), problems
+            "0.1.0-dev3.md", (ROOT / "docs" / "release-notes" / "0.1.0-dev3.md").read_bytes(), problems
         )
         self.assertEqual(problems, [])
 

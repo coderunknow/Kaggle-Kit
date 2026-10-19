@@ -50,7 +50,13 @@ function startMockUpstream(): Promise<MockUpstream> {
       }
 
       if (request.url === '/v1/chat/completions') {
-        const parsed = JSON.parse(body || '{}') as { stream?: boolean };
+        const parsed = JSON.parse(body || '{}') as { stream?: boolean; model?: string };
+
+        if (parsed.model === 'broken-model') {
+          response.writeHead(500, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ error: { message: 'the model crashed' } }));
+          return;
+        }
 
         if (parsed.stream) {
           response.writeHead(200, {
@@ -183,13 +189,68 @@ describe('the local proxy backend', () => {
     const payload = (await response.json()) as {
       ok: boolean;
       modelId: string;
+      baseUrlChanged: boolean;
+      testedAt: string;
       stages: { stage: string; status: string }[];
     };
 
     expect(payload.ok).toBe(true);
     expect(payload.modelId).toBe('mock-model');
-    expect(payload.stages.map((stage) => stage.stage)).toEqual(['models', 'inference']);
-    expect(payload.stages.every((stage) => stage.status === 'ok')).toBe(true);
+    expect(payload.stages.map((stage) => stage.stage)).toEqual([
+      'transport',
+      'auth',
+      'models',
+      'model',
+      'inference',
+      'streaming',
+    ]);
+    expect(payload.stages.find((stage) => stage.stage === 'transport')?.status).toBe('ok');
+    expect(payload.stages.find((stage) => stage.stage === 'auth')?.status).toBe('ok');
+    expect(payload.stages.find((stage) => stage.stage === 'models')?.status).toBe('ok');
+    expect(payload.stages.find((stage) => stage.stage === 'model')?.status).toBe('ok');
+    expect(payload.stages.find((stage) => stage.stage === 'inference')?.status).toBe('ok');
+    // An HTTP 200 of the model list never implies that streaming works.
+    expect(payload.stages.find((stage) => stage.stage === 'streaming')?.status).toBe('not_run');
+    expect(payload.baseUrlChanged).toBe(false);
+    expect(payload.testedAt).toBeTruthy();
+  });
+
+  it('does not report a connection as working when the real inference fails', async () => {
+    const response = await post('/api/proxy/test', {
+      baseUrl: upstream.url,
+      apiKey: API_KEY,
+      model: 'broken-model',
+      timeoutMs: 10_000,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      ok: boolean;
+      errorKind: string;
+      stages: { stage: string; status: string }[];
+    };
+
+    expect(payload.ok).toBe(false);
+    expect(payload.errorKind).toBe('server');
+    expect(payload.stages.find((stage) => stage.stage === 'models')?.status).toBe('ok');
+    expect(payload.stages.find((stage) => stage.stage === 'inference')?.status).toBe('failed');
+    expect(payload.stages.find((stage) => stage.stage === 'streaming')?.status).toBe('not_run');
+  });
+
+  it('uses the first reported model when the profile has no model ID', async () => {
+    const response = await post('/api/proxy/chat', {
+      baseUrl: upstream.url,
+      apiKey: API_KEY,
+      model: '',
+      messages: [{ role: 'user', content: 'hi' }],
+      params: { maxTokens: 16, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+
+    expect(response.status).toBe(200);
+    const last = upstream.requests[upstream.requests.length - 1];
+    const sent = JSON.parse(last?.body ?? '{}') as { model?: string };
+    expect(sent.model).toBe('mock-model');
   });
 
   it('proxies a chat completion', async () => {

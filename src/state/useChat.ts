@@ -13,33 +13,12 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import { ApiError } from '../../shared/api/errors';
 import type { InferenceParams } from '../../shared/api/requests';
+import { effectiveProfileTarget, resolveProfileCredential } from '../../shared/connection';
 import type { ChatMessageInput } from '../../shared/api/types';
 import type { ApiProfile, ChatMessage, Conversation } from '../../shared/domain';
 import { gateway } from '../lib/gateway';
 import { createId, titleFromMessage } from '../lib/id';
 import { useApp } from './AppProvider';
-
-interface CredentialTarget {
-  apiKey?: string;
-  secretRef?: string;
-}
-
-function resolveCredential(
-  sessionKeys: Record<string, string>,
-  browserKeys: Record<string, string>,
-  profile: ApiProfile,
-): CredentialTarget {
-  switch (profile.credentialStorage) {
-    case 'session':
-      return { apiKey: sessionKeys[profile.id] };
-    case 'browser':
-      return { apiKey: browserKeys[profile.id] };
-    case 'server':
-      return { secretRef: profile.secretRef };
-    default:
-      return {};
-  }
-}
 
 /**
  * Build the request history: the system prompt plus every finished message.
@@ -105,7 +84,7 @@ export function useChat(): ChatController {
       assistantMessageId: string,
     ) => {
       const state = appRef.current.state;
-      const credential = resolveCredential(state.sessionKeys, state.browserKeys, profile);
+      const credential = resolveProfileCredential(profile, state);
       const capabilities = state.capabilities[profile.id];
 
       // Streaming is only requested when this session verified it. The proxy
@@ -149,7 +128,7 @@ export function useChat(): ChatController {
         const params: InferenceParams = { ...profile.defaultParams, stream };
         return gateway.chat(
           {
-            baseUrl: profile.baseUrl,
+            baseUrl: effectiveProfileTarget(profile).baseUrl,
             model: profile.modelId,
             messages: history,
             params,

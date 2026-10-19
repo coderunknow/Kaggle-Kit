@@ -23,6 +23,21 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
 
 ## Quick start
 
+**Windows, one command** (Node.js 20.19 or newer is the only prerequisite):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+```
+
+The launcher checks Node and npm, installs missing dependencies (network
+required), builds the client and the proxy when needed, picks a free port,
+waits until the backend answers `/api/health`, opens the browser, prints the
+URL and stops the backend cleanly with Ctrl+C. It never asks for administrator
+rights and never reads or prints an API key. See
+[docs/windows-launcher.md](docs/windows-launcher.md).
+
+**From source, any platform:**
+
 ```bash
 npm install
 npm run dev            # proxy backend on :8787 + Vite dev server on :5173
@@ -48,6 +63,16 @@ npm start
 Create a profile with base URL `http://127.0.0.1:8000` and the key `demo-key-123`
 (the mock prints its own arguments).
 
+To check a real Kaggle endpoint from your Windows machine, without copying the
+key into a shell history or a file:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\check-kaggle-connection.ps1
+```
+
+The script asks for the base URL and the key with hidden input and prints a
+sanitized JSON report (masked URL, model list, real inference, real streaming).
+
 ## Deploying the model on Kaggle
 
 See [docs/kaggle-deployment.md](docs/kaggle-deployment.md) for the complete
@@ -67,8 +92,11 @@ unreliable from Kaggle (`RemoteDisconnected`). It downloads the pinned
 
 * **Connections tab** – create, edit, select and delete API profiles: display
   name, base URL, API key, model ID, system prompt, request timeout and where
-  the key is stored. A connection test performs a real model list request and a
-  real inference request and reports every step.
+  the key is stored. A connection test reports reachability, authentication,
+  the model list, the usable model and a real inference request as separate
+  steps; streaming stays a separate probe and is never implied by a green
+  connection. The same active profile and the same effective URL are used by
+  the test, the chat, the context bar and the sidebar footer.
 * **Inference tab** – request time parameters: maximum output tokens,
   temperature, top-p, optional frequency and presence penalties, reasoning
   effort and the streaming switch. Start-up options of the server (context
@@ -99,7 +127,7 @@ The interface is a full chat workspace rather than a settings form:
   reduced-motion layout.
 
 See [docs/chat-interface.md](docs/chat-interface.md) for the details and
-[docs/release-notes/0.1.0-dev2.md](docs/release-notes/0.1.0-dev2.md) for what
+[docs/release-notes/0.1.0-dev3.md](docs/release-notes/0.1.0-dev3.md) for what
 changed in this release.
 
 ## Security model
@@ -149,7 +177,7 @@ stages the assets, validates them and uploads them to a prerelease of the same
 tag. Nothing is uploaded by hand.
 
 ```bash
-git tag v0.1.0-dev2 <commit> && git push origin v0.1.0-dev2
+git tag v0.1.0-dev3 <commit> && git push origin v0.1.0-dev3
 ```
 
 The version of `package.json` has to match the tag and the release notes have

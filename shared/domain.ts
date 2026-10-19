@@ -91,9 +91,21 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   sendOnEnter: true,
 };
 
-export type ConnectionStage = 'models' | 'inference';
+export type ConnectionStage =
+  | 'transport'
+  | 'auth'
+  | 'models'
+  | 'model'
+  | 'inference'
+  | 'streaming';
 
-export type ConnectionStageStatus = 'ok' | 'warning' | 'failed' | 'skipped';
+export type ConnectionStageStatus =
+  | 'not_run'
+  | 'running'
+  | 'ok'
+  | 'warning'
+  | 'failed'
+  | 'not_applicable';
 
 export interface ConnectionStageResult {
   stage: ConnectionStage;
@@ -103,14 +115,27 @@ export interface ConnectionStageResult {
 }
 
 export interface ConnectionTestResult {
+  /** True only when a real inference request succeeded. */
   ok: boolean;
-  /** Normalized base URL that was actually used. */
+  /** Effective, normalized base URL that was actually used. */
   baseUrl: string;
+  /** The value the user typed, before normalization. */
+  requestedBaseUrl?: string;
+  /** True when normalization changed the value that was tested. */
+  baseUrlChanged?: boolean;
   /** Model ID used for the inference probe. */
   modelId?: string;
+  /** ISO timestamp of the test, produced by the proxy. */
+  testedAt?: string;
   stages: ConnectionStageResult[];
   capabilities?: ServerCapabilities;
   errorKind?: ApiErrorKind;
   errorMessage?: string;
   errorHint?: string;
+  /**
+   * Client side identity of the configuration this result belongs to. It is
+   * never persisted and never contains a credential. The chat only honours a
+   * result whose fingerprint equals the active profile's current fingerprint.
+   */
+  configFingerprint?: string;
 }

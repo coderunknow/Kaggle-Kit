@@ -35,28 +35,61 @@ for other OpenAI-compatible endpoints.
 
 ### Connection test
 
-**Test connection** performs two real requests and reports them separately:
+**Test connection** runs one real request sequence against the configured
+endpoint and reports every stage separately:
 
-1. **models** – `GET {base}/models` with the API key. A warning is shown when
-   the configured model is not part of the answer (some servers only report an
-   alias).
-2. **inference** – `POST {base}/chat/completions` with a tiny prompt
-   (`max_tokens: 24`, `temperature: 0`).
+1. **Reachability** – the request reached a server that answered with an HTTP
+   status (any status, including 401 or 404).
+2. **Authentication** – the endpoint accepted the API key (or the request
+   without one, when the profile has no key).
+3. **Model list** – `GET {base}/models` returned a readable model list.
+4. **Usable model** – the configured model is advertised, or the endpoint
+   reports no models and a model has to be entered by hand. A model that is
+   not advertised stays a warning until step 5 decides it.
+5. **Inference** – `POST {base}/chat/completions` with a tiny prompt
+   (`max_tokens: 24`, `temperature: 0`) returned a non-empty assistant message
+   or reasoning text.
+6. **Streaming** – a separate check. It is **not** part of the badge: the
+   connection can be `Connected` while streaming is unverified, and streaming is
+   only marked verified after **Verify streaming support** observed a real
+   `text/event-stream` response with content and a finish reason (or `[DONE]`)
+   for this endpoint and credential.
 
-The result distinguishes the failure modes that the evidence allows:
+Each stage has its own state: `not run`, `running`, `ok`, `warning`, `failed`
+or `not applicable`. `Connected` is shown only when the inference stage
+succeeded; an intermediate success (reachability, auth or the model list) can
+never produce it. The result names the tested endpoint and the time, and lists
+a concrete next step for the verified cause.
+
+The failure modes stay distinguishable:
 
 | Result | Meaning |
 | --- | --- |
-| Connection failed | The request never reached the server (network error, wrong host, tunnel down). |
-| Blocked by CORS or proxy | The browser or a proxy refused the request. The interface never asks you to disable browser security. |
+| Not reachable | No HTTP status at all: network error, wrong host, tunnel down, timeout. |
 | Authentication failed | HTTP 401/403 – the key is wrong or was rotated. |
 | Not found | HTTP 404 – wrong base URL or unknown model. |
-| Request timed out | The server did not answer in time. |
-| Server error | HTTP 5xx. |
+| Bad request | HTTP 400/422 – the server rejected the request shape or the model ID. |
+| Server error | HTTP 5xx – the endpoint itself failed. |
+| Inference failed | The model list worked but no completion came back. |
 | Invalid response | The body was not a valid OpenAI-compatible response. |
-| Inference failed | The request was accepted but no completion came back. |
+| Streaming not verified | The inference worked, but no usable event stream was observed. |
 
-The key never appears in the result, in the log or in the URL.
+### One active connection
+
+Every surface uses the same active profile and the same effective base URL:
+the connection test, the chat request, the settings cards, the context bar and
+the sidebar footer. A value typed without `/v1` is normalized once
+(`https://host` → `https://host/v1`), an existing `/v1` is never duplicated and
+a legitimate path prefix is kept. The editor shows the value that was typed and
+the address that is really used; the chat sends exactly the latter.
+
+The status is tied to that configuration. Editing the base URL, the model, the
+timeout or the credential mode drops the stored result (and the discovered
+model list when the endpoint changed); writing a new key does the same. The
+settings drawer, the context bar and the sidebar show `Not tested` or
+`Test needed` until the new configuration is tested again. A test of unsaved
+values is shown only inside the editor and never changes the saved profile's
+status.
 
 ## Inference settings
 

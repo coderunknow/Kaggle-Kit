@@ -91,6 +91,11 @@ export function normalizeBaseUrlDetailed(raw: string): NormalizedBaseUrl {
     notes.push('Removed the pasted completions endpoint and used its base URL.');
   }
 
+  if (/(?:\/v1){2,}$/i.test(path)) {
+    path = path.replace(/(?:\/v1)+$/i, '/v1');
+    notes.push('Removed a duplicated "/v1" suffix.');
+  }
+
   if (!path || path === '') {
     path = '/v1';
     notes.push('Added the "/v1" API prefix.');

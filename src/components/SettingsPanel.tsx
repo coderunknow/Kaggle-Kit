@@ -11,6 +11,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DEFAULT_INFERENCE_PARAMS } from '../../shared/api/requests';
+import {
+  effectiveProfileTarget,
+  resolveConnectionView,
+} from '../../shared/connection';
 import type { ApiProfile } from '../../shared/domain';
 import { APP_VERSION } from '../../shared/version';
 import { createId } from '../lib/id';
@@ -214,6 +218,14 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
                       The base URL of a profile — for example the <code>trycloudflare.com</code>{' '}
                       address printed by the Kaggle notebook.
                     </span>
+                    {app.activeProfile ? (
+                      <span className="field__hint">
+                        Active profile, effective address:{' '}
+                        <code>{effectiveProfileTarget(app.activeProfile).baseUrl}</code>
+                      </span>
+                    ) : (
+                      <span className="field__hint">No profile is active yet.</span>
+                    )}
                     <span className="field__hint">
                       The proxy calls it; the browser never does. A missing <code>/v1</code> is added
                       automatically.
@@ -261,7 +273,8 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
               {!creating
                 ? profiles.map((profile) => {
                     const isActive = profile.id === app.state.preferences.activeProfileId;
-                    const test = app.state.connectionTests[profile.id];
+                    const connection = resolveConnectionView(app.state, profile);
+                    const effective = effectiveProfileTarget(profile);
 
                     if (profile.id === editingId && editingProfile) {
                       return (
@@ -294,9 +307,14 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
                                 </span>
                               ) : null}
                             </div>
-                            <div className="profile-card__url" title={profile.baseUrl}>
+                            <div className="profile-card__url" title={effective.baseUrl}>
                               {profile.baseUrl}
                             </div>
+                            {effective.changed ? (
+                              <div className="profile-card__url" title={effective.baseUrl}>
+                                Effective: <code>{effective.baseUrl}</code>
+                              </div>
+                            ) : null}
                           </div>
                         </div>
 
@@ -311,8 +329,8 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
                                 ? 'key on the proxy'
                                 : 'key in the browser'}
                           </Badge>
-                          <Badge tone={test === undefined ? 'neutral' : test.ok ? 'ok' : 'danger'}>
-                            {test === undefined ? 'not tested' : test.ok ? 'connected' : 'test failed'}
+                          <Badge tone={connection.tone}>
+                            {connection.label.toLowerCase()}
                           </Badge>
                           {profile.defaultParams.stream ? <Badge tone="neutral">streaming on</Badge> : null}
                           <span className="text-subtle">timeout {Math.round(profile.timeoutMs / 1000)} s</span>
