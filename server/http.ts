@@ -53,6 +53,11 @@ export async function readJsonBody(
 }
 
 export function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+  if (response.headersSent) {
+    // The response is already on its way; ending it is the only thing left.
+    response.end();
+    return;
+  }
   const body = JSON.stringify(payload);
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',

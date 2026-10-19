@@ -19,6 +19,7 @@ import { OpenAIClient } from '../shared/api/client';
 import { buildChatCompletionBody } from '../shared/api/requests';
 import type { InferenceParams, ServerCapabilities } from '../shared/api/requests';
 import { joinApiPath, normalizeBaseUrlDetailed, UrlValidationError } from '../shared/api/url';
+import { assertDestinationAllowed } from './destinations';
 import type {
   ChatCompletionRequestBody,
   ChatCompletionResponse,
@@ -68,7 +69,10 @@ export class ProxyService {
       throw error;
     }
 
-    this.assertHostAllowed(baseUrl);
+    assertDestinationAllowed(baseUrl, {
+      allowedHosts: this.config.allowedHosts,
+      blockPrivateNetworks: this.config.blockPrivateNetworks,
+    });
 
     let apiKey = target.apiKey?.trim() || undefined;
     if (!apiKey && target.secretRef) {
@@ -79,22 +83,26 @@ export class ProxyService {
     return { baseUrl, apiKey };
   }
 
-  private assertHostAllowed(baseUrl: string): void {
-    const allowed = this.config.allowedHosts;
-    if (!allowed || allowed.length === 0) return;
-
-    const host = new URL(baseUrl).hostname.toLowerCase();
-    if (!allowed.includes(host)) {
-      throw new ApiError(
-        'bad_request',
-        `The host "${host}" is not in the allow list of this proxy.`,
-        { hint: 'Add the host to KAGGLE_KIT_ALLOWED_HOSTS or use a different endpoint.' },
-      );
+  /** Every redirect target has to pass the same policy as the first URL. */
+  private isRedirectAllowed(target: string): boolean {
+    try {
+      assertDestinationAllowed(target, {
+        allowedHosts: this.config.allowedHosts,
+        blockPrivateNetworks: this.config.blockPrivateNetworks,
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 
   private client(baseUrl: string, apiKey: string | undefined, timeoutMs: number): OpenAIClient {
-    return new OpenAIClient({ baseUrl, apiKey, timeoutMs });
+    return new OpenAIClient({
+      baseUrl,
+      apiKey,
+      timeoutMs,
+      validateRedirect: (target) => this.isRedirectAllowed(target),
+    });
   }
 
   /** List the models exposed by the endpoint. */
@@ -310,7 +318,18 @@ export class ProxyService {
           stream: true,
         }),
         signal: controller.signal,
+        // Redirects are not followed: a redirect could leave the allowed
+        // destinations and the probe would then report a false positive.
+        redirect: 'manual',
       });
+
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        this.storeCapability(baseUrl, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        return {
+          supported: false,
+          detail: `The endpoint answered the streaming probe with a redirect (HTTP ${response.status}).`,
+        };
+      }
 
       if (!response.ok) {
         const detail = `The streaming probe returned HTTP ${response.status}.`;

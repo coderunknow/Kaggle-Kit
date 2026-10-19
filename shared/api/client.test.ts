@@ -149,4 +149,95 @@ describe('OpenAIClient', () => {
 
     await expect(client.props()).resolves.toBeNull();
   });
+
+  it('follows a redirect to the same origin', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { Location: 'https://example.com/v1/models' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'model-a' }] }));
+
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+    const result = await client.listModels();
+
+    expect(result.models).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('https://example.com/v1/models');
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_KEY}`);
+    expect(init.redirect).toBe('manual');
+  });
+
+  it('refuses a redirect to another origin when an API key is set', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { Location: 'https://evil.test/v1/models' } }),
+      );
+
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+    const error = await client.listModels().catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).kind).toBe('bad_request');
+    expect((error as ApiError).message).not.toContain(API_KEY);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a redirect that the caller does not allow', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { Location: 'https://other.test/v1/models' } }),
+      );
+
+    const client = new OpenAIClient({
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+      validateRedirect: (target) => new URL(target).host === 'example.com',
+    });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).message).toContain('allow list');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after too many redirects', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 302, headers: { Location: 'https://example.com/v1/models' } }),
+      );
+
+    const client = new OpenAIClient({
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+      maxRedirects: 2,
+    });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).message).toMatch(/redirected too many times/);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('turns a redirect of a POST request into a GET without a body', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 303, headers: { Location: 'https://example.com/v1/models' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+    await client.request('/chat/completions', { method: 'POST', body: '{}' });
+
+    const [, init] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    expect(init.method).toBe('GET');
+    expect(init.body).toBeUndefined();
+    expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+  });
+
 });

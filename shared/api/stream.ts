@@ -34,13 +34,13 @@ export async function* parseSseStream(
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      let separator = buffer.indexOf('\n\n');
-      while (separator !== -1) {
-        const block = buffer.slice(0, separator);
-        buffer = buffer.slice(separator + 2);
+      let separator = findEventSeparator(buffer);
+      while (separator) {
+        const block = buffer.slice(0, separator.index);
+        buffer = buffer.slice(separator.index + separator.length);
         const parsed = parseSseBlock(block);
         if (parsed) yield parsed;
-        separator = buffer.indexOf('\n\n');
+        separator = findEventSeparator(buffer);
       }
     }
 
@@ -48,8 +48,27 @@ export async function* parseSseStream(
     const trailing = parseSseBlock(buffer);
     if (trailing) yield trailing;
   } finally {
+    // The body is closed when the loop was left early (a cancelled request),
+    // so the connection is not left open.
+    try {
+      await reader.cancel();
+    } catch {
+      /* the stream is already closed */
+    }
     reader.releaseLock?.();
   }
+}
+
+/**
+ * Find the end of the first event in the buffer.
+ *
+ * The SSE specification allows LF, CRLF and CR as line ends. A server that
+ * answers with CRLF would otherwise be read as one single event.
+ */
+function findEventSeparator(buffer: string): { index: number; length: number } | null {
+  const match = /\r\n\r\n|\n\n|\r\r/.exec(buffer);
+  if (!match) return null;
+  return { index: match.index, length: match[0].length };
 }
 
 function parseSseBlock(block: string): SseEvent | null {
