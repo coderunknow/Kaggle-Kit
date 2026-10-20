@@ -1,0 +1,43 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Runtime data: server-side secret store, logs, cached models
+.data/
+secrets.json
+*.log
+
+# Model weights / large binaries must never be committed
+*.gguf
+*.gguf.part
+*.tar.gz
+*.zip
+*.bin
+models/
+llama-server
+cloudflared
+
+# Staged release artifacts (built by .github/workflows/release.yml).
+# The rule is anchored to the root: docs/release/ holds a tracked file.
+/release/
+/downloaded/
+/checks.json
+/release-notes.md
+
+# Local environment / editor state
+.env
+.env.local
+.idea/
+.vscode/
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Playwright artifacts
+test-results/
+playwright-report/
+e2e-output.txt

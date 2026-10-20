@@ -1,0 +1,41 @@
+{
+  "_comment": "Coverage registry for build_inventory.py. `full_text` = every line was read during the analysis. `sections` = the file is too large to read end to end in the available context; the listed parts (behaviour sections, section map, directive extraction) were read. Every other file is covered at metadata level plus the corpus-wide regex census in analyze_corpus.py. This file is maintained by hand: it is the only source of the inventory's coverage flags.",
+  "full_text": [
+    "Qwen/qwen3.8-max.md",
+    "Qwen/qwen3.6-plus.md",
+    "DeepSeek/deepseek-chat.md",
+    "GLM/README.md",
+    "Pi/instructions.md",
+    "OpenAI/gpt-5.5-api.md",
+    "OpenAI/gpt-5.4-api.md",
+    "OpenAI/gpt-5.3-chat-api.md",
+    "OpenAI/gpt-5.1-efficient.md",
+    "OpenAI/gpt-5.1-professional.md",
+    "OpenAI/4o-2025-09-03-new-personality.md",
+    "Google/gemini-3.1-pro-api.md",
+    "Google/gemini-2.5-pro-api.md",
+    "Google/gemini-3.5-flash-ai-studio.md",
+    "Anthropic/official/2024-07-12-claude-haiku-3.md",
+    "Anthropic/official/2026-10-07-claude-haiku-5.5.md",
+    "Anthropic/anthropic_reminders.md",
+    "Misc/character-ai.md",
+    "Misc/brave-search.md"
+  ],
+  "sections": [
+    "README.md",
+    "Anthropic/README.md",
+    "Anthropic/claude-sonnet-5.5.md",
+    "Anthropic/claude-code/claude-code-sonnet-5.5.md",
+    "Anthropic/claude-opus-4.6-no-tools.md",
+    "Anthropic/official/2026-09-28-claude-sonnet-5.5.md",
+    "OpenAI/Codex/gpt-6.1-sol.md",
+    "xAI/grok-4.7.md",
+    "Microsoft/copilot-cli.md",
+    "Microsoft/copilot-macos-app.md",
+    "Microsoft/copilot-in-microsoft-word.md",
+    "Microsoft/github-copilot.md",
+    "Microsoft/vscode-copilot-agent.md",
+    "Kimi/kimi-3.md",
+    "Misc/amp-code.md"
+  ]
+}

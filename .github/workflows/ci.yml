@@ -1,0 +1,205 @@
+# Continuous integration for Kaggle-Kit.
+#
+# The workflow needs no secrets, no GPU, no model weights and no tunnel: it
+# installs the dependencies, runs the static checks, the test suite (browser
+# and Python) and the production build.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: typecheck, lint, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install the dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (browser and server)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Integration check of the built application
+        run: npm run check:integration
+
+      - name: Check the whitespace of the diff
+        env:
+          # Ref data reaches the shell only as an environment value.
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          git diff --check
+          base="origin/$BASE_REF"
+          if git rev-parse --verify "$base" >/dev/null 2>&1; then
+            git diff --check "$base...HEAD"
+          fi
+
+  python:
+    name: notebook tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the test dependencies
+        run: python3 -m pip install --upgrade requests
+
+      - name: Run the notebook tests
+        run: python3 -m unittest discover -s notebooks -p "test_*.py" -v
+
+      - name: Run the tests of the release tools
+        run: python3 -m unittest discover -s tools -p "test_*.py" -v
+
+  sandbox:
+    name: docker sandbox integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install the dependencies
+        run: npm ci
+
+      - name: Pull the sandbox image and record its digest
+        run: |
+          set -euo pipefail
+          docker pull python:3.12-alpine
+          DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' python:3.12-alpine | sed 's/.*@//')"
+          echo "SANDBOX_TEST_IMAGE=python:3.12-alpine@$DIGEST" >> "$GITHUB_ENV"
+
+      - name: Run the real-Docker sandbox integration check
+        env:
+          SANDBOX_TEST_REQUIRED: '1'
+        run: npx tsx tools/sandbox-integration.mts
+
+  windows-launcher:
+    name: windows launcher
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Start through the PowerShell launcher and probe readiness
+        shell: pwsh
+        run: |
+          $process = Start-Process powershell -PassThru -ArgumentList '-ExecutionPolicy','Bypass','-File','scripts/start-windows.ps1','-NoBrowser','-NoInstall','-Port','8799'
+          try {
+            $healthy = $false
+            foreach ($attempt in 1..60) {
+              try {
+                $response = Invoke-RestMethod -Uri 'http://127.0.0.1:8799/api/health' -TimeoutSec 2
+                if ($response.ok -eq $true) { $healthy = $true; break }
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $healthy) { throw 'The launcher did not become ready on port 8799.' }
+            Write-Host 'Launcher is ready and /api/health answered.'
+          } finally {
+            taskkill /PID $process.Id /T /F 2>$null | Out-Null
+          }
+          Start-Sleep -Seconds 2
+          $stillListening = Get-NetTCPConnection -LocalPort 8799 -State Listen -ErrorAction SilentlyContinue
+          if ($stillListening) { throw 'Port 8799 is still listening after launcher shutdown.' }
+          Write-Host 'Launcher shut down cleanly; port 8799 is free.'
+
+  e2e:
+    name: Browser end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the pull request commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: package.json
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build application
+        run: npm run build
+      - name: Run browser end-to-end tests
+        run: |
+          set +e
+          npm run test:e2e 2>&1 | tee e2e-output.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '## Browser end-to-end failure (last 120 lines)'
+              echo '```'
+              tail -n 120 e2e-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Mirror the tail into annotations so it is readable via the API.
+            tail -n 80 e2e-output.txt | python3 -c '
+          import sys
+          text = sys.stdin.read().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=Browser e2e output tail::" + text)
+          '
+          fi
+          exit "$status"

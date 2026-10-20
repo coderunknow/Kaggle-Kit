@@ -1,0 +1,19 @@
+{
+  "tested": [
+    "Arena sandbox: Linux x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11.2; npm ci installed 368 packages and reported 0 vulnerabilities",
+    "npm run check: TypeScript client/server typecheck, ESLint, and Vitest (42 files, 356 tests passed)",
+    "python3 -m unittest discover -s notebooks -p 'test_*.py' (39 passed, 7 skipped; deployment tests use stubs/local mocks)",
+    "python3 -m unittest discover -s tools -p 'test_*.py' (18 passed)",
+    "npm run build (production Vite client and bundled standalone Node backend); Vite reported a >500 kB client-chunk advisory",
+    "npm run check:integration (28/28 checks against the built bundle and a loopback mock upstream, including PDF/DOCX parsing, ordinary chat, streaming/cancellation, request policy, the native tool-calling probe with streamed fragment assembly, an automatic calculator call, and a denied single-use code-execution approval)",
+    "tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4 (staged archives, manifest, checksums and verification report validated, including simulated downloaded-asset validation)",
+    "Docker availability check: docker --version returned command not found; sandbox execution remains fail-closed and unverified"
+  ],
+  "notTested": [
+    "Kaggle GPU runtime, actual model download/weights, deployed Qwen3.8/llama.cpp inference, live native tool-call round trip (streaming or non-streaming), public tunnel or public Kaggle endpoint",
+    "Docker sandbox runtime/isolation or the pinned Python container image; Docker CLI was unavailable",
+    "Real Brave credentials/account, account-specific retention rights, fees or provider behavior; live MCP servers or configured external HTTP services",
+    "Real-browser or assistive-technology accessibility audit; component tests use jsdom",
+    "PowerShell launcher behavior on Windows or non-Node-22 Node/npm toolchains"
+  ]
+}
