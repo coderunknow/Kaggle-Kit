@@ -71,7 +71,11 @@ export class ToolExecutor {
       ...(definition.targetLabel ? { target: definition.targetLabel } : {}),
       permission: definition.permission,
       approvalRequired,
-      summary: definition.function.description ?? definition.function.name,
+      summary: operationSummary(name, args, {
+        description: definition.function.description ?? definition.function.name,
+        ...(httpTool ? { httpMethod: httpTool.method, httpEndpoint: httpTool.endpoint } : {}),
+        ...(mcpEntry ? { mcpServer: mcpEntry.server.name, mcpTool: mcpEntry.tool.serverToolName } : {}),
+      }),
     };
   }
 
@@ -231,6 +235,54 @@ export class ToolExecutor {
     const secrets = await Promise.all(references.map((reference) => this.store.get(reference)));
     const redacted = redactSecrets(value, secrets.filter((secret): secret is string => Boolean(secret)));
     return truncateUtf8(redacted, Math.max(1, limit));
+  }
+}
+
+/**
+ * A one-line, operation-specific description for the approval UI, so the
+ * user approves a concrete action ("POST https://…", "Run Python code …")
+ * rather than a generic tool description. Argument excerpts are bounded;
+ * secret-bearing values are never included (only non-secret fields such as
+ * the URL, query, file id and code length are shown).
+ */
+export function operationSummary(
+  name: string,
+  args: Record<string, unknown>,
+  context: {
+    description: string;
+    httpMethod?: string;
+    httpEndpoint?: string;
+    mcpServer?: string;
+    mcpTool?: string;
+  },
+): string {
+  const text = (value: unknown, max = 120): string => {
+    const cleaned = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+    return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned;
+  };
+  if (context.httpMethod && context.httpEndpoint) {
+    return `Send ${context.httpMethod} request to ${text(context.httpEndpoint, 200)}`;
+  }
+  if (context.mcpServer && context.mcpTool) {
+    return `Call ${context.mcpTool} on MCP server ${text(context.mcpServer, 80)}`;
+  }
+  switch (name) {
+    case 'code_execute': {
+      const code = typeof args.code === 'string' ? args.code : '';
+      const firstLine = text(code.split('\n').find((line) => line.trim()) ?? '', 100);
+      return `Run Python code in the sandbox (${code.length} characters)${firstLine ? `: ${firstLine}` : ''}`;
+    }
+    case 'web_search':
+      return `Search the web for: ${text(args.query)}`;
+    case 'web_open':
+      return `Fetch and read: ${text(args.url, 200)}`;
+    case 'files_read':
+    case 'files_analyze':
+      return `Read the uploaded file ${text(args.fileId ?? args.filename ?? args.id, 80)}`;
+    case 'calculator_calculate':
+      return `Calculate: ${text(args.expression)}`;
+    default:
+      return context.description;
   }
 }
 

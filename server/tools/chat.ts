@@ -336,6 +336,7 @@ export class ToolChatService {
             safeArguments,
             ...(prepared.target ? { target: prepared.target } : {}),
             requestedAt: new Date().toISOString(),
+            ...(prepared.approvalRequired ? { resultSummary: prepared.summary } : {}),
           };
           session.trace.push(trace);
 

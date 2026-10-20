@@ -119,7 +119,7 @@ function ToolTimeline({
                   {entry.resultSummary ? <p>{entry.resultSummary}</p> : null}
                   {entry.error ? <p className="field__error">{entry.error}</p> : null}
                   {Object.keys(entry.safeArguments).length > 0 ? (
-                    <details className="tool-timeline__arguments">
+                    <details className="tool-timeline__arguments" open={canApprove}>
                       <summary>Review bounded arguments</summary>
                       <pre>{JSON.stringify(entry.safeArguments, null, 2)}</pre>
                     </details>

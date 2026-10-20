@@ -291,6 +291,11 @@ describe('bounded server-side tool chat', () => {
 
     expect(pending.status).toBe('awaiting_approval');
     expect(pending.pendingApproval).toMatchObject({ toolName: 'code_execute', arguments: { language: 'python', code: 'print(1)' } });
+    // The approval describes the concrete operation, not a generic tool text.
+    expect(pending.pendingApproval?.description).toContain('Run Python code in the sandbox');
+    expect(pending.pendingApproval?.description).toContain('print(1)');
+    const waiting = pending.toolTrace.find((entry) => entry.status === 'awaiting_approval');
+    expect(waiting?.resultSummary).toContain('Run Python code in the sandbox');
     expect(pending.toolTrace[0]).toMatchObject({ status: 'awaiting_approval', approvalRequired: true, approvalState: 'pending' });
     expect(test.fetchMock).toHaveBeenCalledTimes(1);
     expect(test.service.cancel(pending.jobId!)).toBe(true);
@@ -434,6 +439,9 @@ describe('bounded server-side tool chat', () => {
     const pending = await test.start();
     expect(pending.status).toBe('awaiting_approval');
     expect(pending.pendingApproval?.toolName).toBe('http_writer');
+    // The description names the operation, never the credential value.
+    expect(pending.pendingApproval?.description).toBe('Send POST request to https://api.example.com/write');
+    expect(pending.pendingApproval?.description).not.toContain('synthetic');
 
     // Rotate the credential behind the same reference. The approved
     // operation would now authenticate as a different principal, so the
