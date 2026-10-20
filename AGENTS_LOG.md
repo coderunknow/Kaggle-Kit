@@ -682,3 +682,17 @@ loads with conservative defaults.
 * Production build, integration suite, and release dry-run will be rerun against
   the committed candidate. Docker is unavailable; model/provider behavior and
   external endpoint rights remain unverified. No tag or publication exists.
+
+## 2026-10-20 – Release dry-run result
+
+* `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` – exit 0 on source
+  commit `80b9a9203b890707d0866e3a6c9044fad7d87e89`. Typecheck, lint, 344
+  Vitest tests, 39 notebook tests (7 skipped), 18 release-tool tests, build,
+  and **19/19** integration checks passed.
+* The script generated app, notebook and source archives, manifest, checksums
+  and a verification report; release and simulated-downloaded-asset validation
+  both passed. It does not run GitHub release automation or publish/tag assets.
+* The report explicitly records that Kaggle/live-model behavior, Docker
+  isolation, live provider rights, external services and real-browser
+  accessibility remain unverified. Vite/PDF.js and the integration host-list
+  warnings are non-failing and were retained as limitations.

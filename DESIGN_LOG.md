@@ -1002,3 +1002,13 @@ Validation on this working tree:
 * Build, integration, and the archive/checksum release dry-run are pending
   execution against the committed candidate. No live model, Docker isolation,
   provider retention rights, or external endpoint was verified.
+
+The local release pipeline passed on commit
+`80b9a9203b890707d0866e3a6c9044fad7d87e89`:
+`tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` completed with exit 0.
+All configured checks passed, the production bundle and 19-check mock
+integration suite passed, and generated app/notebook/source archives, manifest,
+checksums and the verification report passed both staged and simulated
+post-download validation. This is local evidence only; no GitHub workflow,
+tag or publication was executed. The report retains the unverified live model,
+Kaggle, Docker, provider, external endpoint and real-browser limits.
