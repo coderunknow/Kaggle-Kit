@@ -1123,3 +1123,94 @@ deployed model's tool behaviour. Capability therefore remains
   model weights, Docker isolation, Brave account, external MCP/HTTP service
   or real-browser test has run. Tool capability on any real endpoint stays
   `not_verified` until the operator runs the probe.
+
+## 2026-10-20 – Full audit remediation and v0.1.0-dev5 preparation
+
+A whole-repository audit of v0.1.0-dev4 (workflows, shared protocol, backend,
+tool authorization, secrets, UI/state/persistence, launchers, notebook,
+release tooling, tests, docs) was executed on the PR #10 branch, and every
+confirmed finding was fixed with regression tests. The published
+`v0.1.0-dev4` tag/release at `0d3a742` was not moved or modified; PR #10
+remains open and unmerged.
+
+### Confirmed defects fixed (verified by tests/CI as noted)
+
+1. **P0 – release workflow shell injection.** `release.yml` interpolated the
+   untrusted tag into shell source before validation. All `${{ }}` values now
+   reach shells only via `env:`; the tag is fully validated before any path,
+   Git or publish use; checked-out commit, `package.json`, notes, manifest
+   and checksums must agree. Actions are full-SHA pinned; permissions are
+   least-privilege. `tools/test_workflow_security.py` proves hostile tags
+   cannot execute shell, alter outputs or influence the release early.
+2. **P1 – proxy DNS rebinding.** The model proxy validated only hostnames.
+   All server-side upstream paths now use `server/pinnedFetch.ts`: the
+   complete DNS answer is validated at connect time (link-local/metadata
+   always refused; hostname→loopback refused; private answers refused under
+   `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`; literal local endpoints and default
+   LAN names preserved; SNI/Host unchanged). A side fix gave non-streaming
+   chat the redirect destination validation it had skipped.
+3. **P1 – sandbox orphan containers.** Stopping a Python run signalled only
+   the Docker CLI; SIGKILL cannot be forwarded, so containers could outlive
+   the run. Containers are now named and force-removed on every stop path,
+   and code is fed on stdin instead of argv. A real-Docker CI job runs the
+   app's execution path (success, bounded output, timeout/abort cleanup,
+   fail-closed without the image) and passes.
+4. **P1 – origin policy trusted any Host.** A rebinding domain presenting
+   matching Host/Origin passed the CSRF check. Self-origin is auto-trusted
+   only for loopback hosts; other serving origins require
+   `KAGGLE_KIT_ALLOWED_ORIGINS`.
+5. **P1 – approvals not bound to credential values.** Rotating a secret while
+   an approval was pending would execute the approved call under the new
+   credential. Approvals now carry a fingerprint of the credential values and
+   are refused (409) on rotation.
+6. **P2 – approval UI understandability.** Approvals showed a generic tool
+   description with arguments collapsed. They now show an operation-specific
+   summary (method + endpoint, code size + first line, search query, URL)
+   with arguments expanded.
+7. **P2 – static symlink escape.** Lexical containment only; canonical-path
+   containment added with a regression test.
+8. **P2 – unverified notebook binaries.** llama.cpp release tarballs are now
+   verified against SHA-256 digests pinned from the GitHub API; mismatch
+   aborts before extraction/execution. Key/state files are `0600` from
+   creation.
+9. **P2 – bundle size.** Measured entry chunk 710,229 B; after lazy
+   Settings/Markdown splitting it is 307,923 B (gzip ≈ 93 kB), no chunk
+   ≥ 500 kB, advisory gone.
+
+### Reviewed and found sound (no change)
+
+SecretStore v1→v2 migration/permissions/ref validation, file-vault lifetime
+and conversation scoping, browser storage sanitization and export shape,
+launcher argument handling (Windows `npm` shell use is fixed-argument),
+release tooling validation suite, tool protocol state machine (probes,
+correlation, budgets, replay/expiry already covered by the existing tests).
+
+### Corrections to earlier records
+
+The dev4 entries reporting the notebook suite as "39 passed, 7 skipped" were
+inaccurate: unittest counts skipped tests inside "Ran 39", so locally without
+the `requests` package only 32 tests actually ran. The 7 gated tests are the
+`RangeServerTests` class (`skipUnless(REQUESTS_READY)`); with `requests`
+installed they run and pass locally (43 total after the new checksum tests)
+and have always run in CI. No test was unskipped or weakened.
+
+### Residual risks (documented, not fixed here)
+
+Hugging Face model fetch uses `resolve/main` and `cloudflared` uses the
+`latest` URL (HTTPS, unpinned) — pinning either changes model/tunnel
+defaults and requires live Kaggle evidence first. A LAN hostname resolving to
+a private address is reachable by default (intended for local servers);
+`KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`/`KAGGLE_KIT_ALLOWED_HOSTS` close it.
+
+### Verification state legend
+
+Implemented **and runtime-verified**: workflow boundary, DNS pinning (real
+loopback sockets + injected DNS), sandbox lifecycle (real Docker in CI),
+origin policy, credential-bound approvals, approval summaries, symlink
+refusal, notebook checksum logic (unit), code splitting (build output),
+browser flows incl. approval/denial (Playwright/Chromium in CI), Windows
+launcher (windows-latest in CI). **Implemented, not runtime-verified**: the
+notebook checksum path on live Kaggle hardware. **Blocked / not run**: live
+Kaggle endpoint and model weights, Brave account, live MCP/HTTP services —
+no such credentials/endpoints exist in this environment; failure and
+missing-credential paths are covered by tests.

@@ -7,7 +7,7 @@
  * still advertise an older version.
  */
 
-export const APP_VERSION = '0.1.0-dev4';
+export const APP_VERSION = '0.1.0-dev5';
 
 /** User agent sent to the configured model server. Never contains a secret. */
 export const APP_USER_AGENT = `Kaggle-Kit/${APP_VERSION}`;

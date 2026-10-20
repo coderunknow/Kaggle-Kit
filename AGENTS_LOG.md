@@ -782,3 +782,39 @@ unmerged.
   limitation also recorded for dev3); checksum evidence therefore comes
   from the workflow's verification step and the matching asset sizes.
 * This entry is a docs-only commit after the tag; the tag was not moved.
+
+## 2026-10-20 – Audit remediation record (pre-dev5)
+
+* Audited from baseline `f4656bc` on `arena/bef31f06-kaggle-kit`; PR #10 left
+  open and unmerged, `v0.1.0-dev4` tag/release untouched at `0d3a742`.
+* Audit commits: `8c2f91c` workflow injection removal + action pinning +
+  `tools/test_workflow_security.py`; `9cd9ecb` DNS-pinned upstream fetch for
+  all proxy paths (+ redirect validation on non-streaming chat); `56b06f5`
+  named sandbox containers with force-remove cleanup and stdin-fed code,
+  loopback-only self-origin, credential-fingerprint-bound approvals, real
+  Docker sandbox integration script + CI jobs (sandbox, windows-launcher);
+  `aa3ccba` Vite code splitting (710,229 B → 307,923 B entry) + Playwright
+  e2e + docs corrections; `527d923` static symlink refusal; `f143b44`
+  notebook llama.cpp SHA-256 pinning (digests from the GitHub API for
+  b11719/b11718/b11717 ubuntu-cuda-12.8) + owner-only key/state files;
+  `6e8f928` operation-specific approval summaries; `365326a`, `0523518`,
+  `95dc19b`, `6f726ee`, `4d4a202`, `ae50ebb` e2e harness fixes driven by CI
+  (mock readiness probe 401, duplicate Settings buttons, wrong mock text,
+  settings tab role, denial text counted twice).
+* Failures encountered and resolved: 8 `server/proxy.test.ts` failures after
+  pinning (global-fetch stubs bypassed by undici) fixed with a documented
+  test-only fetch seam; one ESLint unused-variable in the sandbox script;
+  five Playwright iterations in CI (no local browser: the Chromium download
+  is blocked in this sandbox, failure tails were mirrored into check-run
+  annotations for API diagnosis); PEP 668 blocked `pip install requests`
+  until `--break-system-packages` was used to reproduce the 7 gated notebook
+  tests (all pass; the historical "39 passed, 7 skipped" reading is corrected
+  in DESIGN_LOG).
+* `npm audit --json`: 0 vulnerabilities across 425 dependencies.
+* Local sandbox has no Docker and no browser; those paths are verified by
+  the new CI jobs instead (`docker sandbox integration`, `Browser
+  end-to-end`, `windows launcher` — all green on `ae50ebb`, run 39421344630,
+  except the Kilo credits check which produces no findings).
+* Prepared `v0.1.0-dev5` (version bump + release notes) because the fixes
+  change the distributed app and notebook; publication follows the full
+  check suite and release dry-run on the final commit.
