@@ -6,7 +6,7 @@ import type { ChatCompletionResponse, ChatMessageInput, OpenAIToolCall } from '.
 import { parseInferenceParams } from '../../shared/api/validation';
 import type { ConversationToolSettings, SourceCitation, ToolExecutionLimits, ToolProfileSettings, ToolTraceRecord } from '../../shared/tools/types';
 import { mergeConversationLimits, shouldPersistToolHistory } from '../../shared/tools/types';
-import { buildToolDefinitions, toOpenAITools } from '../../shared/tools/catalog';
+import { buildToolDefinitions, httpModelName, mcpModelName, toOpenAITools } from '../../shared/tools/catalog';
 import { neutralizeNoToolsClaim } from '../../shared/prompts/qwen';
 import { HttpError } from '../http';
 import type { UpstreamTarget, ProxyService } from '../proxy';
@@ -37,6 +37,12 @@ interface PendingCall {
   prepared: PreparedToolCall;
   traceId: string;
   expiresAt: number;
+  /**
+   * Hash of the credential *values* this call would use. Settings carry
+   * only references, so a rotated key would otherwise silently change the
+   * operation the user approved; a mismatch refuses the run.
+   */
+  secretFingerprint: string;
 }
 
 interface ToolChatSession {
@@ -200,6 +206,14 @@ export class ToolChatService {
       this.discard(input.jobId);
       throw new HttpError(409, 'Tool settings changed while approval was pending. The old operation was not run; review the updated settings and try again.');
     }
+    const currentSecretFingerprint = await this.secretFingerprintFor(pending.prepared, currentSettings);
+    if (currentSecretFingerprint !== pending.secretFingerprint) {
+      this.discard(input.jobId);
+      throw new HttpError(409, 'A configured credential changed while approval was pending. The operation was not run; review it again before retrying.');
+    }
+    if (this.jobs.get(input.jobId) !== session) {
+      throw new HttpError(410, 'This tool approval was cancelled before it could run.');
+    }
     const linked = this.linkSignal(session, signal);
     try {
     const trace = session.trace.find((entry) => entry.id === pending.traceId);
@@ -328,7 +342,8 @@ export class ToolChatService {
           if (prepared.approvalRequired) {
             const approvalId = randomUUID();
             const expiresAt = Date.now() + APPROVAL_TTL_MS;
-            session.pending = { approvalId, call, prepared, traceId, expiresAt };
+            const secretFingerprint = await this.secretFingerprintFor(prepared, session.settings);
+            session.pending = { approvalId, call, prepared, traceId, expiresAt, secretFingerprint };
             trace.approvalId = approvalId;
             this.jobs.set(session.jobId, session);
             this.approvals.set(approvalId, session.jobId);
@@ -539,6 +554,17 @@ export class ToolChatService {
     return this.completeResult(session);
   }
 
+  /**
+   * Hash the credential values a prepared call would use (via the secret
+   * references in its tool configuration). The values never leave the
+   * server; only the digest is kept with the pending approval.
+   */
+  private async secretFingerprintFor(prepared: PreparedToolCall, settings: ToolProfileSettings): Promise<string> {
+    const refs = secretRefsForTool(prepared.name, settings);
+    const pairs = await Promise.all(refs.map(async (ref) => [ref, await this.store.get(ref)] as const));
+    return createHash('sha256').update(JSON.stringify(pairs)).digest('hex');
+  }
+
   private async safeArguments(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const refs = await this.store.list();
     const secrets = (await Promise.all(refs.map((ref) => this.store.get(ref)))).filter((value): value is string => Boolean(value));
@@ -701,6 +727,20 @@ function stableStringify(value: unknown): string {
     return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`).join(',')}}`;
   }
   return JSON.stringify(value) ?? 'undefined';
+}
+
+function secretRefsForTool(name: string, settings: ToolProfileSettings): string[] {
+  const refs = new Set<string>();
+  if (name === 'web_search' && settings.web.secretRef) refs.add(settings.web.secretRef);
+  for (const tool of settings.httpTools) {
+    if (httpModelName(tool.id) !== name) continue;
+    for (const header of tool.headers) if (header.secretRef) refs.add(header.secretRef);
+  }
+  for (const server of settings.mcpServers) {
+    if (!server.tools.some((tool) => mcpModelName(server, tool.serverToolName) === name)) continue;
+    for (const header of server.headers ?? []) if (header.secretRef) refs.add(header.secretRef);
+  }
+  return [...refs].sort();
 }
 
 function fingerprint(settings: ToolProfileSettings): string {

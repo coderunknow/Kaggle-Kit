@@ -406,6 +406,54 @@ describe('bounded server-side tool chat', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses an approved call when its credential rotated while approval was pending', async () => {
+    const test = await harness(profile({
+      allowedTools: ['http_writer'],
+      httpTools: [{
+        id: 'writer',
+        name: 'Writer',
+        description: 'Write a value to the configured service.',
+        endpoint: 'https://api.example.com/write',
+        method: 'POST',
+        inputSchema: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+          additionalProperties: false,
+        },
+        headers: [{ name: 'Authorization', secretRef: 'writer-key' }],
+        permission: 'write',
+        timeoutMs: 10_000,
+      }],
+    }), [
+      functionCall('http_writer', { value: 'x' }),
+      answer('should not be reached'),
+    ]);
+    await test.store.set('writer-key', 'synthetic-old-credential');
+
+    const pending = await test.start();
+    expect(pending.status).toBe('awaiting_approval');
+    expect(pending.pendingApproval?.toolName).toBe('http_writer');
+
+    // Rotate the credential behind the same reference. The approved
+    // operation would now authenticate as a different principal, so the
+    // approval must not be honoured.
+    await test.store.set('writer-key', 'synthetic-rotated-credential');
+    await expect(test.service.approve({
+      jobId: pending.jobId!,
+      approvalId: pending.pendingApproval!.approvalId,
+      approved: true,
+    })).rejects.toThrow(/credential changed while approval was pending/i);
+    // Only the initial model request happened: nothing executed, no follow-up.
+    expect(test.fetchMock).toHaveBeenCalledTimes(1);
+    // The job is gone; the approval cannot be replayed either.
+    await expect(test.service.approve({
+      jobId: pending.jobId!,
+      approvalId: pending.pendingApproval!.approvalId,
+      approved: true,
+    })).rejects.toThrow(/no longer active/i);
+  });
+
   it('does not run an approval cancelled while settings are being revalidated', async () => {
     const profileSettings = profile({
       allowedTools: ['code_execute'],

@@ -9,7 +9,11 @@
  * The controls are deliberately small:
  *
  *  - a request with an `Origin` header must come from an allowed origin; the
- *    origin of the request itself is always allowed,
+ *    origin of the request itself is only trusted when the `Host` is a
+ *    loopback address — otherwise a DNS-rebinding domain (attacker DNS name
+ *    resolving to 127.0.0.1, so `Host` and `Origin` both carry the attacker
+ *    name) would trivially satisfy a self-origin check. Non-loopback
+ *    serving must list its origin in `KAGGLE_KIT_ALLOWED_ORIGINS`,
  *  - a request with a body must use `Content-Type: application/json`, which a
  *    browser cannot send cross origin without a preflight,
  *  - static files are resolved inside the client directory with a proper
@@ -19,6 +23,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 
+import { isLoopbackAddress } from './destinations';
 import { HttpError } from './http';
 
 export interface OriginPolicy {
@@ -44,7 +49,11 @@ export function isAllowedOrigin(
   const host = request.headers.host;
   const allowed = new Set<string>();
 
-  if (host) {
+  // Self-origin is only meaningful on loopback. For any other Host value
+  // (a DNS-rebinding name, a LAN name, a tunnel/preview host) the origin
+  // must be configured explicitly, because Host and Origin are both
+  // supplied by the very client being policed.
+  if (host && isLoopbackHost(host)) {
     allowed.add(`http://${host}`);
     allowed.add(`https://${host}`);
   }
@@ -62,6 +71,15 @@ export function isAllowedOrigin(
     origin,
     reason: `The origin "${origin}" is not allowed to call this proxy.`,
   };
+}
+
+/** True when a `Host` header value names this machine literally. */
+function isLoopbackHost(host: string): boolean {
+  const hostname = host.startsWith('[')
+    ? host.slice(1, host.indexOf(']'))
+    : host.split(':')[0] ?? '';
+  const normalized = hostname.trim().toLowerCase().replace(/\.$/, '');
+  return normalized === 'localhost' || normalized.endsWith('.localhost') || isLoopbackAddress(normalized);
 }
 
 /** Reject a request body that is not JSON. */
