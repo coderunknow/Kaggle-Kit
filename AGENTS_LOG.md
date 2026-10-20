@@ -818,3 +818,22 @@ unmerged.
 * Prepared `v0.1.0-dev5` (version bump + release notes) because the fixes
   change the distributed app and notebook; publication follows the full
   check suite and release dry-run on the final commit.
+
+## 2026-10-20 – v0.1.0-dev5 publication record
+
+* Ran the complete required check suite on final HEAD `df699bd` (results in
+  DESIGN_LOG), then `tools/release-dry-run.sh 0.1.0-dev5 v0.1.0-dev5` —
+  exit 0, "The release v0.1.0-dev5 is valid" for both staged artifacts and
+  the simulated download validation.
+* Pushed branch; CI run 39421934675 fully green except Kilo credits.
+  Created/pushed lightweight tag `v0.1.0-dev5` at `df699bd`; release workflow
+  run 39422153705 completed successfully (build, staging, validation,
+  publication, published-release verification).
+* Verified through the GitHub API: prerelease `v0.1.0-dev5` published
+  2026-10-20T12:26:56Z targeting `df699bd`, six assets matching dry-run
+  sizes; `v0.1.0-dev4` still targets `0d3a742` with its original six assets;
+  PR #10 `OPEN`, `mergedAt: null`. Direct asset download from this sandbox
+  remains blocked (release-assets host EOF), so checksum evidence is the
+  workflow verification step plus exact size parity.
+* Also ignored Playwright artifacts (`test-results/`, `playwright-report/`,
+  `e2e-output.txt`) in this docs-only post-tag commit.

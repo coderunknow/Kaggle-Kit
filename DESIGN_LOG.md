@@ -1214,3 +1214,24 @@ notebook checksum path on live Kaggle hardware. **Blocked / not run**: live
 Kaggle endpoint and model weights, Brave account, live MCP/HTTP services —
 no such credentials/endpoints exist in this environment; failure and
 missing-credential paths are covered by tests.
+
+## 2026-10-20 – v0.1.0-dev5 published
+
+* Release commit `df699bdcdb629a3ce0cdf4f5aa3a11f5f0967536` passed the full
+  required suite on the exact HEAD (typecheck, lint, Vitest 43 files/373
+  tests, build, integration 28/28, notebooks 43/0-skipped, tools 25,
+  `git diff --check`, `npm audit` 0 vulnerabilities) and
+  `tools/release-dry-run.sh 0.1.0-dev5 v0.1.0-dev5` (valid in staged and
+  simulated-download validation). All CI jobs on that commit passed,
+  including the new `docker sandbox integration`, `windows launcher` and
+  `Browser end-to-end` jobs (run 39421934675).
+* Tag `v0.1.0-dev5` (lightweight) points at `df699bd`; release workflow
+  [run 39422153705](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39422153705)
+  succeeded including published-release verification. Prerelease published
+  2026-10-20T12:26:56Z:
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev5> with
+  six assets whose sizes match the local dry-run staging exactly
+  (app 2 150 258 B, notebook 87 038 B, source 795 886 B).
+* `v0.1.0-dev4` remains unchanged at `0d3a742` (verified via API after the
+  dev5 publication); PR #10 remains open and unmerged. This entry is a
+  docs-only commit after the tag; the tag was not moved.
