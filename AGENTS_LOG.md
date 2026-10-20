@@ -614,3 +614,71 @@ stored profile/chat formats.
 * Release assets could not be downloaded in this sandbox (EOF from
   `release-assets.githubusercontent.com`); the digests come from the GitHub
   API and the workflow's download-and-verify step.
+
+## 2026-10-20 – v0.1.0-dev4 candidate on `arena/c1f569d9-kaggle-kit`
+
+**Scope.** Implemented the opt-in secure tool loop, seven tool categories,
+model-specific native capability probe, per-call approvals, bounded execution,
+conversation settings, profile-scoped tool configuration, SecretStore v2,
+retention-aware Brave handling, and accessible activity timeline. Ordinary
+OpenAI-compatible streaming/non-streaming chat remains available when tools
+are disabled or capability is not verified. Older profile/conversation data
+loads with conservative defaults.
+
+**Security and compatibility work.**
+
+* The native probe must see a valid correlated `tool_calls` response, accept a
+  synthetic tool result and finish with the exact probe sentinel. It never
+  executes the probed function; support is not inferred from endpoint, model
+  family or `--jinja`.
+* MCP connection target changes (URL, headers, transport or timeout) clear
+  discovery metadata and grants. Profile saves cannot introduce MCP tool names,
+  descriptions or schemas from browser input: they retain only server-discovered
+  metadata and apply the user's selection/permission changes. Grant requires at
+  least one selected discovered tool.
+* Tool URLs use checked/pinned public DNS; redirect handling, schema/argument
+  limits, approval single-use/expiry, denied-operation replay refusal, secret
+  redaction, transient Brave-content export/persistence redaction, file-vault
+  cleanup, and cancellation-state uncertainty are covered in code/tests.
+* Stored sanitizer helper accepts the type-predicate parameter `validEntries`;
+  SecretStore v2 is `{ version: 2, secrets, toolProfiles }`, migrates valid v1,
+  checks both maps as plain records, and maintains restrictive file mode.
+* Docker was unavailable (`docker --version`: command not found). Python
+  execution therefore remains fail-closed and runtime isolation is unverified.
+  No live Kaggle model, provider account, external MCP server or public tunnel
+  was tested. The pre-existing model proxy still does not DNS-pin its upstream;
+  that limitation is documented.
+
+**Validation on the working tree.**
+
+* `npm ci` – succeeded; 368 packages installed, 0 vulnerabilities reported.
+* `npm run check` – passed TypeScript client/server typecheck and ESLint;
+  Vitest **42 files, 332 tests passed**.
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` – **39 passed,
+  7 skipped**.
+* `python3 -m unittest discover -s tools -p 'test_*.py'` – **18 passed**.
+* `npm run build` – passed; production client and standalone server bundle
+  built. Vite reported the existing large-chunk advisory; PDF.js emitted
+  missing optional canvas/font-data warnings in the text-PDF tests.
+* `npm run check:integration` – **19/19** loopback mock-upstream checks passed,
+  including ordinary inference, stream delivery/cancellation, PDF/DOCX
+  extraction and request policy.
+* `git diff --check` – passed before the release dry-run.
+* `tools/release-dry-run.sh 0.1.0-dev4` – pending on the committed candidate;
+  no tag or publication has been made.
+
+## 2026-10-20 – Final security review and pre-dry-run validation
+
+* Hardened tool argument parsing against JSON numbers that overflow to Infinity;
+  HTTP tool arguments are recursively rejected when field names look like
+  credentials. Public-web URLs with credential-like query names are rejected,
+  and those URLs are omitted from citations.
+* Focused security regression run: **6 files, 47 tests passed**.
+* Final `npm run check`: typecheck and ESLint passed; Vitest **42 files,
+  344 tests passed**.
+* Notebook tests: **39 passed, 7 skipped**. Release-tool tests: **18 passed**.
+* `docs/release/environment.json`, `package.json` and `package-lock.json` parse
+  as JSON. `git diff --check` passed after the security and documentation edits.
+* Production build, integration suite, and release dry-run will be rerun against
+  the committed candidate. Docker is unavailable; model/provider behavior and
+  external endpoint rights remain unverified. No tag or publication exists.

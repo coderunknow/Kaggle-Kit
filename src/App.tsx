@@ -24,8 +24,8 @@ import { useChat } from './state/useChat';
 
 export function App() {
   const app = useApp();
-  const { activeProfile, activeConversation, state, newConversation, cancelRequest } = app;
-  const { sendMessage, editMessage, retryMessage, resendMessage, isPending } = useChat();
+  const { activeProfile, activeConversation, state, newConversation } = app;
+  const { sendMessage, editMessage, retryMessage, resendMessage, approveToolCall, cancelToolJob, isPending } = useChat();
   const isWide = useMediaQuery('(min-width: 1024px)');
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)');
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
@@ -136,8 +136,12 @@ export function App() {
   }, [conversationId, sendMessage]);
 
   const handleCancel = useCallback(() => {
-    if (conversationId) cancelRequest(conversationId);
-  }, [cancelRequest, conversationId]);
+    if (conversationId) void cancelToolJob(conversationId);
+  }, [cancelToolJob, conversationId]);
+
+  const handleToolApproval = useCallback((messageId: string, approvalId: string, approved: boolean) => {
+    if (conversationId) void approveToolCall(conversationId, messageId, approvalId, approved);
+  }, [approveToolCall, conversationId]);
 
   const handleCopy = useCallback((message: ChatMessage) => copyText(message.content), []);
 
@@ -345,6 +349,7 @@ export function App() {
             connectionState={connectionState}
             onSend={handleSend}
             onCancel={handleCancel}
+            onToolApproval={handleToolApproval}
             onCopy={handleCopy}
             onEdit={handleEdit}
             onRetry={handleRetry}

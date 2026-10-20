@@ -2,13 +2,15 @@
 /**
  * Integration check of the built application.
  *
- * The script starts the mock upstream and the *built* proxy backend
- * (``dist/server/index.js``) and drives the real HTTP surface of the
+ * The script copies the *built* client and proxy backend (``dist/``) to a
+ * temporary standalone app directory without ``node_modules``, starts that
+ * backend and a mock upstream, and drives the real HTTP surface of the
  * application:
  *
  *  - the health endpoint of the backend,
  *  - the connection test with a correct and with a wrong key,
  *  - a chat completion through the proxy,
+ *  - PDF and DOCX parsing in the standalone backend,
  *  - a streaming answer, including the termination marker,
  *  - the cancellation of a running stream.
  *
@@ -20,8 +22,10 @@
  */
 
 import { spawn } from 'node:child_process';
+import { cp, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -80,32 +84,15 @@ function post(baseUrl, route, body, headers = {}) {
 async function main() {
   const upstreamPort = 18_100;
   const backendPort = 18_101;
-
-  const upstream = spawn(
-    process.execPath,
-    [path.join(root, 'tools/mock-upstream.mjs'), '--port', String(upstreamPort), '--api-key', API_KEY],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  upstream.stdout.on('data', () => undefined);
-  upstream.stderr.on('data', (chunk) => process.stderr.write(`[upstream] ${chunk}`));
-
-  const backend = spawn(process.execPath, [path.join(root, 'dist/server/index.js')], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      KAGGLE_KIT_PORT: String(backendPort),
-      KAGGLE_KIT_HOST: '127.0.0.1',
-      KAGGLE_KIT_DATA_DIR: path.join(root, '.data/integration'),
-      KAGGLE_KIT_CLIENT_DIR: path.join(root, 'dist/client'),
-    },
-  });
-  backend.stdout.on('data', (chunk) => process.stdout.write(`[backend] ${chunk}`));
-  backend.stderr.on('data', (chunk) => process.stderr.write(`[backend] ${chunk}`));
+  const standaloneRoot = await mkdtemp(path.join(os.tmpdir(), 'kaggle-kit-integration-'));
+  let upstream;
+  let backend;
 
   const stop = () => {
-    upstream.kill('SIGTERM');
-    backend.kill('SIGTERM');
+    upstream?.kill('SIGTERM');
+    backend?.kill('SIGTERM');
   };
+
   process.on('exit', stop);
   process.on('SIGINT', () => {
     stop();
@@ -113,6 +100,33 @@ async function main() {
   });
 
   try {
+    const standaloneServerDir = path.join(standaloneRoot, 'dist/server');
+    const standaloneClientDir = path.join(standaloneRoot, 'dist/client');
+    await mkdir(standaloneServerDir, { recursive: true });
+    await cp(path.join(root, 'dist/server/index.js'), path.join(standaloneServerDir, 'index.js'));
+    await cp(path.join(root, 'dist/client'), standaloneClientDir, { recursive: true });
+
+    upstream = spawn(
+      process.execPath,
+      [path.join(root, 'tools/mock-upstream.mjs'), '--port', String(upstreamPort), '--api-key', API_KEY],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    upstream.stdout.on('data', () => undefined);
+    upstream.stderr.on('data', (chunk) => process.stderr.write(`[upstream] ${chunk}`));
+
+    backend = spawn(process.execPath, [path.join(standaloneServerDir, 'index.js')], {
+      cwd: standaloneRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        KAGGLE_KIT_PORT: String(backendPort),
+        KAGGLE_KIT_HOST: '127.0.0.1',
+        KAGGLE_KIT_DATA_DIR: path.join(standaloneRoot, '.data/integration'),
+        KAGGLE_KIT_CLIENT_DIR: standaloneClientDir,
+      },
+    });
+    backend.stdout.on('data', (chunk) => process.stdout.write(`[backend] ${chunk}`));
+    backend.stderr.on('data', (chunk) => process.stderr.write(`[backend] ${chunk}`));
     const upstreamReady = await waitForPort(upstreamPort);
     assert('the mock upstream starts', upstreamReady, 'the port did not open');
     const backendReady = await waitForPort(backendPort);
@@ -176,7 +190,24 @@ async function main() {
       JSON.stringify(chatBody).slice(0, 300),
     );
 
-    // 6. the streaming probe and a streaming answer
+    // 6. file parsing through the built bundle (including bundled PDF/DOCX parsers)
+    const pdfBytes = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNDUgPj4Kc3RyZWFtCkJUIC9GMSAxMiBUZiA3MiAxMDAgVGQgKEhlbGxvIFBERikgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwMQolJUVPRgo=';
+    const docxBytes = 'UEsDBBQAAAAIAAkoVF1MBC9KmgAAAMcAAAARAAAAd29yZC9kb2N1bWVudC54bWxFjr0OwjAMhF8lyk5TGBCq2jKAEBsLSKwlcX+kOI6cQOHtScrA8p18Z59c799oxQs4TOQauS5KKcBpMpMbGnm7nlY7uW/ruTKknwguirTvQjU3cozRV0oFPQJ2oSAPLmU9MXYxjTyomdh4Jg0hpDq0alOWW4Xd5GSufJD5ZPUZnBHbM1hLomdCcbwc7rXKZiYv9At/h+r/VPsFUEsBAhQDFAAAAAgACShUXUwEL0qaAAAAxwAAABEAAAAAAAAAAAAAAIABAAAAAHdvcmQvZG9jdW1lbnQueG1sUEsFBgAAAAABAAEAPwAAAMkAAAAAAA==';
+    for (const [name, mediaType, contentBase64] of [
+      ['report.pdf', 'application/pdf', pdfBytes],
+      ['notes.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', docxBytes],
+    ]) {
+      const upload = await post(base, '/api/tools/files/upload', {
+        conversationId: 'integration-files', name, mediaType, contentBase64,
+      });
+      const uploadBody = await upload.json();
+      assert(`the built bundle parses ${name}`, upload.status === 201 && uploadBody.file?.extractedCharacters > 0, JSON.stringify(uploadBody));
+      assert(`the ${name} contents are not returned`, !JSON.stringify(uploadBody).includes('Hello'));
+    }
+    const deleteFiles = await fetch(`${base}/api/tools/files?conversationId=integration-files`, { method: 'DELETE' });
+    assert('the built file vault can be cleared', deleteFiles.status === 200, `HTTP ${deleteFiles.status}`);
+
+    // 7. the streaming probe and a streaming answer
     const probe = await post(base, '/api/proxy/probe-stream', {
       baseUrl: upstreamUrl,
       apiKey: API_KEY,
@@ -201,7 +232,7 @@ async function main() {
       `HTTP ${streamed.status}: ${streamText.slice(0, 200)}`,
     );
 
-    // 7. the cancellation of a running stream
+    // 8. the cancellation of a running stream
     const cancelled = await new Promise((resolve) => {
       const payload = JSON.stringify({
         baseUrl: upstreamUrl,
@@ -234,7 +265,7 @@ async function main() {
     });
     assert('a stream can be cancelled', cancelled === true, 'the stream was not closed by the client');
 
-    // 8. the request policy
+    // 9. the request policy
     const foreignOrigin = await fetch(`${base}/api/health`, {
       headers: { Origin: 'https://evil.test' },
     });
@@ -248,6 +279,8 @@ async function main() {
     assert('a body that is not JSON is refused', wrongType.status === 415, `HTTP ${wrongType.status}`);
   } finally {
     stop();
+    process.off('exit', stop);
+    await rm(standaloneRoot, { recursive: true, force: true });
   }
 }
 

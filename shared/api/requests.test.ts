@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildChatCompletionBody, type ServerCapabilities } from './requests';
+import type { ToolDefinition } from '../tools/types';
 
 const noCapabilities: ServerCapabilities = {
   streamingVerified: false,
@@ -105,5 +106,31 @@ describe('buildChatCompletionBody', () => {
     });
 
     expect(body.reasoning_effort).toBe('medium');
+  });
+
+  it('omits tools until native tool calling is explicitly verified', () => {
+    const tool = { type: 'function' as const, function: { name: 'calculator_calculate', parameters: { type: 'object' } } };
+    const { body, omitted } = buildChatCompletionBody({
+      model: 'm', messages: [{ role: 'user', content: 'x' }],
+      params: { maxTokens: 16, temperature: 0, topP: 1, stream: false },
+      capabilities: noCapabilities, tools: [tool],
+    });
+    expect(body.tools).toBeUndefined();
+    expect(omitted).toContain('tools');
+  });
+
+  it('sends verified tools non-streaming and strips local permission metadata', () => {
+    const tool = { type: 'function' as const, permission: 'read_only', function: { name: 'calculator_calculate', parameters: { type: 'object' } } } as ToolDefinition;
+    const { body, omitted } = buildChatCompletionBody({
+      model: 'm', messages: [{ role: 'user', content: 'x' }],
+      params: { maxTokens: 16, temperature: 0, topP: 1, stream: true },
+      capabilities: { ...noCapabilities, streamingVerified: true, toolCalling: { status: 'supported_verified', detail: 'verified' } },
+      tools: [tool],
+    });
+    expect(body.tools?.[0]?.function.name).toBe('calculator_calculate');
+    expect(body.tools?.[0]).not.toHaveProperty('permission');
+    expect(body.stream).toBeUndefined();
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(omitted).toContain('stream (tool-call streaming was not verified; tool turns use non-streaming requests)');
   });
 });

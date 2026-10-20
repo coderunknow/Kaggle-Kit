@@ -7,11 +7,34 @@
  * does not understand.
  */
 
-export type ChatRole = 'system' | 'user' | 'assistant';
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+/** JSON Schema object used for function parameters. */
+export type JsonSchema = Record<string, unknown>;
+
+export interface OpenAIToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters: JsonSchema;
+  };
+}
+
+export interface OpenAIToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
 
 export interface ChatMessageInput {
   role: ChatRole;
-  content: string;
+  content: string | null;
+  /** Tool calls are only valid on assistant messages. */
+  tool_calls?: OpenAIToolCall[];
+  /** Correlation identifier for a tool result. */
+  tool_call_id?: string;
+  name?: string;
 }
 
 export interface OpenAIModel {
@@ -36,6 +59,7 @@ export interface TokenUsage {
 export interface CompletionMessage {
   role?: string;
   content?: string | null;
+  tool_calls?: OpenAIToolCall[];
   /** llama.cpp exposes chain-of-thought under several names depending on build. */
   reasoning_content?: string | null;
   reasoning?: string | null;
@@ -68,6 +92,9 @@ export interface ChatCompletionRequestBody {
   presence_penalty?: number;
   stream?: boolean;
   reasoning_effort?: string;
+  tools?: OpenAIToolDefinition[];
+  tool_choice?: 'auto' | 'none' | 'required';
+  parallel_tool_calls?: boolean;
 }
 
 /** Subset of llama.cpp's `/props` response that we use for capability checks. */

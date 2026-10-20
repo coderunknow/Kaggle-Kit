@@ -2817,3 +2817,122 @@ textarea[aria-invalid="true"] {
     align-items: flex-start;
   }
 }
+
+.tool-settings__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.tool-settings__group + .tool-settings__group {
+  margin-top: 12px;
+}
+
+.tool-settings__group legend {
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.tool-settings__entry {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.tool-settings__url {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tool-settings__limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.tool-settings__mcp-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.tool-settings__mcp-tool > code {
+  font-size: 10px;
+  color: var(--text-subtle);
+  overflow-wrap: anywhere;
+}
+
+.conversation-tools,
+.conversation-uploads {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.conversation-tools > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.conversation-tools > .field__hint {
+  display: block;
+  margin: 8px 0;
+}
+
+.conversation-tools__list {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.conversation-tools__list legend {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.conversation-uploads__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.conversation-uploads__list li {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.conversation-uploads__list li span {
+  color: var(--text-subtle);
+}
+
+@media (max-width: 540px) {
+  .tool-settings__limits {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

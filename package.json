@@ -1,6 +1,6 @@
 {
   "name": "kaggle-kit",
-  "version": "0.1.0-dev3",
+  "version": "0.1.0-dev4",
   "private": true,
   "description": "Kaggle deployment notebook + browser chat client for an OpenAI-compatible llama.cpp server",
   "type": "module",
@@ -23,15 +23,22 @@
     "test:coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run lint && npm run test",
     "mock:upstream": "node tools/mock-upstream.mjs",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server/index.js --packages=external --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\""
+    "build:server": "esbuild server/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server/index.js --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\""
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@thednp/dommatrix": "^3.1.2",
+    "ajv": "^8.20.0",
+    "fast-xml-parser": "^5.11.2",
     "highlight.js": "^11.12.0",
+    "pdfjs-dist": "^5.4.394",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "undici": "^7.30.1",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -42,6 +49,7 @@
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/yauzl": "^3.4.0",
     "@vitejs/plugin-react": "^6.1.2",
     "esbuild": "^0.28.2",
     "eslint": "^10.13.0",

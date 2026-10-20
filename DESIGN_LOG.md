@@ -927,3 +927,78 @@ are **not run**, not passed. The PowerShell wrapper was not executed on a real
 Windows machine; the Node launcher was executed on Linux (readiness, port
 conflict, forced conflict, clean shutdown). Real GPU inference and a real
 browser remain outside this environment.
+
+## 2026-10-20 – v0.1.0-dev4: policy-enforced tool use, not prompt promises
+
+### Decisions
+
+* Keep ordinary chat as the fallback. Tool definitions are sent only when a
+  harmless, model/endpoint/credential-specific native probe succeeds; no model
+  family, compatible URL, normal inference or `--jinja` flag is treated as
+  evidence. The probe validates call correlation, accepted synthetic tool
+  result and exact final sentinel without running any function.
+* Use the existing API gateway, proxy, reducer, settings/profile model,
+  conversation persistence and release workflow. Tool execution and authority
+  stay in the local server; the browser only requests, displays and approves
+  bounded operations. The server rejects unknown catalog names and validates
+  bounded JSON/schema input before dispatch.
+* Keep seven separate categories and explicit permissions. Read-only tools may
+  run automatically; non-GET HTTP, `write`/`unknown` MCP and every code run
+  pause for an exact single-use approval. Exact denials are not retried in the
+  same turn. Execution budgets are enforced server-side, not by model prose.
+* Keep uploaded files in a size/character-bounded, in-memory conversation vault;
+  expose no host filesystem and remove vaults on delete/clear/expiry. Code
+  execution is Docker-only, disabled until configured with a digest-pinned
+  Python image, requires approval every run and has no host fallback. Docker
+  absence means fail closed, not a claim that sandboxing was tested.
+* Keep SecretStore v2 as `{ version: 2, secrets, toolProfiles }`. Tool profiles
+  carry secret references, never direct credential values; the store migrates
+  valid v1 data, checks both records as plain objects and retains secure file
+  permissions. `clear()` intentionally erases secret values but preserves
+  non-secret tool settings/references; browser-local erasure is documented as
+  distinct from proxy-side erasure.
+* Treat MCP discovery as server-owned data. A target change clears stale tools;
+  profile writes cannot forge names, descriptions or schemas; a grant requires
+  selected discovered tools. Adding a selected tool or changing its schema,
+  permission, endpoint, headers or timeout requires rediscovery/reapproval.
+* Brave-derived assistant content remains session-only unless both retention
+  rights are confirmed and tool-history persistence is opted in. The same
+  policy is applied to later assistant replies, browser history and Markdown
+  export; rights and pricing remain operator/provider-specific.
+* Cancellation distinguishes a job cancelled while waiting for approval (no
+  operation ran) from one cancelled after approval/running (the operation may
+  have started or completed). This avoids a false safety claim in the timeline.
+
+### Validation and limits
+
+* `npm run check`: typecheck/lint passed; Vitest **42 files, 332 tests passed**.
+* Notebook Python tests: **39 passed, 7 skipped**; release-tool tests: **18
+  passed**.
+* Production build passed. Mock integration passed **19/19**. `git diff --check`
+  passed. Non-failing warnings: Vite's >500 kB chunk advisory and PDF.js's
+  missing optional canvas/font-data fallback in text-PDF tests.
+* The release dry-run is pending the committed candidate. No GitHub workflow,
+  release tag or publication is claimed. The Kaggle runtime, deployed model's
+  native tool round trip, Docker isolation, provider rights, live MCP/HTTP and
+  real-browser accessibility remain unverified. The model proxy's existing
+  hostname check is not DNS pinning; documented allowlisting remains advised.
+
+## 2026-10-20 – Review hardening before release dry-run
+
+The final review added two fail-closed cases: parsed non-finite numeric
+arguments are rejected, and configured HTTP tool arguments containing
+credential-like field names cannot be sent in URLs or request bodies. Public
+web requests reject credential-like query names; matching results are not
+emitted as citations. This favors explicit server-side SecretStore header
+references over model-supplied credential fields.
+
+Validation on this working tree:
+
+* Focused security suite: **6 files, 47 tests passed**.
+* `npm run check`: typecheck/ESLint passed; Vitest **42 files, 344 tests
+  passed**.
+* Notebook suite: **39 passed, 7 skipped**; release-tool suite: **18 passed**.
+* Release/environment JSON parsed successfully; `git diff --check` passed.
+* Build, integration, and the archive/checksum release dry-run are pending
+  execution against the committed candidate. No live model, Docker isolation,
+  provider retention rights, or external endpoint was verified.

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app';
 import { loadServerConfig, type ServerConfig } from './config';
 import { createLogger } from './logger';
+import { DEFAULT_TOOL_PROFILE_SETTINGS } from '../shared/tools/types';
 
 const API_KEY = 'test-api-key-do-not-log';
 
@@ -306,6 +307,96 @@ describe('the local proxy backend', () => {
 
     const remove = await fetch(`${baseUrl}/api/secrets/ref-1`, { method: 'DELETE' });
     expect(remove.status).toBe(200);
+  });
+
+  it('stores, reads, and deletes sanitized server-side tool settings', async () => {
+    const directCredential = 'do-not-store-this-header-value';
+    const settings = {
+      ...structuredClone(DEFAULT_TOOL_PROFILE_SETTINGS),
+      enabled: true,
+      allowedTools: ['http_public_search'],
+      httpTools: [{
+        id: 'public-search', name: 'Public search', description: 'Read public search data',
+        endpoint: 'https://api.example.com/search', method: 'GET' as const,
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        headers: [{ name: 'Authorization', value: directCredential }], permission: 'read_only' as const, timeoutMs: 5000,
+      }],
+    };
+    const save = await fetch(`${baseUrl}/api/tools/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileId: 'tool-profile-1', settings }),
+    });
+    expect(save.status).toBe(200);
+    const savedText = await save.text();
+    expect(savedText).not.toContain(directCredential);
+    const saved = JSON.parse(savedText) as { settings: { enabled: boolean; httpTools: Array<{ headers: unknown[] }> } };
+    expect(saved.settings.enabled).toBe(true);
+    expect(saved.settings.httpTools[0]?.headers).toEqual([]);
+    expect((await app.store.getToolProfile('tool-profile-1'))?.httpTools[0]?.headers).toEqual([]);
+
+    const disk = JSON.parse(await (await import('node:fs/promises')).readFile(app.store.path, 'utf8')) as Record<string, unknown>;
+    expect(disk.version).toBe(2);
+    expect(disk).toHaveProperty('secrets');
+    expect(disk).toHaveProperty('toolProfiles');
+    expect(JSON.stringify(disk)).not.toContain(directCredential);
+
+    const read = await fetch(`${baseUrl}/api/tools/profile?profileId=tool-profile-1`);
+    expect(read.status).toBe(200);
+    expect((await read.json() as { settings: { enabled: boolean } }).settings.enabled).toBe(true);
+    const remove = await fetch(`${baseUrl}/api/tools/profile?profileId=tool-profile-1`, { method: 'DELETE' });
+    expect(remove.status).toBe(200);
+    expect(await app.store.getToolProfile('tool-profile-1')).toBeNull();
+  });
+
+  it('rejects invalid tool profile identifiers and refuses a claimed native capability', async () => {
+    const invalid = await fetch(`${baseUrl}/api/tools/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profileId: '../bad', settings: DEFAULT_TOOL_PROFILE_SETTINGS }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const response = await post('/api/tools/capability', {
+      baseUrl: upstream.url,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      timeoutMs: 10_000,
+    });
+    expect(response.status).toBe(200);
+    const capability = await response.json() as { status: string; detail: string };
+    expect(capability.status).toBe('failed_verification');
+    expect(capability.detail).toMatch(/ordinary chat is unchanged|tool use remains disabled/i);
+    const probe = upstream.requests[upstream.requests.length - 1];
+    const sent = JSON.parse(probe?.body ?? '{}') as { tools?: Array<{ function?: { name?: string } }>; stream?: boolean };
+    expect(sent.tools?.[0]?.function?.name).toBe('kaggle_kit_capability_probe');
+    expect(sent.stream).toBe(false);
+  });
+
+  it('uploads only bounded extracted metadata and can remove a conversation vault', async () => {
+    const upload = await post('/api/tools/files/upload', {
+      conversationId: 'conversation-1',
+      name: '../notes.txt',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.from('untrusted file contents').toString('base64'),
+    });
+    expect(upload.status).toBe(201);
+    const payload = await upload.json() as { file: { id: string; name: string; extractedCharacters: number } };
+    expect(payload.file.name).toBe('notes.txt');
+    expect(payload.file.extractedCharacters).toBeGreaterThan(0);
+    expect(JSON.stringify(payload)).not.toContain('untrusted file contents');
+
+    const listed = await fetch(`${baseUrl}/api/tools/files?conversationId=conversation-1`);
+    expect(listed.status).toBe(200);
+    expect((await listed.json() as { files: Array<{ id: string }> }).files.map((file) => file.id)).toContain(payload.file.id);
+    const invalid = await post('/api/tools/files/upload', {
+      conversationId: 'conversation-1', name: 'bad.txt', mediaType: 'text/plain', contentBase64: '%%%not-base64%%%',
+    });
+    expect(invalid.status).toBe(400);
+
+    const remove = await fetch(`${baseUrl}/api/tools/files?conversationId=conversation-1`, { method: 'DELETE' });
+    expect(remove.status).toBe(200);
+    expect((await (await fetch(`${baseUrl}/api/tools/files?conversationId=conversation-1`)).json() as { files: unknown[] }).files).toEqual([]);
   });
 
   it('rejects an unknown endpoint', async () => {

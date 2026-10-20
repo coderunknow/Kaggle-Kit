@@ -45,6 +45,8 @@ export interface OpenAIClientOptions {
    * key is configured, so the key can never leak to another host.
    */
   validateRedirect?: (target: string) => boolean;
+  /** Optional hard cap for response bodies (bytes). Unset preserves legacy behavior. */
+  maxResponseBytes?: number;
 }
 
 export interface RequestOptions {
@@ -70,6 +72,7 @@ export class OpenAIClient {
   private readonly fetchImpl: FetchLike;
   private readonly maxRedirects: number;
   private readonly validateRedirect?: (target: string) => boolean;
+  private readonly maxResponseBytes: number;
 
   constructor(options: OpenAIClientOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
@@ -81,6 +84,11 @@ export class OpenAIClient {
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     this.maxRedirects = options.maxRedirects ?? 5;
     this.validateRedirect = options.validateRedirect;
+    if (options.maxResponseBytes !== undefined &&
+      (!Number.isSafeInteger(options.maxResponseBytes) || options.maxResponseBytes < 1)) {
+      throw new ApiError('bad_request', 'The response byte limit must be a positive safe integer.');
+    }
+    this.maxResponseBytes = options.maxResponseBytes ?? Number.POSITIVE_INFINITY;
   }
 
   /** The base URL without the `/v1` suffix, for display purposes. */
@@ -165,6 +173,7 @@ export class OpenAIClient {
     }
 
     let response: Response;
+    let text: string;
     let currentUrl = url;
     let currentMethod = init.method;
     let currentBody = init.body;
@@ -222,6 +231,8 @@ export class OpenAIClient {
         }
         currentUrl = target;
       }
+      // Keep the timeout and caller cancellation active while the body streams.
+      text = await this.readBody(response, url, this.maxResponseBytes);
     } catch (error) {
       if (timedOut) {
         throw new ApiError(
@@ -239,8 +250,6 @@ export class OpenAIClient {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onExternalAbort);
     }
-
-    const text = await this.readBody(response, url);
 
     if (!response.ok) {
       throw this.toHttpError(response.status, text, url);
@@ -291,10 +300,38 @@ export class OpenAIClient {
     return headers;
   }
 
-  private async readBody(response: Response, url: string): Promise<string> {
+  private async readBody(response: Response, url: string, maximumBytes: number): Promise<string> {
     try {
-      return await response.text();
+      if (!Number.isFinite(maximumBytes) || !response.body) return await response.text();
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalBytes += value.byteLength;
+          if (totalBytes > maximumBytes) {
+            await reader.cancel().catch(() => undefined);
+            throw new ApiError('invalid_response', `The server response exceeded the ${maximumBytes}-byte response limit.`, {
+              httpStatus: response.status,
+              hint: withHint('invalid_response'),
+            });
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const body = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return new TextDecoder('utf-8').decode(body);
     } catch (error) {
+      if (error instanceof ApiError) throw error;
       throw new ApiError('network', `The connection to ${this.redact(url)} was interrupted.`, {
         httpStatus: response.status,
         hint: withHint('network'),

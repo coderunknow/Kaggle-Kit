@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../shared/api/errors';
+import { DEFAULT_TOOL_PROFILE_SETTINGS } from '../../shared/tools/types';
 import { gateway } from './gateway';
 
 function eventStream(chunks: string[], options: { close?: boolean } = {}): Response {
@@ -137,6 +138,22 @@ describe('the browser gateway', () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).kind).toBe('inference');
     expect((error as ApiError).message).toMatch(/before the model marked the answer as complete/i);
+  });
+
+  it('saves tool settings through the same-origin profile endpoint', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ settings: DEFAULT_TOOL_PROFILE_SETTINGS }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await gateway.saveToolProfile('profile-1', DEFAULT_TOOL_PROFILE_SETTINGS);
+
+    const [path, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe('/api/tools/profile');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toMatchObject({ profileId: 'profile-1' });
+    expect(path).not.toContain('profile-1');
   });
 
   it('accepts a stream whose last chunk carries a finish reason without [DONE]', async () => {

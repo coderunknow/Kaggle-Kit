@@ -91,6 +91,115 @@ describe('the capability cache of the proxy', () => {
     expect(calls).toHaveLength(before);
   });
 
+  it('verifies a complete synthetic native-tool round trip before reporting support', async () => {
+    const proxy = createProxy();
+    const bodies: Array<Record<string, unknown>> = [];
+    const responses = [
+      {
+        choices: [{
+          message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-1', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] },
+          finish_reason: 'tool_calls',
+        }],
+      },
+      { choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK' }, finish_reason: 'stop' }] },
+    ];
+    const stub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (typeof init?.body === 'string') bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      const response = responses.shift();
+      if (!response) throw new Error('Unexpected capability-probe request.');
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+
+    expect(result.status).toBe('supported_verified');
+    expect(result.detail).toMatch(/two-step native tool round trip/i);
+    expect(stub).toHaveBeenCalledTimes(2);
+    const followUp = bodies[1]!;
+    const messages = followUp.messages as Array<Record<string, unknown>>;
+    expect(messages[2]).toMatchObject({
+      role: 'assistant',
+      tool_calls: [{ id: 'probe-call-1', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }],
+    });
+    expect(messages[3]).toMatchObject({
+      role: 'tool', tool_call_id: 'probe-call-1', name: 'kaggle_kit_capability_probe',
+      content: '{"ok":true,"result":"synthetic-no-op"}',
+    });
+    expect(followUp.tool_choice).toBe('auto');
+
+    const cached = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+    expect(cached.status).toBe('supported_verified');
+    expect(stub).toHaveBeenCalledTimes(2);
+
+    responses.push(
+      {
+        choices: [{
+          message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-2', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] },
+          finish_reason: 'tool_calls',
+        }],
+      },
+      { choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK' }, finish_reason: 'stop' }] },
+    );
+    const refreshed = await proxy.probeToolCalling(
+      { baseUrl: BASE_URL },
+      { model: 'mock-model', timeoutMs: 5_000, force: true },
+    );
+    expect(refreshed.status).toBe('supported_verified');
+    expect(stub).toHaveBeenCalledTimes(4);
+  });
+
+  it('refuses a tool-call response with the wrong finish reason', async () => {
+    const proxy = createProxy();
+    const stub = vi.fn(async () => new Response(JSON.stringify({ choices: [{
+      message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-2', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] },
+      finish_reason: 'stop',
+    }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+
+    expect(result.status).toBe('failed_verification');
+    expect(result.detail).toMatch(/finish_reason=tool_calls/i);
+    expect(stub).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not verify support when the endpoint rejects a synthetic tool-result follow-up', async () => {
+    const proxy = createProxy();
+    let requestCount = 0;
+    const stub = vi.fn(async () => {
+      requestCount += 1;
+      if (requestCount === 1) return new Response(JSON.stringify({ choices: [{
+        message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-3', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] },
+        finish_reason: 'tool_calls',
+      }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ error: { message: 'tool result messages unsupported' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+
+    expect(result.status).toBe('unsupported');
+    expect(result.detail).toMatch(/synthetic tool-result follow-up.*HTTP 400/i);
+    expect(stub).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not verify support when the follow-up fails to return a final stop response', async () => {
+    const proxy = createProxy();
+    const responses = [
+      { choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-4', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+      { choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK', tool_calls: [] }, finish_reason: 'tool_calls' }] },
+    ];
+    const stub = vi.fn(async () => new Response(JSON.stringify(responses.shift()), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+
+    expect(result.status).toBe('failed_verification');
+    expect(result.detail).toMatch(/did not accept and complete the synthetic tool-result follow-up/i);
+    expect(stub).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the key out of the cache key it stores internally', () => {
     const proxy = createProxy();
     const internal = proxy as unknown as { capabilityKey: (url: string, key?: string) => string };
@@ -98,5 +207,9 @@ describe('the capability cache of the proxy', () => {
 
     expect(keyed).not.toContain('super-secret-key');
     expect(keyed).toContain(BASE_URL);
+    expect(keyed.split('\u0000')).toHaveLength(2);
+    const compound = `${keyed}\u0000mock-model`;
+    expect(compound.split('\u0000')).toHaveLength(3);
+    expect(compound.endsWith('\u0000mock-model')).toBe(true);
   });
 });

@@ -1,18 +1,19 @@
 {
   "tested": [
-    "GitHub Actions, ubuntu-latest (Linux x64), Node.js 22, Python 3.11",
-    "npm run typecheck, npm run lint and npm test (the vitest suite of the client, the server and the shared code)",
-    "npm run build (the production build of the client and the bundled backend)",
-    "npm run check:integration (the built application against a mock upstream on loopback)",
-    "python3 -m unittest discover -s notebooks -p 'test_*.py' (the tests of the Kaggle deployment script, with stubs and a local mock server)"
+    "Arena sandbox: Linux 6.1.158+ x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11.2; npm ci installed 368 packages and reported 0 vulnerabilities",
+    "npm run check: TypeScript client/server typecheck, ESLint, and Vitest (42 files, 344 tests passed)",
+    "python3 -m unittest discover -s notebooks -p 'test_*.py' (39 passed, 7 skipped; deployment tests use stubs/local mocks)",
+    "python3 -m unittest discover -s tools -p 'test_*.py' (18 passed)",
+    "npm run build (production Vite client and bundled standalone Node backend); Vite reported a >500 kB client-chunk advisory",
+    "npm run check:integration (19/19 checks against a loopback mock upstream, including PDF/DOCX parsing, ordinary chat, streaming/cancellation and request policy)",
+    "Docker availability check: docker --version returned command not found; sandbox execution remains fail-closed and unverified"
   ],
   "notTested": [
-    "the Kaggle GPU runtime, the real model download and the real llama.cpp inference",
-    "the Cloudflare Quick Tunnel, the public endpoint and the download of the model from the public URL",
-    "the behaviour of the browser interface in a real browser (the component tests run in jsdom, not in a browser)",
-    "the measured effect of the multi token prediction option on the answer quality and the speed",
-    "the behaviour of the deployment script on a machine without the tools of the Kaggle image",
-    "the PowerShell launcher on a real Windows machine (its Node logic is tested on Linux; the wrapper is covered by static checks only)",
-    "a real Kaggle endpoint from the environment that built this release (the sandbox blocks outbound TLS; the user-run check is recorded separately in the release notes)"
+    "GitHub Actions CI/release workflow or release publication/downloaded assets; no tag was created and no release was published",
+    "Kaggle GPU runtime, actual model download/weights, deployed Qwen3.8/llama.cpp inference, native tool-call round trip, public tunnel or public Kaggle endpoint",
+    "Docker sandbox runtime/isolation or the pinned Python container image; Docker CLI was unavailable",
+    "Real Brave credentials/account, account-specific retention rights, fees or provider behavior; live MCP servers or configured external HTTP services",
+    "Real-browser or assistive-technology accessibility audit; component tests use jsdom",
+    "PowerShell launcher behavior on Windows or non-Node-22 Node/npm toolchains"
   ]
 }
