@@ -139,6 +139,7 @@ export function useChat(): ChatController {
       transport: 'complete',
       streamFellBack: false,
       toolTrace: result.toolTrace,
+      toolDiagnostics: result.toolDiagnostics,
       sourceCitations: result.sourceCitations,
       transientToolContent: result.transientContent === true,
       toolJobId: waiting ? result.jobId : undefined,
@@ -430,6 +431,13 @@ export function useChat(): ChatController {
       const profile = resolveProfile(conversation);
       if (!profile) return;
 
+      const droppedJobs = conversation.messages
+        .slice(index + 1)
+        .map((message) => message.toolJobId)
+        .filter((jobId): jobId is string => Boolean(jobId));
+      for (const jobId of droppedJobs) {
+        void gateway.cancelToolJob(jobId).catch(() => undefined);
+      }
       const truncated: Conversation = {
         ...conversation,
         messages: conversation.messages.slice(0, index + 1),
@@ -459,6 +467,13 @@ export function useChat(): ChatController {
       const profile = resolveProfile(conversation);
       if (!profile) return;
 
+      const droppedJobs = conversation.messages
+        .slice(index)
+        .map((message) => message.toolJobId)
+        .filter((jobId): jobId is string => Boolean(jobId));
+      for (const jobId of droppedJobs) {
+        void gateway.cancelToolJob(jobId).catch(() => undefined);
+      }
       const truncated: Conversation = {
         ...conversation,
         messages: conversation.messages.slice(0, index),
@@ -500,6 +515,13 @@ export function useChat(): ChatController {
             : message,
         );
 
+      const droppedJobs = conversation.messages
+        .slice(index + 1)
+        .map((message) => message.toolJobId)
+        .filter((jobId): jobId is string => Boolean(jobId));
+      for (const jobId of droppedJobs) {
+        void gateway.cancelToolJob(jobId).catch(() => undefined);
+      }
       const edited: Conversation = {
         ...conversation,
         title: index === 0 ? titleFromMessage(trimmed) : conversation.title,
@@ -535,11 +557,26 @@ export function useChat(): ChatController {
     } catch (error) {
       const apiError = error instanceof ApiError ? error : undefined;
       const aborted = apiError?.kind === 'aborted';
+      const expired = apiError?.httpStatus === 410 || /expired|no longer active/i.test(apiError?.message ?? '');
+      const failedApprovalState = aborted
+        ? 'stale'
+        : !approved
+          ? 'denied'
+          : expired
+            ? 'expired'
+            : 'stale';
       patchMessage(conversationId, messageId, {
         status: aborted ? 'cancelled' : 'error',
         toolJobId: undefined,
         toolTrace: (message.toolTrace ?? []).map((entry) => entry.approvalId === approvalId
-          ? { ...entry, status: aborted ? 'cancelled' : 'failed', approvalState: aborted ? 'stale' : 'approved', approvalId: undefined, error: apiError?.message ?? 'The approval request could not be completed.' }
+          ? {
+            ...entry,
+            status: aborted ? 'cancelled' : !approved ? 'denied' : 'failed',
+            approvalState: failedApprovalState,
+            ...(expired ? { failureKind: 'approval_expired' as const } : {}),
+            approvalId: undefined,
+            error: apiError?.message ?? 'The approval request could not be completed.',
+          }
           : entry),
         toolNote: undefined,
         errorKind: apiError?.kind ?? 'unknown',

@@ -14,8 +14,8 @@ family name):**
 | Runtime | `llama-server` (official CUDA build `b11719`), OpenAI-compatible `/v1` | same |
 | Context | `--ctx-size 8192`, KV cache `q8_0`, `--parallel 1` | same |
 | Output | `max_tokens` 1024 by default, raised per request in the UI | `shared/api/requests.ts` |
-| Roles | `system`, `user`, `assistant` only | `shared/api/types.ts` |
-| Tools | **none** — no tool/function-calling path exists in client or proxy | `shared/api/types.ts`, `server/proxy.ts` |
+| Roles | `system`, `user`, `assistant` (plus `tool` on verified tool-enabled turns) | `shared/api/types.ts`, `server/tools/chat.ts` |
+| Tools | Base prompt: **none** (ordinary chat default); `shared/prompts/qwen.ts` (`qwenToolSystemPrompt()`) derives the tool-use variant for verified tool profiles | `shared/prompts/qwen.ts`, `server/proxy.ts`, `server/tools/chat.ts` |
 | Serialization | the GGUF's embedded template, applied by the server (`--jinja`) | `notebooks/qwen3_8_27b_api.py` `server_command()` |
 | Injection point | `profile.systemPrompt`, trimmed and sent as the first message | `src/state/useChat.ts` `buildHistory()` |
 

@@ -259,6 +259,42 @@ describe('appReducer', () => {
     expect(state.discoveredModels['profile-1']).toEqual(['a']);
   });
 
+  it('preserves verified toolCalling capability when capabilities/set updates streaming without toolCalling', () => {
+    const withToolCap = reduce(
+      initialState,
+      { type: 'profiles/upsert', profile },
+      {
+        type: 'capabilities/set',
+        profileId: profile.id,
+        capabilities: {
+          streamingVerified: false,
+          reasoningEffortSupported: false,
+          notes: [],
+          toolCalling: {
+            status: 'supported_verified',
+            model: 'mock-model',
+            protocolVerified: true,
+            roundTripVerified: true,
+            detail: 'verified',
+          },
+        },
+      },
+    );
+
+    const updated = reduce(withToolCap, {
+      type: 'capabilities/set',
+      profileId: profile.id,
+      capabilities: {
+        streamingVerified: true,
+        reasoningEffortSupported: false,
+        notes: [],
+      },
+    });
+
+    expect(updated.capabilities[profile.id]?.streamingVerified).toBe(true);
+    expect(updated.capabilities[profile.id]?.toolCalling?.status).toBe('supported_verified');
+  });
+
   it('resets everything', () => {
     const state = reduce(
       reduce(initialState, { type: 'profiles/upsert', profile }, { type: 'keys/setSession', profileId: 'p', apiKey: 'x' }),

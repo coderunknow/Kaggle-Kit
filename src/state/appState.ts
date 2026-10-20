@@ -308,11 +308,19 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'keys/clearAll':
       return { ...state, sessionKeys: {}, browserKeys: {}, connectionTests: {}, capabilities: {} };
 
-    case 'capabilities/set':
+    case 'capabilities/set': {
+      const existing = state.capabilities[action.profileId];
+      const merged: ServerCapabilities = {
+        ...action.capabilities,
+        ...(action.capabilities.toolCalling === undefined && existing?.toolCalling
+          ? { toolCalling: existing.toolCalling }
+          : {}),
+      };
       return {
         ...state,
-        capabilities: { ...state.capabilities, [action.profileId]: action.capabilities },
+        capabilities: { ...state.capabilities, [action.profileId]: merged },
       };
+    }
 
     case 'capabilities/clear':
       return {

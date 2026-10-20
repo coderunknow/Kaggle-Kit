@@ -9,6 +9,7 @@ import type {
   ConversationToolSettings,
   ToolProfileSettings,
   ToolTraceRecord,
+  ToolTurnDiagnostics,
   UploadedFileReference,
   SourceCitation,
 } from './tools/types';
@@ -78,6 +79,8 @@ export interface ChatMessage {
   toolJobId?: string;
   /** Honest reason tool calls were skipped while ordinary chat still ran. */
   toolNote?: string;
+  /** Structured diagnostics for a tool-enabled turn (offered/omitted tools, corrective attempts, budgets). */
+  toolDiagnostics?: ToolTurnDiagnostics;
   /** True when generated from retention-restricted provider results; never saved verbatim. */
   transientToolContent?: boolean;
   /** Real, retrieved source URLs; never inferred from generated prose. */

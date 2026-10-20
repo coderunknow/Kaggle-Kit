@@ -205,7 +205,7 @@ Conversations live in the browser storage of the current origin. Clearing the
 site data, using a different browser or a different port removes them. The
 *Data & credentials* tab shows what is stored.
 
-## Tools (v0.1.0-dev4)
+## Tools (v0.1.0-dev6)
 
 ### "Native tool calling has not been verified for this exact endpoint…"
 
@@ -315,6 +315,47 @@ persistence** (profile default, overridable per conversation) to keep the
 sanitized trace; secrets are never stored either way. A call that was
 pending when the page reloaded is shown as *interrupted* and is never
 re-run automatically.
+
+### Running the tool-calling benchmark and diagnostic CLI
+
+`tools/benchmark-tool-calling.mjs` (`npm run benchmark:tools`) verifies tool
+calling in two explicitly separated phases:
+
+1. **Model-Only Mode (`--mode model`):** Talks directly to an OpenAI-compatible
+   `llama-server` endpoint and runs multi-trial checks for the two-step
+   capability handshake (`kaggle_kit_capability_probe`), streamed tool-call
+   fragment assembly (`text/event-stream`), unambiguous tool selection
+   (`calculator_calculate`, `calculator_convert`, `files_list`), JSON argument
+   schema and semantic validation, synthetic tool result acceptance (explicitly
+   labelled synthetic), and non-tool restraint on conversational greetings.
+2. **Application Integration Mode (`--mode integration`):** Starts a temporary
+   local Kaggle-Kit proxy (`createApp`) and exercises the actual
+   `ToolChatService` + `ToolExecutor` across capability gating, calculator and
+   unit conversion, conversation file upload/list/read/analyze/cleanup,
+   `web_open` SSRF protection, `diagnostics_check`, configured HTTP and MCP
+   approval/SSRF fixtures, the `code_execute` approval/denial gate (without
+   auto-running unapproved code; pass `--run-docker-sandbox` only when Docker
+   is installed and you want to test an approved container run), and bounded
+   1-attempt corrective recovery (invalid arguments, invalid tool name, and raw
+   `<tool_call>` markup in prose).
+
+```bash
+# Against the deterministic local mock upstream + real proxy handlers:
+npm run benchmark:tools -- --spawn-mock
+
+# Against a live Kaggle / llama-server endpoint (never pass --api-key on the CLI):
+KAGGLE_KIT_BASE_URL="https://<your-tunnel>.trycloudflare.com/v1" \
+KAGGLE_KIT_API_KEY="<your-api-key>" \
+npm run benchmark:tools -- --mode both --trials 3 --output benchmark-report.json
+```
+
+**Safety controls:** Passing `--api-key`, `--key`, or `--token` on the command
+line is refused with exit code `2` so credentials never appear in `ps`. API
+keys and `*.trycloudflare.com` hostnames are automatically redacted from stdout
+and JSON report files. A `--spawn-mock` run proves the application's wire
+protocol, schema validation, corrective loop, and tool handlers; only a live
+`llama-server` run (`endpointType: "live_upstream"`) proves the deployed model
+weights' own tool-selection and argument-generation quality.
 
 ## Development
 

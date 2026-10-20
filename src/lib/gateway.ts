@@ -15,7 +15,7 @@ import type { ServerCapabilities } from '../../shared/api/requests';
 import type { InferenceParams } from '../../shared/api/requests';
 import type { ChatCompletionResponse, ChatMessageInput } from '../../shared/api/types';
 import type { ConnectionTestResult } from '../../shared/domain';
-import type { SourceCitation, ToolCallingCapability, ToolProfileSettings, ToolTraceRecord, UploadedFileReference } from '../../shared/tools/types';
+import type { SourceCitation, ToolCallingCapability, ToolProfileSettings, ToolTraceRecord, ToolTurnDiagnostics, UploadedFileReference } from '../../shared/tools/types';
 
 export interface TargetRequest {
   baseUrl: string;
@@ -66,6 +66,7 @@ export interface ToolChatResult {
   finishReason?: string;
   usage?: ChatCompletionResponse['usage'];
   toolTrace: ToolTraceRecord[];
+  toolDiagnostics?: ToolTurnDiagnostics;
   sourceCitations: SourceCitation[];
   persistToolHistory: boolean;
   transientContent?: boolean;

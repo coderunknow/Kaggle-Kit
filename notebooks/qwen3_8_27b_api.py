@@ -90,11 +90,15 @@ class DeploymentConfig:
     # Model
     repo: str = "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
     model_file: str = "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
+    model_revision: str = "main"
+    model_sha256: Optional[str] = None
     min_model_bytes: int = 11_000_000_000
 
-    # llama.cpp
+    # llama.cpp & cloudflared
     llama_cpp_tags: Tuple[str, ...] = ("b11719", "b11718", "b11717")
+    cloudflared_tags: Tuple[str, ...] = ("2026.10.2", "2026.10.1", "2026.10.0")
     cuda_version: str = "12.8"
+    allow_cli_api_key_fallback: bool = False
 
     # Hardware
     mode: str = "t4x2"  # "t4x2" (verified) or "single"
@@ -226,6 +230,12 @@ LLAMA_CPP_SHA256 = {
     "cudart-llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz": "57ec265d78c97fa23399226d3228d6be5295d5ae9214681fa292b88c809873d5",
     "llama-b11717-bin-ubuntu-cuda-12.8-x64.tar.gz": "50db91afc85f5e1c96ed0edb5cf8fde5102c342a55c964887ca35610c4163bf4",
     "cudart-llama-b11717-bin-ubuntu-cuda-12.8-x64.tar.gz": "d79451494f2e990b1fb0742163bfb308a77152c6912cb4075968d4a3fe1fed2f",
+}
+
+CLOUDFLARED_SHA256 = {
+    "2026.10.2/cloudflared-linux-amd64": "35fbdd2beb378436c7da377d7358cea8e33f9c94a6705d1d8036bf9b0d6d8005",
+    "2026.10.1/cloudflared-linux-amd64": "3bfc539f45d2620c71debb7a86be0efa737ed5ccbad9eb85c787116900e5c586",
+    "2026.10.0/cloudflared-linux-amd64": "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db",
 }
 
 
@@ -686,11 +696,19 @@ def build_server_command(
         str(config.port),
     ]
 
-    # The key is read from a file when the build supports it, so it does not
-    # show up in the process list of the machine.
-    if "--api-key-file" in supported and api_key_file is not None:
-        command += ["--api-key-file", str(api_key_file)]
+    # The key is read from a 0600 file when the build supports it, so it does
+    # not show up in the process list (/proc/<pid>/cmdline) of the machine.
+    if "--api-key-file" in supported:
+        resolved_key_file = api_key_file if api_key_file is not None else key_file(config)
+        command += ["--api-key-file", str(resolved_key_file)]
         applied["api_key_source"] = "file"
+    elif api_key_file is not None and not config.allow_cli_api_key_fallback:
+        raise RuntimeError(
+            "This llama-server build does not support --api-key-file. Refusing to "
+            "expose the API key on the process command line; set "
+            "allow_cli_api_key_fallback=True in DeploymentConfig only if you accept "
+            "that risk."
+        )
     else:
         command += ["--api-key", api_key]
         applied["api_key_source"] = "argument"
@@ -859,6 +877,11 @@ def find_saved_model(config: DeploymentConfig) -> Optional[Path]:
             if not _looks_like_gguf(candidate):
                 log(f"Ignoring {candidate}: it is not a GGUF file")
                 continue
+            if config.model_sha256:
+                verify_sha256(candidate, config.model_sha256)
+        except ChecksumMismatch as exc:
+            warn(f"Ignoring {candidate}: {exc}")
+            continue
         except OSError:
             continue
         return candidate
@@ -879,20 +902,28 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
             hf_hub_download(
                 repo_id=config.repo,
                 filename=config.model_file,
+                revision=config.model_revision,
                 local_dir=str(config.model_dir),
             )
         )
         if path.exists() and path.stat().st_size >= config.min_model_bytes:
+            if not _looks_like_gguf(path):
+                raise RuntimeError(f"The downloaded file {path} is not a GGUF file.")
+            if config.model_sha256:
+                verify_sha256(path, config.model_sha256)
             log(f"The model is ready: {path} ({path.stat().st_size / 1e9:.2f} GB)")
             return path
         raise IOError("The model file appears to be incomplete.")
+    except ChecksumMismatch:
+        destination.unlink(missing_ok=True)
+        raise
     except ImportError:
         log("huggingface_hub is not available, using the direct download.")
     except Exception as exc:  # noqa: BLE001
         warn(f"The Hugging Face download failed: {type(exc).__name__}: {exc}")
         log("Falling back to the direct download with resume support.")
 
-    url = f"https://huggingface.co/{config.repo}/resolve/main/{config.model_file}"
+    url = f"https://huggingface.co/{config.repo}/resolve/{config.model_revision}/{config.model_file}"
     path = download_resumable(
         session,
         url,
@@ -900,6 +931,7 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
         min_bytes=config.min_model_bytes,
         verify_tar=False,
         attempts=config.download_attempts,
+        expected_sha256=config.model_sha256,
     )
     if not _looks_like_gguf(path):
         raise RuntimeError(f"The downloaded file {path} is not a GGUF file.")
@@ -1342,38 +1374,63 @@ def probe_local_streaming(
 
 
 def get_cloudflared(session: requests.Session, config: DeploymentConfig) -> Path:
-    """Download the cloudflared binary and check that it runs."""
+    """Download a pinned, SHA-256-verified cloudflared binary and check that it runs."""
     binary = config.bin_root / "cloudflared"
+    allowed_digests = {digest.lower() for digest in CLOUDFLARED_SHA256.values()}
 
     if binary.exists():
         try:
+            if sha256_of(binary).lower() in allowed_digests:
+                test = subprocess.run(
+                    [str(binary), "--version"], capture_output=True, text=True, timeout=20
+                )
+                if test.returncode == 0:
+                    return binary
+        except Exception:  # noqa: BLE001
+            pass
+        binary.unlink(missing_ok=True)
+
+    last_error: Optional[Exception] = None
+    for tag in config.cloudflared_tags:
+        asset_key = f"{tag}/cloudflared-linux-amd64"
+        expected_sha256 = CLOUDFLARED_SHA256.get(asset_key)
+        if not expected_sha256:
+            raise RuntimeError(
+                f"No pinned SHA-256 digest is configured for cloudflared release {tag!r}."
+            )
+        url = f"https://github.com/cloudflare/cloudflared/releases/download/{tag}/cloudflared-linux-amd64"
+        try:
+            binary = download_resumable(
+                session,
+                url,
+                binary,
+                min_bytes=5_000_000,
+                verify_tar=False,
+                attempts=8,
+                expected_sha256=expected_sha256,
+            )
+            binary.chmod(0o755)
             test = subprocess.run(
                 [str(binary), "--version"], capture_output=True, text=True, timeout=20
             )
             if test.returncode == 0:
                 return binary
-        except Exception:  # noqa: BLE001
-            pass
-        binary.unlink(missing_ok=True)
+            binary.unlink(missing_ok=True)
+            last_error = RuntimeError(f"cloudflared {tag} did not pass --version.")
+        except AssetNotFound as exc:
+            last_error = exc
+            continue
+        except ChecksumMismatch:
+            binary.unlink(missing_ok=True)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            binary.unlink(missing_ok=True)
+            last_error = exc
+            continue
 
-    url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-    binary = download_resumable(
-        session,
-        url,
-        binary,
-        min_bytes=5_000_000,
-        verify_tar=False,
-        attempts=8,
+    raise RuntimeError(
+        f"The cloudflared binary could not be downloaded and verified: {last_error}"
     )
-    binary.chmod(0o755)
-
-    test = subprocess.run(
-        [str(binary), "--version"], capture_output=True, text=True, timeout=20
-    )
-    if test.returncode != 0:
-        binary.unlink(missing_ok=True)
-        raise RuntimeError("The downloaded cloudflared binary does not run.")
-    return binary
 
 
 def start_public_tunnel(session: requests.Session, config: DeploymentConfig) -> Optional[str]:
@@ -1408,6 +1465,7 @@ def start_public_tunnel(session: requests.Session, config: DeploymentConfig) -> 
             return match.group(0)
         time.sleep(1)
 
+    stop_process(process)
     warn("The tunnel did not report a URL within 90 seconds:")
     warn(tail_log(log_path))
     return None
@@ -1788,8 +1846,9 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
         else:
             warn("No public URL was returned. The local API stays available.")
 
+    latest_state = read_server_state(config) or state or {}
     applied = dict(applied)
-    applied["unsupported_options"] = (state or {}).get("dropped") or []
+    applied["unsupported_options"] = list(latest_state.get("dropped") or [])
 
     paths = write_runtime_bundle(
         config,

@@ -4,7 +4,7 @@ import { effectiveProfileTarget, resolveProfileCredential } from '../../shared/c
 import type { ApiProfile } from '../../shared/domain';
 import type { HttpToolSetting, McpServerSetting, ToolProfileSettings } from '../../shared/tools/types';
 import { DEFAULT_TOOL_PROFILE_SETTINGS, HARD_TOOL_LIMITS } from '../../shared/tools/types';
-import { httpModelName, mcpModelName } from '../../shared/tools/catalog';
+import { httpModelName, mcpModelName, measureToolCatalog } from '../../shared/tools/catalog';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
 import { useApp } from '../state/AppProvider';
@@ -310,6 +310,8 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
     }
   };
 
+  const catalogMeasurement = measureToolCatalog(draft, undefined, { requirePinnedSandboxImage: true });
+
   return (
     <div className="settings-stack">
       <section className="card">
@@ -345,6 +347,13 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
       <section className="card">
         <h3 className="card__title">Available tool categories</h3>
         <p className="card__description">Only checked tools are exposed to the model. The server checks the allowlist again before every call.</p>
+        <p className="field__hint" role="status">
+          Active catalog budget: <strong>{catalogMeasurement.definitions.length}</strong> / {catalogMeasurement.maxTools} active tool(s) ·{' '}
+          <strong>{catalogMeasurement.serializedBytes.toLocaleString()}</strong> / {catalogMeasurement.budgetBytes.toLocaleString()} UTF-8 bytes (~{catalogMeasurement.estimatedTokens.toLocaleString()} est. tokens for the 8,192-token target window).
+          {catalogMeasurement.omittedTools.length > 0
+            ? ` Omitted until ready or within budget: ${catalogMeasurement.omittedTools.map((item) => `${item.name} (${item.reason})`).join(', ')}.`
+            : ''}
+        </p>
         {BUILTIN_GROUPS.map((group) => (
           <fieldset className="tool-settings__group" key={group.label}>
             <legend>{group.label}</legend>

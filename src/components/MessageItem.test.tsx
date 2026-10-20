@@ -108,4 +108,51 @@ describe('accessible tool activity timeline', () => {
     expect(notice).toHaveTextContent('will not be saved or exported');
     expect(screen.getByText('The operation needs your approval.')).toBeTruthy();
   });
+
+  it('renders turn-level tool diagnostics and distinguishes expired approvals from approved calls', () => {
+    render(
+      <MessageItem
+        message={message({
+          status: 'error',
+          toolJobId: undefined,
+          toolTrace: [{
+            ...message().toolTrace![0]!,
+            status: 'failed',
+            approvalState: 'expired',
+            failureKind: 'approval_expired',
+            approvalId: undefined,
+            error: 'This approval expired before it was confirmed.',
+          }],
+          toolDiagnostics: {
+            outcome: 'corrected_after_retry',
+            capabilityStatus: 'supported_verified',
+            activeTools: ['calculator_calculate', 'code_execute'],
+            omittedTools: [{ name: 'files_read', reason: 'no_uploaded_files', detail: 'No files uploaded.' }],
+            serializedToolBytes: 1210,
+            serializedToolChars: 1210,
+            estimatedToolTokens: 337,
+            toolBudgetBytes: 12000,
+            roundsUsed: 2,
+            maxRounds: 4,
+            callsUsed: 2,
+            maxCalls: 6,
+            correctiveAttemptsUsed: 1,
+            correctionOutcome: 'recovered',
+          },
+        })}
+        isLast
+        disabled={false}
+        onToolApproval={vi.fn()}
+        onCopy={async () => true}
+        onEdit={vi.fn()}
+        onRetry={vi.fn()}
+        onResend={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Approval expired; not run')).toBeTruthy();
+    expect(screen.getByText('Corrected after 1 retry')).toBeTruthy();
+    expect(screen.getByText(/files_read \(no_uploaded_files\)/)).toBeTruthy();
+  });
 });

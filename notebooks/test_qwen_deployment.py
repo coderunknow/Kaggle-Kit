@@ -164,6 +164,24 @@ class FlagSelectionTests(unittest.TestCase):
         self.assertNotIn("secret", " ".join(launch.command))
         self.assertEqual(launch.applied["api_key_source"], "file")
 
+    def test_refuses_cli_api_key_fallback_when_api_key_file_is_unsupported(self) -> None:
+        with self.assertRaises(RuntimeError) as caught:
+            self._launch(
+                "--ctx-size N --n-gpu-layers N --host H --port P --api-key K",
+                {"ctx": 8192, "mtp": False, "reasoning": False},
+                api_key_file=Path("/tmp/qwen-test/api_key.txt"),
+            )
+        self.assertIn("--api-key-file", str(caught.exception))
+
+    def test_uses_default_api_key_file_path_when_build_supports_flag(self) -> None:
+        launch = self._launch(
+            "--ctx-size N --n-gpu-layers N --host H --port P --api-key-file F",
+            {"ctx": 8192, "mtp": False, "reasoning": False},
+        )
+        self.assertIn("--api-key-file", launch.command)
+        self.assertNotIn("--api-key", launch.command)
+        self.assertEqual(launch.applied["api_key_source"], "file")
+
     def test_variants_start_with_the_verified_configuration(self) -> None:
         config = nb.DeploymentConfig()
         variants = nb.server_variants(config)
@@ -236,6 +254,31 @@ class ModelDiscoveryTests(unittest.TestCase):
             path.write_bytes(b"NOTGGUF" + b"0" * 64)
 
             self.assertIsNone(nb.find_saved_model(config))
+
+    def test_ignores_saved_model_with_mismatched_sha256(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = nb.DeploymentConfig()
+            config.root = root
+            config.input_root = root / "input"
+            config.min_model_bytes = 1024
+            config.model_sha256 = "0" * 64
+
+            path = self._write_gguf(config.model_dir / config.model_file, 2048)
+            self.assertIsNone(nb.find_saved_model(config))
+
+            config.model_sha256 = nb.sha256_of(path)
+            self.assertEqual(nb.find_saved_model(config), path)
+
+    def test_cloudflared_download_verifies_pinned_sha256_and_deletes_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.DeploymentConfig()
+            config.root = Path(directory)
+            config.bin_root.mkdir(parents=True, exist_ok=True)
+            session = FakeSession(b"tampered-cloudflared" * 400_000)
+            with self.assertRaises(nb.ChecksumMismatch):
+                nb.get_cloudflared(session, config)
+            self.assertFalse((config.bin_root / "cloudflared").exists())
 
 
 class DownloadTests(unittest.TestCase):

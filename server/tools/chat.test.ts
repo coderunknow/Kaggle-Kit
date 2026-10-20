@@ -550,4 +550,118 @@ describe('bounded server-side tool chat', () => {
     expect((error as ApiError).kind).toBe('aborted');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('recovers via 1 bounded corrective retry when the model emits invalid arguments and succeeds on retry', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      functionCall('calculator_calculate', { wrong_field: '6 * 7' }, 'call_0'),
+      functionCall('calculator_calculate', { expression: '6 * 7' }, 'call_0'),
+      answer('The answer is 42.'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('The answer is 42.');
+    expect(result.toolDiagnostics).toMatchObject({
+      outcome: 'corrected_after_retry',
+      correctiveAttemptsUsed: 1,
+      correctionOutcome: 'recovered',
+      correctionReason: 'invalid_arguments',
+    });
+    expect(result.toolTrace).toHaveLength(2);
+    // Both calls used correlation ID "call_0", yet each trace entry has a unique id.
+    expect(result.toolTrace[0]?.id).not.toBe(result.toolTrace[1]?.id);
+    expect(result.toolTrace[0]).toMatchObject({
+      callId: 'call_0',
+      status: 'failed',
+      failureKind: 'invalid_arguments',
+      correctiveAttempt: 1,
+    });
+    expect(result.toolTrace[1]).toMatchObject({
+      callId: 'call_0',
+      status: 'succeeded',
+    });
+    const round2Messages = (test.bodies[1]?.messages as Array<Record<string, unknown>> | undefined) ?? [];
+    const correctiveToolMsg = round2Messages.find((m) => m.role === 'tool');
+    expect(String(correctiveToolMsg?.content)).toContain('expectedSchema');
+    expect(String(correctiveToolMsg?.content)).toContain('required: expression');
+  });
+
+  it('stops after at most 1 corrective retry when the retry also fails validation', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      functionCall('unknown_tool_1', { expression: '1+1' }, 'call-1'),
+      functionCall('unknown_tool_2', { expression: '1+1' }, 'call-2'),
+      answer('should not be reached'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toMatch(/corrective tool retry also failed validation/i);
+    expect(result.toolDiagnostics).toMatchObject({
+      outcome: 'invalid_tool_name',
+      correctiveAttemptsUsed: 1,
+      correctionOutcome: 'failed',
+    });
+    expect(result.toolTrace).toHaveLength(2);
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('triggers 1 corrective retry when Round 1 writes raw <tool_call> markup in prose instead of structured tool_calls', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      answer('<tool_call>{"name":"calculator_calculate","arguments":{"expression":"9 * 9"}}</tool_call>'),
+      functionCall('calculator_calculate', { expression: '9 * 9' }, 'call-structured'),
+      answer('The result is 81.'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('The result is 81.');
+    expect(result.toolDiagnostics).toMatchObject({
+      outcome: 'corrected_after_retry',
+      correctiveAttemptsUsed: 1,
+      correctionOutcome: 'recovered',
+      correctionReason: 'raw_tool_markup_in_prose',
+    });
+    expect(result.toolTrace).toHaveLength(1);
+    expect(result.toolTrace[0]?.status).toBe('succeeded');
+    expect(test.fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('cancels stale pending approvals when a new turn starts in the same conversation or when the profile is deleted', async () => {
+    const profileSettings = profile({
+      allowedTools: ['code_execute'],
+      code: {
+        ...DEFAULT_TOOL_PROFILE_SETTINGS.code,
+        provider: 'docker',
+        image: `python:3.12-alpine@sha256:${'f'.repeat(64)}`,
+      },
+    });
+    const test = await harness(profileSettings, [
+      functionCall('code_execute', { language: 'python', code: 'print(1)' }, 'call-1'),
+      functionCall('code_execute', { language: 'python', code: 'print(2)' }, 'call-2'),
+    ]);
+
+    const firstPending = await test.start();
+    expect(firstPending.status).toBe('awaiting_approval');
+
+    const secondPending = await test.start();
+    expect(secondPending.status).toBe('awaiting_approval');
+
+    // The first pending approval was superseded when the second turn started in conversation-1.
+    await expect(test.service.approve({
+      jobId: firstPending.jobId!,
+      approvalId: firstPending.pendingApproval!.approvalId,
+      approved: true,
+    })).rejects.toThrow(/no longer active/i);
+
+    // Cancelling the profile invalidates the second pending approval as well.
+    expect(test.service.cancelProfile('profile-1')).toBe(1);
+    await expect(test.service.approve({
+      jobId: secondPending.jobId!,
+      approvalId: secondPending.pendingApproval!.approvalId,
+      approved: true,
+    })).rejects.toThrow(/no longer active/i);
+  });
 });

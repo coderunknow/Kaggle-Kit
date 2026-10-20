@@ -14,11 +14,83 @@ export interface ToolCallingCapability {
   detail: string;
   checkedAt?: string;
   model?: string;
+  /** Native non-streaming tool_calls emission was verified against this target. */
+  protocolVerified?: boolean;
+  /** Follow-up synthetic tool-result acceptance (role=tool -> stop) was verified. */
+  roundTripVerified?: boolean;
   /** Native streaming tool-call deltas were independently probed. */
   streamingSupported?: boolean;
   /** Hash-like identity of the endpoint/model/credential configuration; never a secret. */
   configurationFingerprint?: string;
 }
+
+export type OmittedToolReason =
+  | 'no_uploaded_files'
+  | 'missing_provider_config'
+  | 'missing_secret'
+  | 'sandbox_disabled'
+  | 'mcp_not_granted'
+  | 'budget_exceeded';
+
+export interface OmittedToolDiagnostic {
+  name: string;
+  reason: OmittedToolReason;
+  detail: string;
+}
+
+export type ToolFailureKind =
+  | 'invalid_tool_name'
+  | 'invalid_arguments'
+  | 'approval_required'
+  | 'approval_denied'
+  | 'approval_expired'
+  | 'timeout'
+  | 'execution_error'
+  | 'budget_exceeded'
+  | 'cancelled';
+
+export type ToolTurnOutcome =
+  | 'disabled'
+  | 'no_tools_selected'
+  | 'capability_unverified'
+  | 'model_declined_tools'
+  | 'completed_with_tools'
+  | 'corrected_after_retry'
+  | 'awaiting_approval'
+  | 'approval_denied'
+  | 'invalid_tool_name'
+  | 'invalid_tool_arguments'
+  | 'execution_failed'
+  | 'timeout'
+  | 'budget_exhausted'
+  | 'incompatible_response';
+
+export interface ToolTurnDiagnostics {
+  outcome: ToolTurnOutcome;
+  capabilityStatus: ToolCapabilityStatus;
+  activeTools: string[];
+  omittedTools: OmittedToolDiagnostic[];
+  serializedToolBytes: number;
+  serializedToolChars: number;
+  estimatedToolTokens: number;
+  toolBudgetBytes: number;
+  roundsUsed: number;
+  maxRounds: number;
+  callsUsed: number;
+  maxCalls: number;
+  correctiveAttemptsUsed: number;
+  correctionOutcome?: 'not_needed' | 'recovered' | 'failed';
+  correctionReason?: string;
+  finishReason?: string;
+  detail?: string;
+}
+
+/**
+ * Deterministic model-facing tool catalog budget for the 8,192-token target
+ * context window (~3,000–3,300 estimated tokens maximum for tool schemas).
+ */
+export const MAX_TOOL_CATALOG_BYTES = 12_000;
+export const MAX_ACTIVE_TOOLS_PER_TURN = 16;
 
 export type ToolPermission = 'read_only' | 'write' | 'unknown';
 
@@ -146,10 +218,16 @@ export interface SourceCitation {
 
 export interface ToolTraceRecord {
   id: string;
+  /** Model-issued tool_call_id preserved for OpenAI protocol correlation. */
+  callId?: string;
   toolName: string;
   status: ToolCallStatus;
   approvalRequired: boolean;
-  approvalState?: 'not_required' | 'pending' | 'approved' | 'denied' | 'stale';
+  approvalState?: 'not_required' | 'pending' | 'approved' | 'denied' | 'expired' | 'stale';
+  /** Structured failure classification when status is failed, denied, or interrupted. */
+  failureKind?: ToolFailureKind;
+  /** 1-based index when this call or failure triggered a bounded corrective retry episode. */
+  correctiveAttempt?: number;
   /** Redacted/bounded copy of the validated arguments; never contains secrets. */
   safeArguments: Record<string, unknown>;
   /** User-facing operation target when known; credentials are never included. */

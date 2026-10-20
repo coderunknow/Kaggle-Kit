@@ -837,3 +837,64 @@ unmerged.
   workflow verification step plus exact size parity.
 * Also ignored Playwright artifacts (`test-results/`, `playwright-report/`,
   `e2e-output.txt`) in this docs-only post-tag commit.
+
+---
+
+## 2026-10-20 – v0.1.0-dev6 audit and implementation on `arena/10403daf-kaggle-kit`
+
+* **Scope & baseline:** Audited `coderunknow/Kaggle-Kit` from `main` (`ad7995b`,
+  8 files past `v0.1.0-dev5` `df699bd`). Preserved all `v0.1.0-dev5` security
+  fixes and left PR #10 and earlier tags/releases untouched.
+* **Implemented changes:**
+  - `shared/tools/types.ts`, `shared/tools/catalog.ts`, `shared/domain.ts`:
+    Added `ToolTurnDiagnostics`, `OmittedToolDiagnostic`, `ToolFailureKind`,
+    `MAX_TOOL_CATALOG_BYTES = 12_000`, `MAX_ACTIVE_TOOLS_PER_TURN = 16`,
+    `measureToolCatalog()`, and `summarizeToolSchema()`.
+  - `shared/prompts/qwen.ts`, `research/qwen-system-prompt/*`: Added
+    `neutralizeToolClaimsForOrdinaryChat()`, updated `neutralizeNoToolsClaim()`,
+    and synced `research/qwen-system-prompt/SYSTEM_PROMPT.md` and
+    `examples/integrate_qwen.py` to `0.1.0-dev6`.
+  - `server/proxy.ts`, `server/app.ts`, `server/tools/chat.ts`,
+    `server/tools/executor.ts`: Raised `probeToolCalling` `max_tokens` to 192
+    with `protocolVerified`/`roundTripVerified`, preserved cached `toolCalling`
+    across `detectCapabilities()`, added `/v1/models` empty-model auto-discovery
+    to `/api/tools/capability`, `/api/tools/chat`, and `/api/proxy/probe-stream`,
+    implemented bounded 1-attempt corrective recovery, preserved unique trace
+    `id` vs model `callId`, and added `cancelConversation()` / `cancelProfile()`.
+  - `src/state/useChat.ts`, `src/state/appState.ts`, `src/state/AppProvider.tsx`,
+    `src/components/MessageItem.tsx`, `src/components/ToolsSettings.tsx`,
+    `src/components/ChatView.tsx`, `src/lib/gateway.ts`: Fixed expired/failed
+    approval catch handling (`expired`/`denied`/`stale`), wired job cancellation
+    on retry/resend/edit/delete, preserved cached `toolCalling` in
+    `capabilities/set`, and rendered `toolDiagnostics` and catalog budget hints.
+  - `notebooks/qwen3_8_27b_api.py`, `notebooks/test_qwen_deployment.py`: Added
+    pinned `CLOUDFLARED_RELEASES` with SHA-256 verification, `model_revision` /
+    `model_sha256` support, `--api-key-file` enforcement
+    (`allow_cli_api_key_fallback=False`), `stop_process(process)` on tunnel
+    timeout, and fresh `read_server_state(config)` lookup for
+    `applied["unsupported_options"]`.
+  - `tools/benchmark-tool-calling.mjs`, `tools/mock-upstream.mjs`,
+    `tools/integration-check.mjs`: Added two-phase tool-calling benchmark CLI
+    (`npm run benchmark:tools`) and expanded integration checks to 30/30.
+  - Updated version metadata to `0.1.0-dev6`, added
+    `docs/release-notes/0.1.0-dev6.md`, and updated `docs/release/environment.json`,
+    `README.md`, `docs/chat-interface.md`, `docs/security.md`, and
+    `docs/troubleshooting.md`.
+* **Verification (real command outputs in this sandbox):**
+  - `npm run typecheck` – passed (client + server).
+  - `npm run lint` – passed (0 errors, 0 warnings).
+  - `npm test` – **43 files, 384 tests passed**.
+  - `npm run build` – passed (code-split Vite client + `dist/server/index.js`).
+  - `npm run check:integration` – **30/30 checks passed**.
+  - `npm run benchmark:tools -- --spawn-mock` – **6/6 Phase 1 scenarios (12/12
+    trials) and 11/11 Phase 2 application-integration checks passed**; `--api-key`
+    CLI flag rejected with exit code 2.
+  - `python3 -m unittest discover -s notebooks -p "test_*.py"` – **47 passed**.
+  - `python3 -m unittest discover -s tools -p "test_*.py"` – **25 passed**.
+  - `bash tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6` – validated on the
+    committed tree.
+* **Not tested in this sandbox:** Live Kaggle GPU / deployed Qwen endpoint
+  (no live credentials/URL in sandbox), local Docker container runtime (`docker`
+  CLI absent in sandbox; covered by CI), and local Playwright Chromium launch
+  (browser binary not preinstalled and CDN host blocked by sandbox egress;
+  covered by CI).

@@ -212,6 +212,7 @@ export function createApp(options: AppOptions = {}): App {
 
         case 'DELETE /api/tools/profile': {
           const profileId = readQueryId(url, 'profileId');
+          toolChat.cancelProfile(profileId);
           const deleted = await store.deleteToolProfile(profileId);
           sendJson(response, deleted ? 200 : 404, { ok: deleted });
           return;
@@ -279,6 +280,7 @@ export function createApp(options: AppOptions = {}): App {
 
         case 'DELETE /api/tools/files': {
           const conversationId = readQueryId(url, 'conversationId');
+          toolChat.cancelConversation(conversationId);
           files.removeConversation(conversationId);
           sendJson(response, 200, { ok: true });
           return;
@@ -294,7 +296,7 @@ export function createApp(options: AppOptions = {}): App {
               profileId: readId(body, 'profileId'),
               conversationId: readId(body, 'conversationId'),
               target: readTarget(body),
-              model: readString(body, 'model'),
+              model: readOptionalString(body, 'model') ?? '',
               messages: validateToolChatMessages(body.messages),
               params: parsed.params,
               timeoutMs: readTimeout(body),
@@ -417,7 +419,7 @@ export function createApp(options: AppOptions = {}): App {
       }
     }
 
-    const capabilities = await proxy.detectCapabilities(resolved.baseUrl, resolved.apiKey, timeoutMs);
+    const capabilities = await proxy.detectCapabilities(resolved.baseUrl, resolved.apiKey, timeoutMs, model);
 
     const wantsStream = params.stream === true;
 

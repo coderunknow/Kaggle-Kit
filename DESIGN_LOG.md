@@ -1235,3 +1235,120 @@ missing-credential paths are covered by tests.
 * `v0.1.0-dev4` remains unchanged at `0d3a742` (verified via API after the
   dev5 publication); PR #10 remains open and unmerged. This entry is a
   docs-only commit after the tag; the tag was not moved.
+
+
+## 2026-10-20 – v0.1.0-dev6: Tool-calling audit, bounded corrective recovery, catalog budget, and benchmark CLI
+
+### 1. Starting point and baseline delta (`v0.1.0-dev5..HEAD`)
+
+Starting from `main` at `ad7995b6829325c3bd002215255939af52da06e0` (8 files /
++121 lines past `v0.1.0-dev5` at `df699bd`, consisting of the post-tag log
+entries and `research/qwen-system-prompt/*` from PR #11), we audited every
+stage of the tool-calling lifecycle alongside the proxy, frontend state,
+notebook deployment script, and docs. All `v0.1.0-dev5` security invariants
+(workflow injection protections, DNS-pinned proxy fetches, loopback-only default
+self-origin, named sandbox container cleanup, credential-value-bound approvals,
+and static symlink containment) were preserved.
+
+### 2. Root-cause findings and architectural fixes
+
+1. **Capability detection & empty `modelId` handling (`server/proxy.ts`,
+   `server/app.ts`, `src/state/appState.ts`)**
+   * `probeToolCalling()` previously set `max_tokens: 64`, which could truncate
+     inside `<think>` reasoning blocks (`finish_reason: "length"`) before the
+     model emitted `tool_calls`. Raised to `max_tokens: 192` and added explicit
+     boolean fields `protocolVerified` (Turn 1 native `tool_calls`) and
+     `roundTripVerified` (Turn 2 `role: "tool"` synthetic acceptance -> `stop`),
+     distinct from `streamingSupported`.
+   * When a saved profile leaves `modelId` blank (relying on `/v1/models`
+     auto-discovery), `/api/tools/capability`, `/api/tools/chat`, and
+     `/api/proxy/probe-stream` now auto-resolve the first reported model from
+     `/v1/models` identically to `/api/chat` and `/api/chat/stream`.
+   * `ProxyService.detectCapabilities()` and the frontend `capabilities/set`
+     reducer now preserve an existing verified `toolCalling` entry when the
+     configuration fingerprint still matches, so running `Test connection` in
+     the profile editor does not wipe a previously verified tool capability.
+
+2. **Bounded 1-attempt corrective recovery & trace ID correlation
+   (`server/tools/chat.ts`, `server/tools/executor.ts`, `src/state/useChat.ts`)**
+   * `ToolChatService.run()` now enforces at most **one** corrective retry per
+     episode (`correctiveAttemptsUsed <= 1`, counting against `maxRounds` and
+     `maxCalls`):
+     - When `toolCalls.length === 0` on a tool-enabled turn, a single corrective
+       prompt is injected if the assistant emitted raw `<tool_call>` /
+       `<function=...>` markup in prose, falsely claimed no tools exist while
+       tools were offered, or left conversation uploads / explicit public URLs
+       uninspected on Round 1.
+     - When a tool call fails with `invalid_tool_name` or `invalid_arguments`,
+       `ToolChatService` returns a structured `[TOOL_VALIDATION_ERROR]` with
+       the exact schema signature (`summarizeToolSchema()`) and allows one
+       corrective retry; a second validation failure in the same episode returns
+       `[TOOL_CORRECTIVE_BUDGET_EXHAUSTED]`.
+   * Non-recoverable states (`approval_denied`, `approval_expired`, `timeout`,
+     `execution_error`, `budget_exceeded`, `cancelled`) never trigger corrective
+     retries and never fabricate results.
+   * `ToolTraceRecord.id` is now a unique per-invocation UUID while `callId`
+     preserves the model-issued `tool_call_id` for OpenAI protocol correlation,
+     and `useChat.ts` `replaceTrace()` correlates by `trace.id` first so
+     multi-call turns with blank or duplicate model `callId`s do not overwrite
+     each other in the UI.
+
+3. **Tool catalog context budget (`shared/tools/catalog.ts`, `server/tools/chat.ts`)**
+   * Measured the worst-case 48-tool catalog (9 built-ins + 16 HTTP + 23 MCP
+     tools with 500-char descriptions) at **53,741 UTF-8 bytes** (~14,929
+     estimated tokens), which exceeds the entire 8,192-token target context
+     window.
+   * Added `measureToolCatalog(settings, conversation, context)` with a
+     deterministic 12,000-byte (`MAX_TOOL_CATALOG_BYTES = 12_000`, ~3,333
+     estimated tokens) and 16-tool (`MAX_ACTIVE_TOOLS_PER_TURN = 16`) cap,
+     schema description compaction, and context-aware filtering (`files_read` /
+     `files_analyze` omitted with `no_uploaded_files` when 0 files are uploaded
+     while keeping `files_list` callable; unconfigured `web_search`, disabled
+     `code_execute`, and unconfirmed MCP servers omitted with structured
+     `OmittedToolDiagnostic` reasons). Under the worst-case 48-tool profile,
+     the active payload is bounded to **10,679 B** (~2,959 estimated tokens,
+     16 active tools, 32 reported in `omittedTools`).
+
+4. **Prompt consistency across tool-enabled and ordinary chat turns
+   (`shared/prompts/qwen.ts`, `server/proxy.ts`, `server/tools/chat.ts`)**
+   * Added `neutralizeToolClaimsForOrdinaryChat()` so ordinary chat turns
+     (`/api/chat` and `/api/chat/stream`) restore the truthful no-tools boundary
+     even if a profile saved the tool-use system prompt variant.
+   * On tool-enabled turns, `ToolChatService.buildMessages()` neutralizes
+     no-tools claims in the system prompt and injects the per-turn active
+     tool signatures, omitted-tool explanations, and explicit approval rules.
+
+5. **Approval/session lifecycle & UI diagnostics (`src/state/useChat.ts`,
+   `src/state/AppProvider.tsx`, `src/components/MessageItem.tsx`, `server/app.ts`)**
+   * Fixed `useChat.ts` `approveToolCall()` catch block so expired/missing jobs
+     mark the trace `status: 'failed'`, `approvalState: 'expired'`, and
+     `failureKind: 'approval_expired'` instead of falsely marking it `'approved'`.
+   * Starting a new turn, retrying, editing/resending a message, or deleting a
+     conversation/profile now cancels any pending `ToolChatSession` via
+     `/api/tools/cancel` (`cancelConversation` / `cancelProfile`) and purges
+     associated conversation uploads.
+   * `MessageItem.tsx` and `ToolsSettings.tsx` now display structured turn
+     diagnostics (`toolDiagnostics`) and catalog byte/token budget metrics.
+
+6. **Real-model & mock-verified tool-calling benchmark CLI
+   (`tools/benchmark-tool-calling.mjs`, `tools/mock-upstream.mjs`)**
+   * Added `npm run benchmark:tools` supporting `--spawn-mock` and real
+     OpenAI-compatible endpoints via `KAGGLE_KIT_BENCHMARK_BASE_URL` and
+     `KAGGLE_KIT_BENCHMARK_API_KEY` (or `--prompt-key`; `--api-key` CLI flags
+     are rejected with exit code 2).
+   * Phase 1 runs 6 model-only scenarios (native handshake, streamed tool
+     fragments, calculator selection + synthetic result, unit conversion,
+     `files_list`, and non-tool restraint). Phase 2 runs 11 application-integration
+     checks through `ToolChatService` and `ToolExecutor` (capability gate,
+     calculator, conversion, file vault, SSRF guard, diagnostics, HTTP/MCP
+     approval & SSRF gates, Python sandbox approval/denial gate, and 3
+     corrective-recovery scenarios).
+
+7. **Notebook deployment hardening (`notebooks/qwen3_8_27b_api.py`)**
+   * Added `CLOUDFLARED_RELEASES` with pinned GitHub release URLs and official
+     SHA-256 digests (`2026.10.2`, `2026.10.1`, `2026.10.0`), optional
+     `model_revision` and `model_sha256` verification for Hugging Face weights,
+     fail-closed `--api-key-file` enforcement (`allow_cli_api_key_fallback=False`
+     by default so the API key is never exposed in `/proc/<pid>/cmdline`),
+     `stop_process(process)` cleanup when `cloudflared` times out, and fresh
+     `read_server_state(config)` lookup for `applied["unsupported_options"]`.

@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildToolDefinitions, findToolDefinition, httpModelName, mcpModelName, toOpenAITools } from './catalog';
-import { DEFAULT_TOOL_PROFILE_SETTINGS, type ToolProfileSettings } from './types';
+import {
+  buildToolDefinitions,
+  findToolDefinition,
+  httpModelName,
+  mcpModelName,
+  measureToolCatalog,
+  summarizeToolSchema,
+  toOpenAITools,
+} from './catalog';
+import { DEFAULT_TOOL_PROFILE_SETTINGS, MAX_ACTIVE_TOOLS_PER_TURN, MAX_TOOL_CATALOG_BYTES, type ToolProfileSettings } from './types';
 
 function profile(overrides: Partial<ToolProfileSettings> = {}): ToolProfileSettings {
   return {
@@ -63,5 +71,77 @@ describe('server-built tool catalog', () => {
     expect(buildToolDefinitions(noSecret)).toEqual([]);
     const withSecret = profile({ enabled: true, allowedTools: ['web_search'], web: { provider: 'brave', secretRef: 'brave-1' } });
     expect(buildToolDefinitions(withSecret)[0]?.function.name).toBe('web_search');
+  });
+
+  it('omits files_read and files_analyze when uploadedFileCount is 0 while keeping files_list active', () => {
+    const settings = profile({
+      enabled: true,
+      allowedTools: ['calculator_calculate', 'files_list', 'files_read', 'files_analyze'],
+    });
+    const noFiles = measureToolCatalog(settings, undefined, { uploadedFileCount: 0 });
+    expect(noFiles.definitions.map((d) => d.function.name)).toEqual(['calculator_calculate', 'files_list']);
+    expect(noFiles.omittedTools).toEqual([
+      expect.objectContaining({ name: 'files_read', reason: 'no_uploaded_files' }),
+      expect.objectContaining({ name: 'files_analyze', reason: 'no_uploaded_files' }),
+    ]);
+
+    const withFiles = measureToolCatalog(settings, undefined, { uploadedFileCount: 2 });
+    expect(withFiles.definitions.map((d) => d.function.name)).toEqual([
+      'calculator_calculate',
+      'files_list',
+      'files_read',
+      'files_analyze',
+    ]);
+    expect(withFiles.omittedTools).toEqual([]);
+  });
+
+  it('caps large tool catalogs within MAX_TOOL_CATALOG_BYTES and MAX_ACTIVE_TOOLS_PER_TURN', () => {
+    const httpTools = Array.from({ length: 16 }, (_, i) => ({
+      id: `svc_${i + 1}`,
+      name: `Service ${i + 1}`,
+      description: 'X'.repeat(500),
+      endpoint: `https://api.example.com/v1/service/${i + 1}`,
+      method: 'GET' as const,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          query: { type: 'string' as const, maxLength: 400, description: 'Y'.repeat(200) },
+          filter: { type: 'string' as const, maxLength: 200, description: 'Z'.repeat(200) },
+        },
+        required: ['query'],
+        additionalProperties: false as const,
+      },
+      headers: [],
+      permission: 'read_only' as const,
+      timeoutMs: 10_000,
+    }));
+    const settings = profile({
+      enabled: true,
+      allowedTools: [
+        'calculator_calculate',
+        'calculator_convert',
+        'files_list',
+        'files_read',
+        'files_analyze',
+        'web_open',
+        'diagnostics_check',
+        ...httpTools.map((t) => httpModelName(t.id)),
+      ],
+      httpTools,
+    });
+
+    const measured = measureToolCatalog(settings, undefined, { uploadedFileCount: 1 });
+    expect(measured.definitions.length).toBeLessThanOrEqual(MAX_ACTIVE_TOOLS_PER_TURN);
+    expect(measured.serializedBytes).toBeLessThanOrEqual(MAX_TOOL_CATALOG_BYTES);
+    expect(measured.omittedTools.some((item) => item.reason === 'budget_exceeded')).toBe(true);
+  });
+
+  it('summarizes required and optional schema fields for corrective guidance', () => {
+    const settings = profile({ enabled: true, allowedTools: ['calculator_convert'] });
+    const definition = findToolDefinition(settings, 'calculator_convert')!;
+    const summary = summarizeToolSchema(definition);
+    expect(summary).toContain('calculator_convert');
+    expect(summary).toContain('required: value, from, to');
+    expect(summary).toContain('additionalProperties: false');
   });
 });

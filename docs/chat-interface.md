@@ -194,11 +194,20 @@ Known read-only tools can run automatically. The server, not the prompt,
 validates function names, JSON arguments, permissions, budgets and approvals.
 An exact operation denied by the user is refused without another approval
 prompt in the same turn. Tool results and error text are passed back as
-untrusted data; a tool cannot invoke another handler by returning prose. The
-catalog and conversation settings intersect: a conversation can narrow a
-profile's tools and execution budgets, never expand them. Default limits are
-three model rounds, eight calls, 8 KiB input per call, bounded output, and a
-120-second loop; profile and conversation settings are clamped server-side.
+untrusted data; a tool cannot invoke another handler by returning prose. The catalog and conversation settings intersect: a conversation can narrow a
+profile's tools and execution budgets, never expand them. Per-turn catalogs are
+additionally filtered to runtime-usable tools (omitting `files_read` and
+`files_analyze` when a conversation has no uploaded files) and capped at 12,000
+UTF-8 bytes / 16 active tools so tool schemas fit comfortably inside the
+8,192-token target context window. Default limits are three model rounds, eight
+calls, 8 KiB input per call, bounded output, and a 120-second loop; profile and
+conversation settings are clamped server-side. When a model emits an invalid
+tool name, invalid JSON/schema arguments, or raw `<tool_call>` markup in prose,
+the server allows at most **one** bounded corrective retry per episode grounded
+in the exact validation failure and schema summary. Every turn records
+structured `toolDiagnostics` (outcome, active/omitted tools, serialized byte
+and token-estimate budget, rounds/calls used, and corrective retry outcome) in
+the tool activity timeline.
 
 Approval is for one exact prepared operation, not a standing permission. It
 expires, cannot be replayed, and is invalidated if tool settings change, the

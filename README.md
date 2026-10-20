@@ -167,7 +167,7 @@ Provider availability, account terms and fees are separate from the local
 checks.
 
 See [docs/chat-interface.md](docs/chat-interface.md) and [docs/security.md](docs/security.md)
-for details, and [docs/release-notes/0.1.0-dev4.md](docs/release-notes/0.1.0-dev4.md)
+for details, and [docs/release-notes/0.1.0-dev6.md](docs/release-notes/0.1.0-dev6.md)
 for this development release's changes and verification limits.
 
 ## Security model
@@ -200,6 +200,7 @@ npm test               # vitest (unit, integration and component tests)
 npm run check          # all three
 npm run build          # type check, build the client, bundle the backend
 npm run check:integration   # drives the built application against the mock upstream
+npm run benchmark:tools -- --spawn-mock   # runs the two-phase tool-calling benchmark (mock or live endpoint)
 python3 -m unittest discover -s notebooks -p "test_*.py"   # deployment script tests
 python3 -m unittest discover -s tools -p "test_*.py"        # tests of the release tools
 ```
@@ -217,7 +218,7 @@ stages the assets, validates them and uploads them to a prerelease of the same
 tag. Nothing is uploaded by hand.
 
 ```bash
-git tag v0.1.0-dev4 <commit> && git push origin v0.1.0-dev4
+git tag v0.1.0-dev6 <commit> && git push origin v0.1.0-dev6
 ```
 
 The version of `package.json` has to match the tag and the release notes have

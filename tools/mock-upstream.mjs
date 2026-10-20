@@ -105,8 +105,36 @@ const server = http.createServer((request, response) => {
       );
       const isProbe = toolNames.has('kaggle_kit_capability_probe');
 
-      // A tool result ends the scripted round trip.
+      // A tool result ends the scripted round trip unless it is a corrective retry.
       if (lastMessage.role === 'tool') {
+        const userPrompt = messages.find((m) => m.role === 'user')?.content ?? '';
+        const badArgsMatch = /corrective-bad-args:\s*(.+)/i.exec(userPrompt);
+        const badToolMatch = /corrective-bad-tool:\s*(.+)/i.exec(userPrompt);
+        if (prompt.includes('"correctiveGuidance"') && (badArgsMatch || badToolMatch) && toolNames.has('calculator_calculate')) {
+          const expr = (badArgsMatch?.[1] ?? badToolMatch?.[1] ?? '2 + 2').trim();
+          mockCallCounter += 1;
+          sendJson(response, 200, {
+            id: 'chatcmpl-mock-retry',
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: MODEL_ID,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [{
+                  id: `mock-call-${mockCallCounter}`,
+                  type: 'function',
+                  function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: expr }) },
+                }],
+              },
+              finish_reason: 'tool_calls',
+            }],
+            usage: { prompt_tokens: 18, completion_tokens: 10, total_tokens: 28 },
+          });
+          return;
+        }
         sendJson(response, 200, {
           id: 'chatcmpl-mock',
           object: 'chat.completion',
@@ -128,10 +156,77 @@ const server = http.createServer((request, response) => {
       // Deterministic native tool calls, selected by the offered functions.
       let scriptedCall = null;
       if (toolNames.size > 0) {
+        const firstUserPrompt = messages.find((m) => m.role === 'user')?.content ?? prompt;
+        const rawMarkupRetry = /Correction required \(1 retry permitted\)/i.test(prompt)
+          && /corrective-raw-markup:\s*(.+)/i.exec(firstUserPrompt);
+        const rawMarkupInitial = /corrective-raw-markup:\s*(.+)/i.exec(prompt);
+        const badArgs = /corrective-bad-args:\s*(.+)/i.exec(prompt);
+        const badTool = /corrective-bad-tool:\s*(.+)/i.exec(prompt);
         const calculate = /calculate:\s*(.+)/i.exec(prompt);
+        const convertMatch = /convert:\s*([0-9.]+)\s+(\S+)\s+to\s+(\S+)/i.exec(prompt);
+        const listFilesMatch = /\blist (?:uploaded )?files\b/i.exec(prompt);
+        const readFileMatch = /read file:\s*(\S+)/i.exec(prompt);
+        const analyzeFileMatch = /analyze file:\s*(\S+)/i.exec(prompt);
+        const diagnosticsMatch = /\bcheck diagnostics\b/i.exec(prompt);
+        const openUrlMatch = /open url:\s*(https?:\/\/\S+)/i.exec(prompt);
+        const searchWebMatch = /search web:\s*(.+)/i.exec(prompt);
+        const callHttpMatch = /call http:\s*(.+)/i.exec(prompt);
+        const callMcpMatch = /call mcp:\s*(.+)/i.exec(prompt);
         const runCode = /run code:\s*([\s\S]+)/i.exec(prompt);
-        if (calculate && toolNames.has('calculator_calculate')) {
+        const httpToolName = [...toolNames].find((name) => name.startsWith('http_'));
+        const mcpToolName = [...toolNames].find((name) => name.startsWith('mcp_'));
+
+        if (rawMarkupInitial && !/Correction required/i.test(prompt)) {
+          sendJson(response, 200, {
+            id: 'chatcmpl-mock-raw-markup',
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: MODEL_ID,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: `<tool_call>{"name":"calculator_calculate","arguments":{"expression":"${rawMarkupInitial[1].trim()}"}}</tool_call>`,
+              },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 12, completion_tokens: 12, total_tokens: 24 },
+          });
+          return;
+        }
+        if (rawMarkupRetry && toolNames.has('calculator_calculate')) {
+          scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expression: rawMarkupRetry[1].trim() }) };
+        } else if (badArgs && toolNames.has('calculator_calculate')) {
+          scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expr: badArgs[1].trim() }) };
+        } else if (badTool) {
+          scriptedCall = { name: 'nonexistent_calculator', arguments: JSON.stringify({ expression: badTool[1].trim() }) };
+        } else if (calculate && toolNames.has('calculator_calculate')) {
           scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expression: calculate[1].trim() }) };
+        } else if (convertMatch && toolNames.has('calculator_convert')) {
+          scriptedCall = {
+            name: 'calculator_convert',
+            arguments: JSON.stringify({
+              value: Number(convertMatch[1]),
+              from: convertMatch[2],
+              to: convertMatch[3],
+            }),
+          };
+        } else if (listFilesMatch && toolNames.has('files_list')) {
+          scriptedCall = { name: 'files_list', arguments: '{}' };
+        } else if (readFileMatch && toolNames.has('files_read')) {
+          scriptedCall = { name: 'files_read', arguments: JSON.stringify({ file_id: readFileMatch[1].trim() }) };
+        } else if (analyzeFileMatch && toolNames.has('files_analyze')) {
+          scriptedCall = { name: 'files_analyze', arguments: JSON.stringify({ file_id: analyzeFileMatch[1].trim(), question: 'Summarize the uploaded file.' }) };
+        } else if (diagnosticsMatch && toolNames.has('diagnostics_check')) {
+          scriptedCall = { name: 'diagnostics_check', arguments: '{}' };
+        } else if (openUrlMatch && toolNames.has('web_open')) {
+          scriptedCall = { name: 'web_open', arguments: JSON.stringify({ url: openUrlMatch[1].trim() }) };
+        } else if (searchWebMatch && toolNames.has('web_search')) {
+          scriptedCall = { name: 'web_search', arguments: JSON.stringify({ query: searchWebMatch[1].trim(), max_results: 3 }) };
+        } else if (callHttpMatch && httpToolName) {
+          scriptedCall = { name: httpToolName, arguments: JSON.stringify({ query: callHttpMatch[1].trim() }) };
+        } else if (callMcpMatch && mcpToolName) {
+          scriptedCall = { name: mcpToolName, arguments: JSON.stringify({ query: callMcpMatch[1].trim() }) };
         } else if (runCode && toolNames.has('code_execute')) {
           scriptedCall = { name: 'code_execute', arguments: JSON.stringify({ language: 'python', code: runCode[1].trim() }) };
         } else if (isProbe) {

@@ -97,17 +97,41 @@ export function qwenToolSystemPrompt(): string {
   return `${replaced}\n\n${QWEN_TOOL_RULES}`;
 }
 
+const NO_TOOLS_PATTERNS: readonly RegExp[] = [
+  /\[No-tools module[^\]]*\]\s*You have no tools in this session:[^\n]*/gi,
+  /You (?:have no|do not have(?: any)?|don't have(?: any)?) tools(?:\s+(?:here|in this (?:session|conversation|chat)|available))?\s*[:.][^\n]*/gi,
+];
+
 /**
- * Replace the known no-tools claim in an arbitrary system prompt.
+ * Replace known no-tools claims in an arbitrary system prompt.
  *
  * Used by the server-side tool loop: a profile may still carry the base
- * recommended prompt while verified tools are enabled, and sending both
- * "you have no tools" and a tool list would contradict itself.
+ * recommended prompt (or a custom no-tools notice) while verified tools are
+ * enabled, and sending both "you have no tools" and a tool list would
+ * contradict itself.
  */
 export function neutralizeNoToolsClaim(systemPrompt: string): string {
-  return systemPrompt.includes(QWEN_NO_TOOLS_CLAIM)
-    ? systemPrompt.replace(QWEN_NO_TOOLS_CLAIM, QWEN_TOOL_ENVIRONMENT)
-    : systemPrompt;
+  let result = systemPrompt;
+  if (result.includes(QWEN_NO_TOOLS_CLAIM)) {
+    result = result.replaceAll(QWEN_NO_TOOLS_CLAIM, QWEN_TOOL_ENVIRONMENT);
+  }
+  for (const pattern of NO_TOOLS_PATTERNS) {
+    result = result.replace(pattern, '');
+  }
+  return result !== systemPrompt && result.trim() === '' ? '' : result;
+}
+
+/**
+ * Replace the tool-use prompt variant's capability claim back with the
+ * truthful no-tools statement when a turn runs as ordinary chat without tools.
+ */
+export function neutralizeToolClaimsForOrdinaryChat(systemPrompt: string): string {
+  if (!systemPrompt.includes(QWEN_TOOL_ENVIRONMENT)) return systemPrompt;
+  return systemPrompt
+    .replace( `\n\n${QWEN_TOOL_RULES}`, '')
+    .replace(QWEN_TOOL_RULES, '')
+    .replaceAll(QWEN_TOOL_ENVIRONMENT, QWEN_NO_TOOLS_CLAIM)
+    .trim();
 }
 
 /**

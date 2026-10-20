@@ -11,7 +11,7 @@ import { lazy, memo, Suspense, useState } from 'react';
 
 import { describeErrorKind } from '../../shared/api/errors';
 import type { ChatMessage } from '../../shared/domain';
-import type { SourceCitation, ToolTraceRecord } from '../../shared/tools/types';
+import type { SourceCitation, ToolTraceRecord, ToolTurnOutcome } from '../../shared/tools/types';
 import { formatMessageTime } from '../lib/id';
 import { Icon } from './ui';
 
@@ -72,6 +72,28 @@ const TOOL_STATUS_LABELS: Record<ToolTraceRecord['status'], string> = {
   interrupted: 'Interrupted',
 };
 
+const TOOL_OUTCOME_LABELS: Record<ToolTurnOutcome, string> = {
+  disabled: 'Tools disabled',
+  no_tools_selected: 'No tools selected',
+  capability_unverified: 'Capability not verified',
+  model_declined_tools: 'Model answered without calling tools',
+  completed_with_tools: 'Completed with tools',
+  corrected_after_retry: 'Corrected after 1 retry',
+  awaiting_approval: 'Awaiting user approval',
+  approval_denied: 'Denied by user; not run',
+  invalid_tool_name: 'Rejected unknown/disallowed tool name',
+  invalid_tool_arguments: 'Rejected invalid tool arguments',
+  execution_failed: 'Tool execution failed',
+  timeout: 'Tool or loop time limit reached',
+  budget_exhausted: 'Tool loop budget reached',
+  incompatible_response: 'Incompatible upstream tool response',
+};
+
+function traceStatusLabel(entry: ToolTraceRecord): string {
+  if (entry.approvalState === 'expired') return 'Approval expired; not run';
+  return TOOL_STATUS_LABELS[entry.status];
+}
+
 function CitationList({ citations }: { citations: SourceCitation[] }) {
   if (citations.length === 0) return null;
   return (
@@ -100,47 +122,76 @@ function ToolTimeline({
   onApproval: MessageItemProps['onToolApproval'];
 }) {
   const trace = message.toolTrace ?? [];
-  if (trace.length === 0 && !message.sourceCitations?.length) return null;
+  const diagnostics = message.toolDiagnostics;
+  if (trace.length === 0 && !message.sourceCitations?.length && !diagnostics) return null;
   return (
     <div className="tool-timeline">
-      {trace.length > 0 ? (
+      {trace.length > 0 || diagnostics ? (
         <details open={message.status === 'pending' && trace.some((entry) => entry.status === 'awaiting_approval')}>
-          <summary>Tool activity ({trace.length})</summary>
-          <ol className="tool-timeline__list">
-            {trace.map((entry) => {
-              const canApprove = entry.status === 'awaiting_approval' && Boolean(entry.approvalId && message.toolJobId);
-              return (
-                <li key={entry.id} className="tool-timeline__item">
-                  <div className="tool-timeline__heading">
-                    <strong>{entry.toolName}</strong>
-                    <span role="status">{TOOL_STATUS_LABELS[entry.status]}</span>
-                  </div>
-                  {entry.target ? <code className="tool-timeline__target">{entry.target}</code> : null}
-                  {entry.resultSummary ? <p>{entry.resultSummary}</p> : null}
-                  {entry.error ? <p className="field__error">{entry.error}</p> : null}
-                  {Object.keys(entry.safeArguments).length > 0 ? (
-                    <details className="tool-timeline__arguments" open={canApprove}>
-                      <summary>Review bounded arguments</summary>
-                      <pre>{JSON.stringify(entry.safeArguments, null, 2)}</pre>
-                    </details>
-                  ) : null}
-                  {canApprove ? (
-                    <div className="tool-timeline__approval" aria-label={`Approval for ${entry.toolName}`}>
-                      <p>This exact operation has not run. Approving authorizes this call only.</p>
-                      <div className="row">
-                        <button type="button" className="button button--primary button--small" disabled={disabled && !canApprove} onClick={() => onApproval(message.id, entry.approvalId!, true)}>
-                          Approve once
-                        </button>
-                        <button type="button" className="button button--small button--danger" disabled={disabled && !canApprove} onClick={() => onApproval(message.id, entry.approvalId!, false)}>
-                          Deny
-                        </button>
-                      </div>
+          <summary>
+            {trace.length > 0 ? `Tool activity (${trace.length})` : `Tool diagnostics (${TOOL_OUTCOME_LABELS[diagnostics!.outcome]})`}
+          </summary>
+          {diagnostics ? (
+            <div className="tool-timeline__diagnostics text-subtle">
+              <span>
+                <strong>{TOOL_OUTCOME_LABELS[diagnostics.outcome]}</strong>
+                {' · '}
+                {diagnostics.activeTools.length} active ({diagnostics.serializedToolBytes} B / ~{diagnostics.estimatedToolTokens} est. tokens)
+                {' · '}
+                round {diagnostics.roundsUsed}/{diagnostics.maxRounds}
+                {' · '}
+                calls {diagnostics.callsUsed}/{diagnostics.maxCalls}
+                {diagnostics.correctiveAttemptsUsed > 0
+                  ? ` · 1 corrective retry (${diagnostics.correctionOutcome === 'recovered' ? 'recovered' : 'failed'})`
+                  : ''}
+              </span>
+              {diagnostics.omittedTools.length > 0 ? (
+                <div>
+                  Omitted for this turn: {diagnostics.omittedTools.map((item) => `${item.name} (${item.reason})`).join(', ')}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {trace.length > 0 ? (
+            <ol className="tool-timeline__list">
+              {trace.map((entry) => {
+                const canApprove = entry.status === 'awaiting_approval' && Boolean(entry.approvalId && message.toolJobId);
+                return (
+                  <li key={entry.id} className="tool-timeline__item">
+                    <div className="tool-timeline__heading">
+                      <strong>{entry.toolName}</strong>
+                      <span role="status">{traceStatusLabel(entry)}</span>
                     </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ol>
+                    {entry.target ? <code className="tool-timeline__target">{entry.target}</code> : null}
+                    {entry.correctiveAttempt ? (
+                      <span className="text-subtle">Triggered bounded corrective retry #{entry.correctiveAttempt}</span>
+                    ) : null}
+                    {entry.resultSummary ? <p>{entry.resultSummary}</p> : null}
+                    {entry.error ? <p className="field__error">{entry.error}</p> : null}
+                    {Object.keys(entry.safeArguments).length > 0 ? (
+                      <details className="tool-timeline__arguments" open={canApprove}>
+                        <summary>Review bounded arguments</summary>
+                        <pre>{JSON.stringify(entry.safeArguments, null, 2)}</pre>
+                      </details>
+                    ) : null}
+                    {canApprove ? (
+                      <div className="tool-timeline__approval" aria-label={`Approval for ${entry.toolName}`}>
+                        <p>This exact operation has not run. Approving authorizes this call only.</p>
+                        <div className="row">
+                          <button type="button" className="button button--primary button--small" disabled={disabled && !canApprove} onClick={() => onApproval(message.id, entry.approvalId!, true)}>
+                            Approve once
+                          </button>
+                          <button type="button" className="button button--small button--danger" disabled={disabled && !canApprove} onClick={() => onApproval(message.id, entry.approvalId!, false)}>
+                            Deny
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
         </details>
       ) : null}
       <CitationList citations={message.sourceCitations ?? []} />

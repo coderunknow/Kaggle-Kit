@@ -10,6 +10,7 @@ import {
   QWEN_TOOL_SYSTEM_PROMPT_ID,
   estimatePromptTokens,
   neutralizeNoToolsClaim,
+  neutralizeToolClaimsForOrdinaryChat,
   qwenToolSystemPrompt,
 } from './qwen';
 
@@ -115,5 +116,18 @@ describe('the tool-use variant of the Qwen prompt', () => {
     expect(neutralized).toMatch(/^Intro\./);
     expect(neutralized).toMatch(/Outro\.$/);
     expect(neutralizeNoToolsClaim('unrelated prompt')).toBe('unrelated prompt');
+
+    const moduleNoTools = readFileSync(
+      path.join(process.cwd(), 'research', 'qwen-system-prompt', 'modules', 'MODULE_no_tools.txt'),
+      'utf8',
+    );
+    expect(neutralizeNoToolsClaim(moduleNoTools)).toBe('');
+  });
+
+  it('replaces tool-environment claims with the truthful no-tools boundary on ordinary chat turns', () => {
+    const restored = neutralizeToolClaimsForOrdinaryChat(toolPrompt);
+    expect(restored).toContain(QWEN_NO_TOOLS_CLAIM);
+    expect(restored).not.toMatch(/this chat can offer you tools/i);
+    expect(neutralizeToolClaimsForOrdinaryChat('custom prompt')).toBe('custom prompt');
   });
 });

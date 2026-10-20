@@ -380,6 +380,35 @@ async function main() {
       !JSON.stringify(calculatorBody).includes(API_KEY),
       'the key appeared in the tool chat answer',
     );
+    assert(
+      'tool chat reports structured turn diagnostics and catalog byte budget',
+      calculatorBody.toolDiagnostics?.outcome === 'completed_with_tools'
+        && typeof calculatorBody.toolDiagnostics?.serializedToolBytes === 'number'
+        && calculatorBody.toolDiagnostics.serializedToolBytes > 0,
+      JSON.stringify(calculatorBody.toolDiagnostics),
+    );
+
+    const correctiveChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: '',
+      messages: [{ role: 'user', content: 'corrective-bad-args: 6 * 7' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const correctiveBody = await correctiveChat.json();
+    assert(
+      'tool chat auto-discovers an empty model ID and recovers from invalid arguments in 1 bounded retry',
+      correctiveChat.status === 200
+        && correctiveBody.status === 'complete'
+        && correctiveBody.toolDiagnostics?.outcome === 'corrected_after_retry'
+        && correctiveBody.toolDiagnostics?.correctiveAttemptsUsed === 1
+        && correctiveBody.toolDiagnostics?.correctionOutcome === 'recovered'
+        && String(correctiveBody.content).includes('42'),
+      `HTTP ${correctiveChat.status}: ${JSON.stringify(correctiveBody).slice(0, 300)}`,
+    );
 
     const codeChat = await post(base, '/api/tools/chat', {
       profileId: 'integration-tools',

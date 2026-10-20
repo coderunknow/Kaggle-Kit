@@ -269,4 +269,53 @@ describe('the capability cache of the proxy', () => {
     expect(compound.split('\u0000')).toHaveLength(3);
     expect(compound.endsWith('\u0000mock-model')).toBe(true);
   });
+
+  it('auto-discovers the first model when probeToolCalling or probeStreaming is called with an empty model ID', async () => {
+    const proxy = createProxy();
+    const stub = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/models')) {
+        return new Response(JSON.stringify({ data: [{ id: 'discovered-model' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      if (body.stream === true) {
+        return new Response('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+      const messages = (body.messages as Array<Record<string, unknown>> | undefined) ?? [];
+      if (messages.some((m) => m.role === 'tool')) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK' }, finish_reason: 'stop' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{ id: 'probe-call-auto', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const toolCap = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: '', timeoutMs: 5_000 });
+    expect(toolCap.status).toBe('supported_verified');
+    expect(toolCap.model).toBe('discovered-model');
+    expect(toolCap.protocolVerified).toBe(true);
+    expect(toolCap.roundTripVerified).toBe(true);
+
+    const detected = await proxy.detectCapabilities(BASE_URL, undefined, 5_000, 'discovered-model');
+    expect(detected.toolCalling?.status).toBe('supported_verified');
+
+    const streamCap = await proxy.probeStreaming({ baseUrl: BASE_URL }, { model: '', timeoutMs: 5_000 });
+    expect(streamCap.supported).toBe(true);
+  });
 });

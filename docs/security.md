@@ -164,7 +164,7 @@ cannot see or delete it afterwards. Retention-restricted Brave-derived answers
 are excluded from the app's saved history and Markdown export unless the user
 has confirmed account rights for retention and opted in to tool-history persistence.
 
-## Tool integrations and approval boundaries (dev4)
+## Tool integrations and approval boundaries
 
 Tool use is off by default and must be enabled per profile. Ordinary chat is
 not gated by tool support. A model/endpoint/credential-specific probe must
@@ -209,19 +209,34 @@ The server enforces the policy; prompts are not an authorization boundary:
 
 ### Network and data boundaries for tools
 
-The configured model endpoint follows the pre-existing upstream host policy
-(`KAGGLE_KIT_ALLOWED_HOSTS` and optional private-network blocking). This proxy
-still validates the model endpoint by hostname and does not pin DNS there; use
-an explicit host allowlist when the proxy can be reached by other local users.
+The configured model endpoint follows the upstream host policy
+(`KAGGLE_KIT_ALLOWED_HOSTS` and optional private-network blocking) and uses
+`server/pinnedFetch.ts` (`createPinnedFetch`) so resolved DNS addresses are
+validated at connect time and pinned for the socket (blocking loopback/private
+rebinding when `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`, and always blocking
+link-local, multicast, unspecified and cloud-metadata addresses).
 
 Public web, configured HTTP and MCP destinations have a stricter tool-specific
 policy: private, loopback, link-local, reserved and metadata addresses are
-rejected, DNS answers are checked and the selected public address is pinned for
-the socket. `web_open` rejects URL userinfo and credential-like query parameter
+always rejected, DNS answers are checked and the selected public address is
+pinned for the socket. `web_open` rejects URL userinfo and credential-like query parameter
 names, and revalidates each redirect hop; configured HTTP and MCP redirects are
 refused. MCP additionally requires public HTTPS on port 443 and
 never launches local `stdio` processes. A hostname that resolves to a private
 address is not made safe by an allowlist entry in a tool profile.
+
+* Per-turn tool catalogs are filtered to tools that are both selected and
+  runtime-ready for the current turn (for example, `files_read` and
+  `files_analyze` are omitted when a conversation has zero uploaded files) and
+  capped at `MAX_TOOL_CATALOG_BYTES = 12,000` UTF-8 bytes and
+  `MAX_ACTIVE_TOOLS_PER_TURN = 16` tools so tool definitions cannot crowd out
+  the 8,192-token target context window.
+* When a model emits an invalid tool name, invalid JSON/schema arguments, or
+  raw `<tool_call>` markup in prose, `ToolChatService` allows at most **one**
+  bounded corrective retry per failed episode, grounded in the exact failure
+  and schema summary. Every corrective retry counts against the conversation's
+  round, call and timeout budgets and never bypasses user denials or approval
+  gates.
 
 * Uploaded data is limited to 4 MiB per file and 100k extracted characters,
   then kept only in the proxy's bounded, in-memory, conversation-scoped vault.
@@ -275,8 +290,15 @@ No capability is claimed from a model family, URL or template flag alone.
 * The public Quick Tunnel URL is a bearer-free but unauthenticated path to the
   model: the API key is the only protection. The URL is temporary and changes
   on every run – do not publish it.
-* The key is passed to `llama-server` through `--api-key-file` when the
-  installed build supports it, so it does not show up in the process list.
+* Both `llama.cpp` release archives (`LLAMA_CPP_SHA256`) and `cloudflared`
+  binaries (`CLOUDFLARED_SHA256`) are fetched from pinned release versions and
+  verified against SHA-256 digests before execution; any checksum mismatch
+  deletes the file and aborts. Optional `model_revision` and `model_sha256`
+  fields in `DeploymentConfig` pin the Hugging Face GGUF revision and digest.
+* The key is passed to `llama-server` through `--api-key-file` (`0600` mode).
+  In real deployments `build_server_command` refuses to fall back to a
+  command-line `--api-key` argument unless `allow_cli_api_key_fallback=True` is
+  explicitly set, preventing key exposure in `/proc/<pid>/cmdline`.
 
 ## What is never stored
 

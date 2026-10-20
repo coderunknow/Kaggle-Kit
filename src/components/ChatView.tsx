@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObj
 
 import type { ConnectionViewState } from '../../shared/connection';
 import type { ApiProfile, ChatMessage, Conversation } from '../../shared/domain';
+import { measureToolCatalog } from '../../shared/tools/catalog';
 import { effectiveToolSelection, shouldPersistToolHistory, type ConversationToolSettings, type UploadedFileReference } from '../../shared/tools/types';
 import { gateway } from '../lib/gateway';
 import { PROMPT_STARTERS } from '../lib/promptStarters';
@@ -217,6 +218,13 @@ export function ChatView({
   const effectiveTools = profileTools ? effectiveToolSelection(profileTools, conversation?.toolSettings) : [];
   const canUploadFiles = Boolean(conversation && effectiveTools.some((id) => id.startsWith('files_')));
   const uploadedFiles = conversation?.uploadedFiles ?? [];
+  const capabilityStatus = profile ? (app.state.capabilities[profile.id]?.toolCalling?.status ?? 'not_verified') : 'not_verified';
+  const conversationCatalog = profileTools
+    ? measureToolCatalog(profileTools, conversation?.toolSettings, {
+        uploadedFileCount: uploadedFiles.length,
+        requirePinnedSandboxImage: true,
+      })
+    : undefined;
 
   useEffect(() => {
     uploadedFilesRef.current = conversation?.uploadedFiles ?? [];
@@ -433,6 +441,22 @@ export function ChatView({
             <details className="conversation-tools">
               <summary>Conversation tools and privacy</summary>
               <p className="field__hint">Profile settings remain the outer allowlist; this conversation can only disable tools, select a subset, and tighten budgets.</p>
+              {conversationCatalog ? (
+                <p className="field__hint" role="status">
+                  {!profileTools.enabled
+                    ? 'Tools are disabled in the active profile; turns use ordinary chat.'
+                    : conversation.toolSettings?.enabled === false
+                      ? 'Tools are disabled for this conversation; turns use ordinary chat.'
+                      : effectiveTools.length === 0
+                        ? 'No tools are selected for this conversation; turns use ordinary chat.'
+                        : capabilityStatus !== 'supported_verified'
+                          ? `Native tool calling is ${capabilityStatus} for this model/endpoint; turns use ordinary chat until verified.`
+                          : `${conversationCatalog.definitions.length} active tool(s) ready (${conversationCatalog.serializedBytes.toLocaleString()} B / ~${conversationCatalog.estimatedTokens.toLocaleString()} est. tokens).`}
+                  {conversationCatalog.omittedTools.length > 0
+                    ? ` Omitted for this turn: ${conversationCatalog.omittedTools.map((item) => `${item.name} (${item.reason})`).join(', ')}.`
+                    : ''}
+                </p>
+              ) : null}
               <label className="checkbox">
                 <input
                   type="checkbox"

@@ -1,7 +1,7 @@
 import { ApiError, redactSecrets } from '../../shared/api/errors';
 import type { UpstreamTarget, ProxyService } from '../proxy';
-import type { ToolProfileSettings, ToolExecutionLimits, ToolExecutionResult } from '../../shared/tools/types';
-import { findToolDefinition, httpModelName, mcpModelName } from '../../shared/tools/catalog';
+import type { ToolProfileSettings, ToolExecutionLimits, ToolExecutionResult, ToolFailureKind } from '../../shared/tools/types';
+import { findToolDefinition, httpModelName, mcpModelName, summarizeToolSchema } from '../../shared/tools/catalog';
 import { calculate, convert, CalculatorInputError } from './calculator';
 import { runPythonInDocker, CodeSandboxError } from './code';
 import { FileVault, FileProcessingError } from './files';
@@ -34,9 +34,17 @@ export interface PreparedToolCall {
 }
 
 export class ToolExecutionError extends Error {
-  constructor(message: string) {
+  readonly failureKind: ToolFailureKind;
+  readonly expectedSchema?: string;
+
+  constructor(
+    message: string,
+    options: { failureKind?: ToolFailureKind; expectedSchema?: string } = {},
+  ) {
     super(message);
     this.name = 'ToolExecutionError';
+    this.failureKind = options.failureKind ?? 'execution_error';
+    if (options.expectedSchema) this.expectedSchema = options.expectedSchema;
   }
 }
 
@@ -48,13 +56,35 @@ export class ToolExecutor {
     private readonly logger: Logger,
   ) {}
 
+  getUploadedFileCount(conversationId: string): number {
+    return this.files.list(conversationId).length;
+  }
+
   parseAndPrepare(name: string, rawArguments: string, context: ToolExecutionContext): PreparedToolCall {
-    if (!context.settings.enabled) throw new ToolExecutionError('Tools are disabled for this profile.');
+    if (!context.settings.enabled) {
+      throw new ToolExecutionError('Tools are disabled for this profile.', { failureKind: 'invalid_tool_name' });
+    }
     const definition = findToolDefinition(context.settings, name);
-    if (!definition || !context.settings.allowedTools.includes(name)) throw new ToolExecutionError('The requested tool is not allowed for this profile.');
-    const args = parseToolArguments(rawArguments, context.limits.maxInputBytes);
-    try { validateToolArguments(definition.function.parameters, args); } catch (error) {
-      throw new ToolExecutionError(error instanceof Error ? error.message : 'Tool arguments are invalid.');
+    if (!definition || !context.settings.allowedTools.includes(name)) {
+      throw new ToolExecutionError('The requested tool is not allowed for this profile.', { failureKind: 'invalid_tool_name' });
+    }
+    const expectedSchema = summarizeToolSchema(definition);
+    let args: Record<string, unknown>;
+    try {
+      args = parseToolArguments(rawArguments, context.limits.maxInputBytes);
+    } catch (error) {
+      throw new ToolExecutionError(
+        error instanceof Error ? error.message : 'Tool arguments must be a valid JSON object.',
+        { failureKind: 'invalid_arguments', expectedSchema },
+      );
+    }
+    try {
+      validateToolArguments(definition.function.parameters, args);
+    } catch (error) {
+      throw new ToolExecutionError(
+        error instanceof Error ? error.message : 'Tool arguments are invalid.',
+        { failureKind: 'invalid_arguments', expectedSchema },
+      );
     }
     const httpTool = context.settings.httpTools.find((tool) => httpModelName(tool.id) === name);
     const mcpEntry = findMcp(context.settings, name);
@@ -84,8 +114,12 @@ export class ToolExecutor {
     context: ToolExecutionContext,
     options: { approved?: boolean } = {},
   ): Promise<ToolExecutionResult> {
-    if (prepared.approvalRequired && options.approved !== true) throw new ToolExecutionError('This operation requires an explicit approval before it can run.');
-    if (context.signal?.aborted) throw new ToolExecutionError('The tool call was cancelled.');
+    if (prepared.approvalRequired && options.approved !== true) {
+      throw new ToolExecutionError('This operation requires an explicit approval before it can run.', { failureKind: 'approval_required' });
+    }
+    if (context.signal?.aborted) {
+      throw new ToolExecutionError('The tool call was cancelled.', { failureKind: 'cancelled' });
+    }
     try {
       const value = await this.dispatch(prepared.name, prepared.args, context);
       const content = await this.redactAndBound(value.content, context.limits.maxOutputBytes);
@@ -103,7 +137,12 @@ export class ToolExecutor {
       };
     } catch (error) {
       const message = error instanceof ToolExecutionError ? error.message : safeError(error);
-      throw new ToolExecutionError(await this.redactAndBound(message, 1_000));
+      const failureKind: ToolFailureKind = error instanceof ToolExecutionError
+        ? error.failureKind
+        : isTimeoutError(error, message)
+          ? 'timeout'
+          : 'execution_error';
+      throw new ToolExecutionError(await this.redactAndBound(message, 1_000), { failureKind });
     }
   }
 
@@ -278,9 +317,11 @@ export function operationSummary(
       return `Fetch and read: ${text(args.url, 200)}`;
     case 'files_read':
     case 'files_analyze':
-      return `Read the uploaded file ${text(args.fileId ?? args.filename ?? args.id, 80)}`;
+      return `Read the uploaded file ${text(args.file_id ?? args.fileId ?? args.filename ?? args.id, 80)}`;
     case 'calculator_calculate':
       return `Calculate: ${text(args.expression)}`;
+    case 'calculator_convert':
+      return `Convert ${String(args.value ?? '')} ${text(args.from, 32)} to ${text(args.to, 32)}`.trim();
     default:
       return context.description;
   }
@@ -304,6 +345,12 @@ function safeError(error: unknown): string {
     return error.message;
   }
   return 'The tool operation failed. No host fallback was attempted.';
+}
+
+function isTimeoutError(error: unknown, message: string): boolean {
+  if (error instanceof ApiError && error.kind === 'timeout') return true;
+  if (error instanceof WebToolError && error.kind === 'timeout') return true;
+  return /timed?\s*out|exceeded its \d+\s*ms execution limit/i.test(message);
 }
 
 function safeBaseUrl(value: string): string {
