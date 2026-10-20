@@ -115,7 +115,10 @@ describe('the capability cache of the proxy', () => {
 
     expect(result.status).toBe('supported_verified');
     expect(result.detail).toMatch(/two-step native tool round trip/i);
-    expect(stub).toHaveBeenCalledTimes(2);
+    // Streaming support is probed separately; this stub cannot answer the
+    // streamed request, so streaming honestly stays unverified.
+    expect(result.streamingSupported).toBe(false);
+    expect(stub).toHaveBeenCalledTimes(3);
     const followUp = bodies[1]!;
     const messages = followUp.messages as Array<Record<string, unknown>>;
     expect(messages[2]).toMatchObject({
@@ -130,7 +133,7 @@ describe('the capability cache of the proxy', () => {
 
     const cached = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
     expect(cached.status).toBe('supported_verified');
-    expect(stub).toHaveBeenCalledTimes(2);
+    expect(stub).toHaveBeenCalledTimes(3);
 
     responses.push(
       {
@@ -146,7 +149,59 @@ describe('the capability cache of the proxy', () => {
       { model: 'mock-model', timeoutMs: 5_000, force: true },
     );
     expect(refreshed.status).toBe('supported_verified');
-    expect(stub).toHaveBeenCalledTimes(4);
+    expect(stub).toHaveBeenCalledTimes(6);
+  });
+
+  it('verifies streamed tool-call fragments independently of the non-streaming result', async () => {
+    const proxy = createProxy();
+    const jsonResponses = [
+      { choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-5', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+      { choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK' }, finish_reason: 'stop' }] },
+    ];
+    const sse = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"probe-call-5","function":{"name":"kaggle_kit_capability_probe","arguments":"{"}}]}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":"tool_calls"}]}',
+      'data: [DONE]',
+    ].join('\n\n') + '\n\n';
+    const stub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      if (body.stream === true) {
+        return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      return new Response(JSON.stringify(jsonResponses.shift()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+
+    expect(result.status).toBe('supported_verified');
+    expect(result.streamingSupported).toBe(true);
+    expect(result.detail).toMatch(/streamed tool-call fragments were also assembled/i);
+  });
+
+  it('keeps non-streaming support when streamed fragments are malformed', async () => {
+    const proxy = createProxy();
+    const jsonResponses = [
+      { choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-6', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+      { choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK' }, finish_reason: 'stop' }] },
+    ];
+    const stub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      if (body.stream === true) {
+        // Partial JSON that never completes must not verify streaming.
+        return new Response('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"x","function":{"name":"kaggle_kit_capability_probe","arguments":"{"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+      return new Response(JSON.stringify(jsonResponses.shift()), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+
+    expect(result.status).toBe('supported_verified');
+    expect(result.streamingSupported).toBe(false);
   });
 
   it('refuses a tool-call response with the wrong finish reason', async () => {

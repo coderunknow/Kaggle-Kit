@@ -205,6 +205,117 @@ Conversations live in the browser storage of the current origin. Clearing the
 site data, using a different browser or a different port removes them. The
 *Data & credentials* tab shows what is stored.
 
+## Tools (v0.1.0-dev4)
+
+### "Native tool calling has not been verified for this exact endpoint…"
+
+Ordinary chat working does not prove tool calling works. Open **Settings →
+Tools** for the active profile and run the harmless probe. The probe sends a
+no-op function, requires exactly one valid call with
+`finish_reason=tool_calls`, verifies that the endpoint accepts the synthetic
+tool result, and then checks streamed fragments separately. The probed
+function is never executed. A probe result belongs to one endpoint URL,
+credential and model ID: changing any of them (for example a new tunnel URL
+or a rotated key) requires a fresh probe. Until a probe succeeds, tool
+definitions are not sent and ordinary chat is used — the message in the chat
+("Ordinary chat was used; no tools were executed") says exactly that.
+
+Common causes of `failed_verification` on a self-hosted `llama.cpp` server:
+the server was started without a Jinja chat template that renders tools
+(`--jinja`), the model's chat template has no tool-call section, or the
+server returns tool data without `finish_reason=tool_calls`. `unsupported`
+means the endpoint rejected the probe request itself (HTTP 400/404/422):
+old builds without OpenAI tool support behave this way. In both cases keep
+using ordinary chat; do not edit the profile to "force" tools — there is no
+such setting, by design.
+
+### The model says it has no tools although the probe passed
+
+The profile probably still carries the base recommended prompt, which
+truthfully describes chat *without* tools. Insert the **tool-use variant**
+in the profile editor, or rely on the proxy: the tool loop automatically
+replaces the known no-tools sentence before sending. A custom prompt that
+denies tools in other words must be edited by hand.
+
+### An approval request expired or "is no longer active"
+
+An approval is single-use, bound to one exact call, and expires after two
+minutes. It is also invalidated when the tool settings change, the job is
+cancelled, or the approval was already used (approving twice returns
+HTTP 410). Nothing ran in these cases; ask the question again to get a fresh
+approval. If you denied an operation, the same exact operation will not be
+re-requested in that turn.
+
+### "The tool-round budget was reached" / the loop timed out
+
+Execution is bounded on the server: by default 3 model rounds, 8 tool calls,
+15 s per tool and 120 s for the whole loop. Raise the profile limits in
+**Settings → Tools → Bounded execution** if a legitimate task needs more
+(hard maxima: 8 rounds, 24 calls, 60 s per tool, 300 s per loop). A
+conversation can only tighten these values, never exceed them.
+
+### Web search is offered but every call fails
+
+`web_search` needs the Brave provider: select it in **Settings → Tools →
+Web search provider** and store the API key through **Data & credentials**
+so the profile keeps only a secret *reference*. "The required provider
+credential is not configured" means the reference is missing or empty;
+"rejected the configured API key" (401/403) and "rate limit" (429) come from
+Brave. `web_open` refuses private/loopback/link-local/metadata addresses,
+non-standard ports, HTTPS→HTTP downgrades and oversized pages; that refusal
+is the SSRF policy working, not a bug. Answers derived from Brave results
+stay session-only (not saved or exported) unless you confirm your plan's
+retention rights *and* enable tool-history persistence.
+
+### "Docker is not installed or not on PATH" / code execution stays disabled
+
+Code execution fails closed. It needs Docker on the machine running the
+proxy and a locally available, digest-pinned image
+(`python:3.11|3.12|3.13-alpine@sha256:<64 hex>`) entered in **Settings →
+Tools → Code execution sandbox**. The proxy never pulls images and never
+falls back to running code on the host. Get the digest with
+`docker image inspect` after pulling the image yourself. Resource limits
+(timeout, memory, CPU, processes, output) live in the same card; isolation
+is fixed to strict (no network, read-only root, dropped capabilities).
+
+### MCP tools disappeared after editing the connection
+
+Discovery results are bound to the exact URL, headers, transport and
+timeout that produced them. Changing any of them — or a tool's schema on
+the server — clears the grant on purpose. Run **Discover tools** again,
+review the list, select the tools, and use **Explicitly grant selected
+tools**. Only public HTTPS Streamable HTTP servers on port 443 are
+supported; local stdio is disabled, and redirects are refused. A tool whose
+schema changed since review fails with "re-discover and approve" instead of
+running with unreviewed arguments.
+
+### A configured HTTP tool is refused before it runs
+
+Check the destination policy first: public DNS only (the address is pinned
+after validation), ports 80/443 only, no redirects, no credentials in the
+URL. Arguments whose field names look like credentials (`apiKey`, `token`,
+…) are refused — configure the credential as a server-side secret header
+instead. Non-GET tools and tools classified `write`/`unknown` always pause
+for approval; an HTTP GET is only automatic when you classified the
+operation `read_only` yourself.
+
+### File uploads
+
+Uploads are limited to 4 MiB and 100 000 extracted characters, live only in
+the proxy's memory for one conversation, and expire after one hour.
+Supported formats are TXT, Markdown, CSV, JSON, text-based PDF and DOCX. A
+scanned PDF reports "no extractable text" — OCR is not performed and the app
+will not pretend otherwise. Files are addressed by opaque ID; the model
+cannot open host paths.
+
+### The tool timeline vanished after reload
+
+Tool traces are not persisted by default. Enable **tool-history
+persistence** (profile default, overridable per conversation) to keep the
+sanitized trace; secrets are never stored either way. A call that was
+pending when the page reloaded is shown as *interrupted* and is never
+re-run automatically.
+
 ## Development
 
 ### `npm test` fails with "Found multiple elements"

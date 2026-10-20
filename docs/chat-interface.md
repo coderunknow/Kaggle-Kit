@@ -23,11 +23,18 @@ A profile describes one OpenAI-compatible endpoint.
 ### The recommended system prompt
 
 The editor can insert a ready-made prompt for the deployment this repository
-describes (one system message, no tools, 8 192-token context). The text lives in
-`shared/prompts/qwen.ts` and is mirrored in
+describes (one system message, 8 192-token context). The base text describes
+ordinary chat without tools; a **tool-use variant** derived from it replaces
+the no-tools claim with guidance for the verified native protocol (schema
+arguments, untrusted tool output, real-source citations, approvals and
+bounded loops). Use the variant only for profiles whose endpoint passed the
+tool probe. The base text lives in `shared/prompts/qwen.ts` and is mirrored in
 [`research/qwen-system-prompt/SYSTEM_PROMPT.md`](../research/qwen-system-prompt/SYSTEM_PROMPT.md),
 which also records what each block is for and what was deliberately left out.
 The two copies are checked against each other by `shared/prompts/qwen.test.ts`.
+If a verified tool profile still carries the base prompt, the proxy replaces
+the known no-tools sentence before sending so the model never receives a tool
+list together with "you have no tools".
 
 The button only changes the form. Nothing is sent until the profile is saved,
 and an empty field still means "no system message", which is the right default
@@ -137,8 +144,13 @@ ordinary inference or `--jinja`. Each explicit **Verify native tool calling**
 action performs a fresh probe, even within the cache lifetime; the proxy caches
 the resulting capability for up to ten minutes to gate subsequent tool chats
 for the same endpoint, credential and model. Unsupported, failed, stale or
-unverified capabilities leave tools disabled. Native streaming tool deltas are
-not probed; tool loops are non-streaming.
+unverified capabilities leave tools disabled. After the non-streaming round
+trip succeeds, the probe additionally verifies streamed tool-call fragments
+(argument JSON assembled per index and only accepted with
+`finish_reason: "tool_calls"`) and reports that as `streamingSupported`;
+streaming failure never downgrades the proven non-streaming result. Tool
+loops themselves use non-streaming rounds so approvals can pause between
+rounds.
 
 The seven categories are:
 

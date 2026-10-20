@@ -6,6 +6,8 @@
  * OpenAI-compatible servers emit is supported.
  */
 
+import type { OpenAIToolCall } from './types';
+
 export interface SseEvent {
   /** Optional `event:` name. */
   event?: string;
@@ -95,10 +97,20 @@ function parseSseBlock(block: string): SseEvent | null {
   return { event: eventName, data: dataLines.join('\n') };
 }
 
+/** One streamed fragment of a tool call. Argument JSON arrives in pieces. */
+export interface ToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  argumentsFragment?: string;
+}
+
 export interface StreamDelta {
   content?: string;
   reasoning?: string;
   finishReason?: string;
+  /** Streamed tool-call fragments. They are data only until assembled and validated. */
+  toolCalls?: ToolCallDelta[];
   /**
    * An error that the server reported *inside* the event stream. The proxy
    * emits such an event when an upstream stream breaks, so that a truncated
@@ -112,7 +124,18 @@ export function extractDelta(event: SseEvent): StreamDelta {
   if (event.data === '[DONE]') return { finishReason: 'stop' };
 
   let payload: {
-    choices?: { delta?: { content?: string | null; reasoning_content?: string | null }; finish_reason?: string | null }[];
+    choices?: {
+      delta?: {
+        content?: string | null;
+        reasoning_content?: string | null;
+        tool_calls?: Array<{
+          index?: number;
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>;
+      };
+      finish_reason?: string | null;
+    }[];
     error?: { message?: string } | string;
   };
 
@@ -139,7 +162,92 @@ export function extractDelta(event: SseEvent): StreamDelta {
   const reasoning = choice.delta?.reasoning_content;
   if (typeof reasoning === 'string' && reasoning.length > 0) delta.reasoning = reasoning;
 
+  const fragments = choice.delta?.tool_calls;
+  if (Array.isArray(fragments) && fragments.length > 0) {
+    delta.toolCalls = fragments.flatMap((fragment, position): ToolCallDelta[] => {
+      if (!fragment || typeof fragment !== 'object') return [];
+      const index = typeof fragment.index === 'number' && Number.isInteger(fragment.index) && fragment.index >= 0
+        ? fragment.index
+        : position;
+      return [{
+        index,
+        ...(typeof fragment.id === 'string' && fragment.id ? { id: fragment.id } : {}),
+        ...(typeof fragment.function?.name === 'string' && fragment.function.name ? { name: fragment.function.name } : {}),
+        ...(typeof fragment.function?.arguments === 'string' ? { argumentsFragment: fragment.function.arguments } : {}),
+      }];
+    });
+  }
+
   if (choice.finish_reason) delta.finishReason = choice.finish_reason;
 
   return delta;
+}
+
+export interface AssembledToolCalls {
+  calls: OpenAIToolCall[];
+  /** True when a limit was hit; the partial data must not be executed. */
+  overflow: boolean;
+  /** True only when the stream announced `finish_reason=tool_calls`. */
+  announced: boolean;
+}
+
+/**
+ * Assemble streamed tool-call fragments into complete calls.
+ *
+ * Partial argument JSON is never parsed or executed here: the fragments are
+ * concatenated per `index` and only handed back once the stream finishes.
+ * A caller must additionally require `announced` (finish_reason=tool_calls),
+ * validate each call's JSON against the tool schema and apply the normal
+ * approval policy before anything runs.
+ */
+export class ToolCallAccumulator {
+  private readonly byIndex = new Map<number, { id?: string; name?: string; arguments: string }>();
+  private finishReason: string | undefined;
+  private overflow = false;
+
+  constructor(
+    private readonly maxCalls = 8,
+    private readonly maxArgumentBytes = 32_768,
+  ) {}
+
+  add(delta: StreamDelta): void {
+    if (delta.finishReason) this.finishReason = delta.finishReason;
+    for (const fragment of delta.toolCalls ?? []) {
+      if (!this.byIndex.has(fragment.index)) {
+        if (this.byIndex.size >= this.maxCalls) {
+          this.overflow = true;
+          continue;
+        }
+        this.byIndex.set(fragment.index, { arguments: '' });
+      }
+      const entry = this.byIndex.get(fragment.index)!;
+      if (fragment.id && !entry.id) entry.id = fragment.id;
+      if (fragment.name && !entry.name) entry.name = fragment.name;
+      if (fragment.argumentsFragment) {
+        if (new TextEncoder().encode(entry.arguments + fragment.argumentsFragment).length > this.maxArgumentBytes) {
+          this.overflow = true;
+        } else {
+          entry.arguments += fragment.argumentsFragment;
+        }
+      }
+    }
+  }
+
+  finish(): AssembledToolCalls {
+    const calls = [...this.byIndex.entries()]
+      .sort(([left], [right]) => left - right)
+      .flatMap(([, entry]): OpenAIToolCall[] => {
+        if (!entry.id || !entry.name) return [];
+        return [{
+          id: entry.id,
+          type: 'function',
+          function: { name: entry.name, arguments: entry.arguments },
+        }];
+      });
+    return {
+      calls,
+      overflow: this.overflow || calls.length !== this.byIndex.size,
+      announced: this.finishReason === 'tool_calls',
+    };
+  }
 }

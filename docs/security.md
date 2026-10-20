@@ -167,8 +167,11 @@ then accept the same call in an assistant message, a synthetic `role: "tool"`
 result and a final `finish_reason: "stop"`. Neither probe turn executes a
 function. Every explicit verification action runs a fresh probe; its result is
 cached for up to ten minutes to gate tool chats for the exact model, endpoint
-and credential. Streaming tool-call deltas are not probed and tool loops use
-non-streaming requests.
+and credential. Streamed tool-call fragments are then probed separately:
+partial argument JSON is only concatenated per call index, never parsed or
+executed, and streaming is reported supported only when the assembled call
+arrives with `finish_reason: "tool_calls"`. Tool loops use non-streaming
+requests so approvals can pause between rounds.
 
 The server enforces the policy; prompts are not an authorization boundary:
 

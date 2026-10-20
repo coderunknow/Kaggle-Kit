@@ -277,6 +277,154 @@ async function main() {
       body: 'x',
     });
     assert('a body that is not JSON is refused', wrongType.status === 415, `HTTP ${wrongType.status}`);
+
+    // 10. the tool loop: probe, profile, automatic read-only call, approval
+    const pinnedImage = `python:3.12-alpine@sha256:${'a'.repeat(64)}`;
+    const saveProfile = await fetch(`${base}/api/tools/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profileId: 'integration-tools',
+        settings: {
+          enabled: true,
+          allowedTools: ['calculator_calculate', 'code_execute'],
+          limits: {
+            maxRounds: 3,
+            maxCalls: 8,
+            perToolTimeoutMs: 15_000,
+            loopTimeoutMs: 120_000,
+            maxInputBytes: 8_192,
+            maxOutputBytes: 24_000,
+          },
+          historyPersistence: false,
+          web: { provider: 'disabled' },
+          httpTools: [],
+          mcpServers: [],
+          code: {
+            provider: 'docker',
+            image: pinnedImage,
+            isolation: 'strict',
+            network: 'none',
+            timeoutMs: 10_000,
+            memoryMb: 128,
+            cpuCores: 0.5,
+            maxProcesses: 32,
+            outputBytes: 8_192,
+          },
+        },
+      }),
+    });
+    const saveProfileBody = await saveProfile.json();
+    assert(
+      'the built backend stores sanitized tool settings',
+      saveProfile.status === 200 && saveProfileBody.settings?.code?.provider === 'docker',
+      `HTTP ${saveProfile.status}: ${JSON.stringify(saveProfileBody).slice(0, 200)}`,
+    );
+
+    // Tool chat must refuse to run before the harmless probe verifies support.
+    const unverifiedChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'calculate: 2+3' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    assert(
+      'tool chat refuses an unverified endpoint',
+      unverifiedChat.status === 409,
+      `HTTP ${unverifiedChat.status}`,
+    );
+
+    const capability = await post(base, '/api/tools/capability', {
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      timeoutMs: 10_000,
+    });
+    const capabilityBody = await capability.json();
+    assert(
+      'the harmless probe verifies native tool calling against the mock',
+      capability.status === 200 && capabilityBody.status === 'supported_verified',
+      `HTTP ${capability.status}: ${JSON.stringify(capabilityBody).slice(0, 200)}`,
+    );
+    assert(
+      'the probe assembles streamed tool-call fragments',
+      capabilityBody.streamingSupported === true,
+      JSON.stringify(capabilityBody).slice(0, 200),
+    );
+
+    const calculatorChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'calculate: 2+3' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const calculatorBody = await calculatorChat.json();
+    assert(
+      'a read-only calculator call runs automatically and completes the loop',
+      calculatorChat.status === 200
+        && calculatorBody.status === 'complete'
+        && calculatorBody.toolTrace?.some((entry) => entry.toolName === 'calculator_calculate' && entry.status === 'succeeded')
+        && String(calculatorBody.content).includes('"value":5'),
+      `HTTP ${calculatorChat.status}: ${JSON.stringify(calculatorBody).slice(0, 300)}`,
+    );
+    assert(
+      'the API key is not echoed in the tool trace',
+      !JSON.stringify(calculatorBody).includes(API_KEY),
+      'the key appeared in the tool chat answer',
+    );
+
+    const codeChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'run code: print(1)' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const codeBody = await codeChat.json();
+    assert(
+      'code execution pauses for explicit approval',
+      codeChat.status === 200
+        && codeBody.status === 'awaiting_approval'
+        && codeBody.pendingApproval?.toolName === 'code_execute',
+      `HTTP ${codeChat.status}: ${JSON.stringify(codeBody).slice(0, 300)}`,
+    );
+
+    const denied = await post(base, '/api/tools/approve', {
+      jobId: codeBody.jobId,
+      approvalId: codeBody.pendingApproval?.approvalId,
+      approved: false,
+    });
+    const deniedBody = await denied.json();
+    assert(
+      'a denied code run is not executed and the loop still completes',
+      denied.status === 200
+        && deniedBody.status === 'complete'
+        && deniedBody.toolTrace?.some((entry) => entry.toolName === 'code_execute' && entry.status === 'denied'),
+      `HTTP ${denied.status}: ${JSON.stringify(deniedBody).slice(0, 300)}`,
+    );
+
+    // Approvals are single-use: replaying the same approval must fail.
+    const replayed = await post(base, '/api/tools/approve', {
+      jobId: codeBody.jobId,
+      approvalId: codeBody.pendingApproval?.approvalId,
+      approved: true,
+    });
+    assert(
+      'a used approval cannot be replayed',
+      replayed.status === 410,
+      `HTTP ${replayed.status}`,
+    );
   } finally {
     stop();
     process.off('exit', stop);

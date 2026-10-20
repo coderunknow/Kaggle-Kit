@@ -101,7 +101,7 @@ export function buildChatCompletionBody(input: BuildChatBodyInput): BuildChatBod
     if (capabilities?.streamingVerified && !toolCallingReady) {
       body.stream = true;
     } else if (toolCallingReady) {
-      omitted.push('stream (tool-call streaming was not verified; tool turns use non-streaming requests)');
+      omitted.push('stream (tool turns use non-streaming requests; streamed tool-call support is reported separately by the capability probe)');
     } else {
       omitted.push('stream');
     }

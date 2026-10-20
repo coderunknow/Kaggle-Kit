@@ -25,7 +25,9 @@ import {
 import {
   QWEN_SYSTEM_PROMPT,
   QWEN_SYSTEM_PROMPT_ID,
+  QWEN_TOOL_SYSTEM_PROMPT_ID,
   estimatePromptTokens,
+  qwenToolSystemPrompt,
 } from '../../shared/prompts/qwen';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
@@ -669,10 +671,20 @@ npm start`}
           >
             {form.systemPrompt.trim() ? 'Replace with the recommended Qwen prompt' : 'Insert the recommended Qwen prompt'}
           </button>
+          <button
+            type="button"
+            className="button button--small"
+            onClick={() => update('systemPrompt', qwenToolSystemPrompt())}
+          >
+            Insert the tool-use variant
+          </button>
         </div>
         <span className="field__hint">
-          Tuned for the {QWEN_SYSTEM_PROMPT_ID} target: no tools, one system message. The text lives
-          in <code>shared/prompts/qwen.ts</code>; the research behind it is in{' '}
+          The base prompt ({QWEN_SYSTEM_PROMPT_ID}) describes ordinary chat without tools and is the
+          truthful default. The tool-use variant ({QWEN_TOOL_SYSTEM_PROMPT_ID}) replaces that claim
+          with guidance for the verified native protocol — use it only for profiles where tool
+          calling passed the probe in Tools settings. The texts live in{' '}
+          <code>shared/prompts/qwen.ts</code>; the research behind the base prompt is in{' '}
           <code>research/qwen-system-prompt/</code>.
         </span>
       </div>

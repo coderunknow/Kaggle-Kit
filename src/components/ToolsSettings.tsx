@@ -400,6 +400,7 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
             ['maxCalls', 'Maximum tool calls', HARD_TOOL_LIMITS.maxCalls],
             ['perToolTimeoutMs', 'Per-tool timeout (ms)', HARD_TOOL_LIMITS.perToolTimeoutMs],
             ['loopTimeoutMs', 'Whole-loop timeout (ms)', HARD_TOOL_LIMITS.loopTimeoutMs],
+            ['maxInputBytes', 'Maximum tool input (bytes)', HARD_TOOL_LIMITS.maxInputBytes],
             ['maxOutputBytes', 'Maximum output (bytes)', HARD_TOOL_LIMITS.maxOutputBytes],
           ] as const).map(([key, label, maximum]) => (
             <label className="field" key={key}>
@@ -535,6 +536,34 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
         </label>
         <p className="field__hint">Provider: {draft.code.provider === 'docker' ? 'Docker is configured; verify it is installed and the exact image digest is already present.' : 'disabled until a supported image digest is entered'}.</p>
         <p className="field__hint">Read-only root filesystem, no network, dropped capabilities, no-new-privileges, and bounded CPU/memory/processes/output. No host fallback exists.</p>
+        <div className="tool-settings__limits">
+          {([
+            ['timeoutMs', 'Run timeout (ms)', 1_000, 60_000, 1],
+            ['memoryMb', 'Memory limit (MiB)', 64, 2_048, 1],
+            ['cpuCores', 'CPU limit (cores)', 0.1, 2, 0.1],
+            ['maxProcesses', 'Process limit', 1, 128, 1],
+            ['outputBytes', 'Output limit (bytes)', 256, 32_768, 1],
+          ] as const).map(([key, label, minimum, maximum, step]) => (
+            <label className="field" key={key}>
+              <span className="field__label">{label}</span>
+              <input
+                type="number"
+                min={minimum}
+                max={maximum}
+                step={step}
+                value={draft.code[key]}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (!Number.isFinite(value)) return;
+                  const bounded = Math.max(minimum, Math.min(maximum, step === 1 ? Math.floor(value) : Math.round(value * 10) / 10));
+                  update({ code: { ...draft.code, [key]: bounded } });
+                }}
+              />
+              <span className="field__hint">Allowed range {minimum}–{maximum}; the server enforces the same bounds.</span>
+            </label>
+          ))}
+        </div>
+        <p className="field__hint">Isolation is fixed to the strict mode the Docker backend enforces (network: none, read-only root, unprivileged user, tmpfs workspace). Weaker modes are not offered because the backend cannot enforce them safely.</p>
       </section>
 
       {loading ? <p className="text-subtle" role="status">Loading settings from the local proxy…</p> : null}

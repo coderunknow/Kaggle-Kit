@@ -136,7 +136,11 @@ harmless native function call with `finish_reason=tool_calls`, then verifies an
 isolated follow-up containing a synthetic tool result and a final stop response.
 The probe never executes its function. URL shape, model family, normal chat, or
 `--jinja` alone do not count as evidence; unverified endpoints keep ordinary
-chat available and tool calls disabled. Tool rounds are non-streaming.
+chat available and tool calls disabled. Streamed tool-call fragments are
+verified separately by the probe (reported as `streamingSupported`); tool
+rounds themselves are non-streaming so approvals can pause the loop. The
+recommended Qwen prompt ships in two variants — the base text for ordinary
+chat and a tool-use variant for verified profiles.
 
 The catalog covers calculator/unit conversion, conversation-scoped uploaded
 files, public web search/page retrieval, read-only endpoint diagnostics,

@@ -131,6 +131,6 @@ describe('buildChatCompletionBody', () => {
     expect(body.tools?.[0]).not.toHaveProperty('permission');
     expect(body.stream).toBeUndefined();
     expect(body.parallel_tool_calls).toBe(false);
-    expect(omitted).toContain('stream (tool-call streaming was not verified; tool turns use non-streaming requests)');
+    expect(omitted).toContain('stream (tool turns use non-streaming requests; streamed tool-call support is reported separately by the capability probe)');
   });
 });

@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { ApiError, redactSecrets } from '../shared/api/errors';
 import { OpenAIClient } from '../shared/api/client';
 import { CONNECTION_STAGE_ORDER } from '../shared/connection';
-import { extractDelta, parseSseStream } from '../shared/api/stream';
+import { extractDelta, parseSseStream, ToolCallAccumulator } from '../shared/api/stream';
 import { buildChatCompletionBody } from '../shared/api/requests';
 import type { InferenceParams, ServerCapabilities } from '../shared/api/requests';
 import type { ToolCallingCapability } from '../shared/tools/types';
@@ -480,7 +480,16 @@ export class ProxyService {
         if (finalChoice?.finish_reason === 'stop' && noAdditionalCalls &&
           typeof finalMessage?.content === 'string' && finalMessage.content.trim() === 'KAGGLE_KIT_TOOL_PROBE_OK') {
           capability.status = 'supported_verified';
-          capability.detail = 'The endpoint completed an isolated two-step native tool round trip: one valid function call (finish_reason=tool_calls), then an accepted synthetic tool result and a final stop response. The function was never executed. Streaming tool-call deltas remain unverified and disabled.';
+          // Non-streaming support is proven. Streaming tool-call deltas are a
+          // separate wire behaviour: verify them independently and report the
+          // outcome without downgrading the proven non-streaming result.
+          probeStage = 'streamed function-call turn';
+          capability.streamingSupported = await this.probeStreamingToolCall(
+            baseUrl, apiKey, model, probeMessages, probeTools, deadline,
+          );
+          capability.detail = capability.streamingSupported
+            ? 'The endpoint completed an isolated two-step native tool round trip: one valid function call (finish_reason=tool_calls), then an accepted synthetic tool result and a final stop response. Streamed tool-call fragments were also assembled successfully. The function was never executed.'
+            : 'The endpoint completed an isolated two-step native tool round trip: one valid function call (finish_reason=tool_calls), then an accepted synthetic tool result and a final stop response. The function was never executed. Streamed tool-call fragments were not verified; tool rounds use non-streaming requests.';
         } else {
           capability.status = 'failed_verification';
           capability.detail = 'The endpoint did not accept and complete the synthetic tool-result follow-up with a final stop response. Tool use remains disabled; ordinary chat is unchanged.';
@@ -503,6 +512,74 @@ export class ProxyService {
       this.toolCallingCapabilities.delete(oldest);
     }
     return capability;
+  }
+
+  /**
+   * Verify streamed tool-call fragments with the same harmless no-op function.
+   * Any failure returns false; it never downgrades the non-streaming result
+   * and never executes the returned call.
+   */
+  private async probeStreamingToolCall(
+    baseUrl: string,
+    apiKey: string | undefined,
+    model: string,
+    messages: ChatMessageInput[],
+    tools: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>,
+    deadline: number,
+  ): Promise<boolean> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(remaining, 30_000));
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const response = await fetch(joinApiPath(baseUrl, '/chat/completions'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model,
+          messages,
+          tools,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          max_tokens: 64,
+          temperature: 0,
+          stream: true,
+        }),
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+      if (!response.ok || !response.body) return false;
+      if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream')) return false;
+      const accumulator = new ToolCallAccumulator(1, 1_024);
+      let events = 0;
+      for await (const event of parseSseStream(response.body, controller.signal)) {
+        events += 1;
+        if (events > 500) return false;
+        const delta = extractDelta(event);
+        if (delta.error) return false;
+        accumulator.add(delta);
+        if (delta.finishReason) break;
+      }
+      const assembled = accumulator.finish();
+      if (!assembled.announced || assembled.overflow || assembled.calls.length !== 1) return false;
+      const call = assembled.calls[0]!;
+      if (call.function.name !== 'kaggle_kit_capability_probe') return false;
+      try {
+        const parsed = JSON.parse(call.function.arguments) as unknown;
+        return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+      } catch {
+        return false;
+      }
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Return only an explicit, still-fresh probe result; never infer support. */

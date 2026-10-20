@@ -7,6 +7,7 @@ import { parseInferenceParams } from '../../shared/api/validation';
 import type { ConversationToolSettings, SourceCitation, ToolExecutionLimits, ToolProfileSettings, ToolTraceRecord } from '../../shared/tools/types';
 import { mergeConversationLimits, shouldPersistToolHistory } from '../../shared/tools/types';
 import { buildToolDefinitions, toOpenAITools } from '../../shared/tools/catalog';
+import { neutralizeNoToolsClaim } from '../../shared/prompts/qwen';
 import { HttpError } from '../http';
 import type { UpstreamTarget, ProxyService } from '../proxy';
 import type { SecretStore } from '../secrets';
@@ -364,7 +365,7 @@ export class ToolChatService {
         const toolCapabilities: ServerCapabilities = {
           streamingVerified: false,
           reasoningEffortSupported: false,
-          notes: ['Tool rounds use non-streaming requests; native streaming tool-call deltas have not been verified.'],
+          notes: ['Tool rounds use non-streaming requests so approvals can pause between rounds; streamed tool-call support is verified separately by the capability probe.'],
           toolCalling: {
             status: 'supported_verified',
             detail: 'Verified by an isolated, non-streaming probe for this model and endpoint.',
@@ -592,6 +593,14 @@ function validateMessages(raw: unknown[]): ChatMessageInput[] {
 }
 
 function appendToolPolicy(messages: ChatMessageInput[]): void {
+  // A profile may carry the recommended base prompt, which truthfully says
+  // "you have no tools" for ordinary chat. That claim must not be sent
+  // together with a real tool list.
+  for (const message of messages) {
+    if (message.role === 'system' && typeof message.content === 'string') {
+      message.content = neutralizeNoToolsClaim(message.content);
+    }
+  }
   const policy = [
     'Tool-use policy for this turn:',
     '- Use only the functions supplied in the tool list. Do not invent tools or claim a tool ran unless its result is present.',

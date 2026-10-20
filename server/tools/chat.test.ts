@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_TOOL_PROFILE_SETTINGS, type ToolProfileSettings } from '../../shared/tools/types';
+import { QWEN_NO_TOOLS_CLAIM, QWEN_SYSTEM_PROMPT } from '../../shared/prompts/qwen';
 import { ApiError } from '../../shared/api/errors';
 import { createLogger } from '../logger';
 import { SecretStore } from '../secrets';
@@ -147,6 +148,33 @@ describe('bounded server-side tool chat', () => {
     expect(JSON.stringify(toolResults)).toContain('UNTRUSTED TOOL OUTPUT');
     expect(JSON.stringify(toolResults)).toContain('4');
     expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('never sends the base prompt no-tools claim together with a tool list', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      functionCall('calculator_calculate', { expression: '2 + 2' }),
+      answer('The result is 4.'),
+    ]);
+
+    const result = await test.service.start({
+      profileId: 'profile-1',
+      conversationId: 'conversation-1',
+      target: { baseUrl: 'https://model.example.invalid/v1' },
+      model: 'mock-model',
+      messages: [
+        { role: 'system', content: QWEN_SYSTEM_PROMPT },
+        { role: 'user', content: 'Calculate this for me.' },
+      ],
+      params: { maxTokens: 128, temperature: 0, topP: 1, stream: false },
+      timeoutMs: 5_000,
+    });
+
+    expect(result.status).toBe('complete');
+    const sentMessages = test.bodies[0]?.messages as Array<{ role: string; content?: string }> | undefined;
+    const system = sentMessages?.find((message) => message.role === 'system');
+    expect(system?.content).not.toContain(QWEN_NO_TOOLS_CLAIM);
+    expect(system?.content).not.toMatch(/you have no tools/i);
+    expect(system?.content).toContain('Tool-use policy for this turn:');
   });
 
   it('refuses structured tool calls unless the endpoint marks finish_reason as tool_calls', async () => {
