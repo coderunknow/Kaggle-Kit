@@ -7,10 +7,14 @@ import { expect, test, type Page } from '@playwright/test';
  */
 const MOCK_BASE_URL = 'http://127.0.0.1:18200';
 
+async function openSettings(page: Page) {
+  await page.locator('header.topbar').getByRole('button', { name: /^settings$/i }).click();
+  return page.getByRole('dialog', { name: /^settings$/i });
+}
+
 async function createProfile(page: Page) {
   await page.goto('/');
-  await page.locator('header.topbar').getByRole('button', { name: /^settings$/i }).click();
-  const dialog = page.getByRole('dialog', { name: /^settings$/i });
+  const dialog = await openSettings(page);
   await dialog.getByRole('button', { name: /add profile/i }).click();
   await dialog.getByLabel(/display name/i).fill('Mock upstream');
   await dialog.getByLabel(/base url/i).fill(MOCK_BASE_URL);
@@ -33,13 +37,12 @@ async function startConversation(page: Page, text: string) {
 test('creates a profile and completes an ordinary chat round trip', async ({ page }) => {
   await createProfile(page);
   await startConversation(page, 'Hello from the browser test');
-  await expect(page.getByText(/Harmless safe chat response/)).toBeVisible();
+  await expect(page.getByText(/Mock answer for: Hello from the browser test/)).toBeVisible();
 });
 
 test('settings dialog closes with Escape and move focus out of the dialog', async ({ page }) => {
   await page.goto('/');
-  await page.locator('header.topbar').getByRole('button', { name: /^settings$/i }).click();
-  const dialog = page.getByRole('dialog', { name: /^settings$/i });
+  const dialog = await openSettings(page);
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
@@ -51,74 +54,21 @@ test('settings dialog closes with Escape and move focus out of the dialog', asyn
 
 test('runs a safe tool automatically and lets the user deny risky code', async ({ page }) => {
   await createProfile(page);
-  const profileId = await page.evaluate(() => {
-    const raw = window.localStorage.getItem('kaggle-kit.profiles.v1');
-    const profiles = raw ? (JSON.parse(raw) as { id: string }[]) : [];
-    return profiles[0]?.id;
-  });
-  expect(profileId).toBeTruthy();
 
-  // Configure tools through the same API the settings UI uses, then probe.
-  const digest = `sha256:${'7'.repeat(64)}`;
-  const profileResponse = await page.request.put(`/api/tools/profiles/${profileId}`, {
-    headers: { Origin: 'http://127.0.0.1:18201' },
-    data: {
-      baseUrl: MOCK_BASE_URL,
-      modelId: 'mock-model',
-      apiKey: 'e2e-test-key',
-      settings: {
-        schemaVersion: 1,
-        enabled: true,
-        approvalMode: 'ask',
-        capabilities: {},
-        allowedTools: ['calculator_calculate', 'code_execute'],
-        limits: {
-          maxRounds: 4,
-          maxToolCalls: 8,
-          maxCallsPerRound: 2,
-          maxToolResultBytes: 32768,
-          maxTotalToolBytes: 98304,
-          toolTimeoutMs: 20000,
-        },
-        sandbox: {
-          enabled: true,
-          image: `python:3.12-alpine@${digest}`,
-          memoryMb: 256,
-          cpus: 1,
-          pidsLimit: 64,
-          timeoutMs: 15000,
-          outputBytes: 16384,
-        },
-        web: { providerEnabled: false, directFetchEnabled: false, braveSecretRef: '', resultCount: 5, freshness: '' },
-        files: { enabled: false, maxFiles: 8, maxBytes: 262144, maxInputBytes: 1048576, retentionMs: 86400000 },
-        mcpServers: [],
-        httpTools: [],
-      },
-    },
-  });
-  expect(profileResponse.ok()).toBe(true);
-  const stored = (await profileResponse.json()) as { profile: { settings: unknown } };
-
-  const probeResponse = await page.request.post(`/api/tools/profiles/${profileId}/probe`, {
-    headers: { Origin: 'http://127.0.0.1:18201' },
-    data: { baseUrl: MOCK_BASE_URL, modelId: 'mock-model', apiKey: 'e2e-test-key', timeoutMs: 20000 },
-  });
-  expect(probeResponse.ok()).toBe(true);
-  const probed = (await probeResponse.json()) as { settings: unknown };
-
-  // Mirror the server-stored tool settings into the browser profile (the
-  // same synchronization ToolsSettings performs) and reload.
-  await page.evaluate(
-    ([id, settings]) => {
-      const raw = window.localStorage.getItem('kaggle-kit.profiles.v1');
-      if (!raw) return;
-      const profiles = JSON.parse(raw) as { id: string; tools?: unknown }[];
-      for (const entry of profiles) if (entry.id === id) entry.tools = settings;
-      window.localStorage.setItem('kaggle-kit.profiles.v1', JSON.stringify(profiles));
-    },
-    [profileId, probed.settings ?? stored.profile.settings] as const,
-  );
-  await page.reload();
+  // Configure tools through the real settings UI: probe, enable the loop,
+  // allow the calculator, and pin a (deliberately unavailable) sandbox image.
+  const dialog = await openSettings(page);
+  await dialog.getByRole('button', { name: /tools & approvals/i }).click();
+  await dialog.getByRole('button', { name: /verify native tool calling/i }).click();
+  await expect(dialog.getByText('supported_verified')).toBeVisible();
+  await dialog.getByLabel(/enable the server-side tool loop/i).check();
+  await dialog.getByLabel(/calculate an expression/i).check();
+  await dialog
+    .getByLabel(/digest-pinned image/i)
+    .fill(`python:3.12-alpine@sha256:${'7'.repeat(64)}`);
+  await dialog.getByLabel(/allow the model to request python execution/i).check();
+  await dialog.getByRole('button', { name: /save tool settings/i }).click();
+  await dialog.getByRole('button', { name: /close settings/i }).click();
 
   await startConversation(page, 'calculate: 2+3');
   await expect(page.getByText(/Tool result received/)).toBeVisible();
@@ -128,7 +78,9 @@ test('runs a safe tool automatically and lets the user deny risky code', async (
   const deny = page.getByRole('button', { name: /^deny$/i });
   await expect(deny).toBeVisible();
   await expect(page.getByRole('button', { name: /approve once/i })).toBeVisible();
+  // The approval describes the concrete operation before anything runs.
+  await expect(page.getByText(/Run Python code in the sandbox/)).toBeVisible();
   await deny.click();
   await expect(page.getByText(/Tool result received/)).toHaveCount(2);
-  await expect(page.getByText(/denied by the user/i)).toBeVisible();
+  await expect(page.getByText(/The user denied this exact operation/)).toHaveCount(1);
 });
