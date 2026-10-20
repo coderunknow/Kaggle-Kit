@@ -25,6 +25,8 @@ import type { InferenceParams, ServerCapabilities } from '../shared/api/requests
 import type { ToolCallingCapability } from '../shared/tools/types';
 import { joinApiPath, normalizeBaseUrlDetailed, UrlValidationError } from '../shared/api/url';
 import { assertDestinationAllowed } from './destinations';
+import { createPinnedFetch } from './pinnedFetch';
+import type { FetchLike } from '../shared/api/client';
 import type {
   ChatCompletionRequestBody,
   ChatCompletionResponse,
@@ -75,11 +77,26 @@ export class ProxyService {
     return `${baseUrl}\u0000${digest}`;
   }
 
+  /**
+   * Every upstream connection is pinned to a policy-validated DNS answer
+   * (see pinnedFetch.ts), so a hostname that rebinds between the policy
+   * check and the socket connect cannot reach loopback or metadata
+   * addresses it was not configured as.
+   */
+  readonly pinnedFetch: FetchLike;
+
   constructor(
     private readonly config: ServerConfig,
     private readonly store: SecretStore,
     private readonly logger: Logger,
-  ) {}
+    /** Test seam only: production code must use the DNS-pinned fetch. */
+    fetchOverride?: FetchLike,
+  ) {
+    this.pinnedFetch = fetchOverride ?? createPinnedFetch({
+      allowedHosts: config.allowedHosts,
+      blockPrivateNetworks: config.blockPrivateNetworks,
+    });
+  }
 
   /** Normalize and validate an incoming target. */
   async resolveTarget(target: UpstreamTarget): Promise<{ baseUrl: string; apiKey?: string }> {
@@ -120,11 +137,22 @@ export class ProxyService {
     }
   }
 
+  /**
+   * The one way server code may build an upstream client: DNS-pinned
+   * connections plus the redirect destination policy are always attached,
+   * so no call site can accidentally fall back to an unpinned fetch or
+   * follow a redirect to a host outside the allow list.
+   */
+  createClient(baseUrl: string, apiKey: string | undefined, timeoutMs: number, maxResponseBytes?: number): OpenAIClient {
+    return this.client(baseUrl, apiKey, timeoutMs, maxResponseBytes);
+  }
+
   private client(baseUrl: string, apiKey: string | undefined, timeoutMs: number, maxResponseBytes?: number): OpenAIClient {
     return new OpenAIClient({
       baseUrl,
       apiKey,
       timeoutMs,
+      fetchImpl: this.pinnedFetch,
       ...(maxResponseBytes !== undefined ? { maxResponseBytes } : {}),
       validateRedirect: (target) => this.isRedirectAllowed(target),
     });
@@ -537,7 +565,7 @@ export class ProxyService {
         Accept: 'text/event-stream',
       };
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-      const response = await fetch(joinApiPath(baseUrl, '/chat/completions'), {
+      const response = await this.pinnedFetch(joinApiPath(baseUrl, '/chat/completions'), {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -676,7 +704,7 @@ export class ProxyService {
       };
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-      const response = await fetch(joinApiPath(baseUrl, '/chat/completions'), {
+      const response = await this.pinnedFetch(joinApiPath(baseUrl, '/chat/completions'), {
         method: 'POST',
         headers,
         body: JSON.stringify({

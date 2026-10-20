@@ -20,7 +20,9 @@ function createProxy() {
   const config = loadServerConfig({}, process.cwd());
   const store = new SecretStore(path.join(os.tmpdir(), `kaggle-kit-proxy-${Date.now()}.json`));
   const logger = createLogger({ sink: () => undefined });
-  return new ProxyService(config, store, logger);
+  // Delegate to the (stubbed) global fetch; DNS pinning itself is covered
+  // by server/pinnedFetch.test.ts against real sockets.
+  return new ProxyService(config, store, logger, (input, init) => globalThis.fetch(input, init));
 }
 
 function createFetchStub() {

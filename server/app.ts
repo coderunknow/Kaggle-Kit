@@ -14,7 +14,6 @@ import fsp from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 
-import { OpenAIClient } from '../shared/api/client';
 import { ApiError, redactSecrets } from '../shared/api/errors';
 import { joinApiPath } from '../shared/api/url';
 import type { ChatCompletionRequestBody, ChatMessageInput } from '../shared/api/types';
@@ -434,11 +433,7 @@ export function createApp(options: AppOptions = {}): App {
     const upstreamBody = proxy.buildUpstreamBody(model, messages, params, capabilities);
 
     if (!wantsStream) {
-      const client = new OpenAIClient({
-        baseUrl: resolved.baseUrl,
-        apiKey: resolved.apiKey,
-        timeoutMs,
-      });
+      const client = proxy.createClient(resolved.baseUrl, resolved.apiKey, timeoutMs);
       const completion = await client.chatCompletion(upstreamBody);
       sendJson(response, 200, { response: completion, model: completion.model ?? model });
       return;
@@ -471,7 +466,7 @@ export function createApp(options: AppOptions = {}): App {
 
     let upstream: Response;
     try {
-      upstream = await fetch(joinApiPath(resolved.baseUrl, '/chat/completions'), {
+      upstream = await proxy.pinnedFetch(joinApiPath(resolved.baseUrl, '/chat/completions'), {
         method: 'POST',
         headers,
         body: JSON.stringify({ ...upstreamBody, stream: true }),

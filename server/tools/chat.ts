@@ -385,6 +385,7 @@ export class ToolChatService {
           baseUrl: resolved.baseUrl,
           apiKey: resolved.apiKey,
           timeoutMs: Math.max(1_000, Math.min(session.timeoutMs, remaining)),
+          fetchImpl: this.proxy.pinnedFetch,
           maxResponseBytes: MAX_TOOL_CHAT_RESPONSE_BYTES,
           validateRedirect: () => false,
         });
