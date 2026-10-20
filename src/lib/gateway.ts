@@ -79,6 +79,10 @@ export interface ToolChatResult {
     arguments: Record<string, unknown>;
     expiresAt: string;
   };
+  /** Present only when the server spent a bounded corrective recovery round. */
+  recovery?: import('../../shared/tools/types').ToolRecoveryRecord;
+  /** Server-composed, truthful context-pressure hint about the tool catalog. */
+  contextNotice?: string;
 }
 
 async function requestJson<T>(path: string, body: unknown, signal?: AbortSignal, method = 'POST'): Promise<T> {

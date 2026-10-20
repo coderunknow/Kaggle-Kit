@@ -381,6 +381,30 @@ async function main() {
       'the key appeared in the tool chat answer',
     );
 
+    // A protocol-violating upstream turn (tool-call data with the wrong
+    // finish_reason) must spend exactly one bounded corrective round, execute
+    // nothing from the invalid turn, and report the recovery honestly.
+    const inconsistentChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'inconsistent calculate: 2+3' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const inconsistentBody = await inconsistentChat.json();
+    assert(
+      'a protocol failure spends one bounded corrective round and runs nothing from it',
+      inconsistentChat.status === 200
+        && inconsistentBody.status === 'complete'
+        && inconsistentBody.recovery?.attempts === 1
+        && inconsistentBody.toolTrace?.some((entry) => entry.status === 'failed' && /finish_reason=tool_calls/.test(entry.error ?? ''))
+        && !inconsistentBody.toolTrace?.some((entry) => entry.status === 'succeeded'),
+      `HTTP ${inconsistentChat.status}: ${JSON.stringify(inconsistentBody).slice(0, 300)}`,
+    );
+
     const codeChat = await post(base, '/api/tools/chat', {
       profileId: 'integration-tools',
       conversationId: 'integration-tools-conversation',

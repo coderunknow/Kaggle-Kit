@@ -124,6 +124,24 @@ export interface ConversationToolSettings {
   maxCalls?: number;
   loopTimeoutMs?: number;
   historyPersistence?: boolean;
+  /**
+   * Opt-in bounded selection recovery: when the first model round of a turn
+   * answers with plain text and no tool ran yet, the server may spend one
+   * corrective round asking the model to call a tool only if the request
+   * actually needs one. The model may still answer directly; recovery never
+   * forces a tool call and never bypasses approvals or denials. Off by
+   * default so ordinary questions do not pay for an extra round.
+   */
+  selectionRecovery?: boolean;
+}
+
+/** What the bounded corrective-recovery policy did during one tool job. */
+export interface ToolRecoveryRecord {
+  /** Corrective rounds or corrective error feedbacks spent in this job. */
+  attempts: number;
+  outcome: 'not_needed' | 'corrected' | 'failed';
+  /** Short, secret-free, human-readable evidence of every recovery event. */
+  events: string[];
 }
 
 export type ToolCallStatus =

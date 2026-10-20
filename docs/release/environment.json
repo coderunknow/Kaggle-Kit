@@ -1,19 +1,26 @@
 {
   "tested": [
-    "Arena sandbox: Linux x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11.2; npm ci installed 368 packages and reported 0 vulnerabilities",
-    "npm run check: TypeScript client/server typecheck, ESLint, and Vitest (42 files, 356 tests passed)",
-    "python3 -m unittest discover -s notebooks -p 'test_*.py' (39 passed, 7 skipped; deployment tests use stubs/local mocks)",
-    "python3 -m unittest discover -s tools -p 'test_*.py' (18 passed)",
-    "npm run build (production Vite client and bundled standalone Node backend); Vite reported a >500 kB client-chunk advisory",
-    "npm run check:integration (28/28 checks against the built bundle and a loopback mock upstream, including PDF/DOCX parsing, ordinary chat, streaming/cancellation, request policy, the native tool-calling probe with streamed fragment assembly, an automatic calculator call, and a denied single-use code-execution approval)",
-    "tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4 (staged archives, manifest, checksums and verification report validated, including simulated downloaded-asset validation)",
-    "Docker availability check: docker --version returned command not found; sandbox execution remains fail-closed and unverified"
+    "Arena sandbox: Linux x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11 with the requests package installed; npm ci reported 0 vulnerabilities",
+    "npm run typecheck: TypeScript client and server typecheck passed",
+    "npm run lint: ESLint passed",
+    "npm test: Vitest 44 files, 398 tests passed (tool-loop bounded recovery, selection recovery, catalog budget, benchmark core, notebook-driven policy and all prior suites)",
+    "npm run build: production Vite client and bundled standalone Node backend built",
+    "npm run check:integration: 29/29 checks against the built bundle and a loopback mock upstream, including the native tool-calling probe, streamed fragment assembly, an automatic calculator loop, a denied single-use code-execution approval, and one bounded corrective round after a protocol-violating model turn",
+    "python3 -m unittest discover -s notebooks -p 'test_*.py': 46 passed, 0 skipped (requests installed), including the LLAMA_API_KEY env fallback, the refusal of unauthenticated builds and the pinned cloudflared digest",
+    "python3 -m unittest discover -s tools -p 'test_*.py': 25 passed, including the release-workflow security regression tests",
+    "tools/model-benchmark.mjs smoke run against the local mock upstream: 6/6 model-mode cases passed with a clean report leak check (exit 0); the integration-mode skip path reported 3 skipped cases against a closed port (exit 0). This validates the script mechanics, not a real model",
+    "npm audit --json: 0 vulnerabilities",
+    "git diff --check: passed on the release candidate",
+    "tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6: staged archives, manifest, checksums and verification report validated, including the simulated downloaded-asset check"
   ],
   "notTested": [
-    "Kaggle GPU runtime, actual model download/weights, deployed Qwen3.8/llama.cpp inference, live native tool-call round trip (streaming or non-streaming), public tunnel or public Kaggle endpoint",
-    "Docker sandbox runtime/isolation or the pinned Python container image; Docker CLI was unavailable",
-    "Real Brave credentials/account, account-specific retention rights, fees or provider behavior; live MCP servers or configured external HTTP services",
+    "Kaggle GPU runtime, actual model download/weights, deployed Qwen3.8/llama.cpp inference, live native tool-call round trip, public tunnel or public Kaggle endpoint; the live-model benchmark has not been run against a real deployed model in this environment",
+    "The LLAMA_API_KEY environment fallback and the pinned cloudflared download on live Kaggle hardware (verified against the pinned builds' published sources and unit-tested locally)",
+    "Docker sandbox runtime/isolation and the pinned Python container image; the Docker CLI was unavailable in this sandbox (the real-Docker CI job covers the execution path)",
+    "Real Brave credentials/account, retention rights, live MCP servers or configured external HTTP services; missing-credential and failure paths are covered by tests",
+    "tools/model-benchmark.mjs --mode integration against a fully configured live proxy and endpoint pair; its skip and failure paths were exercised",
+    "Playwright browser end-to-end tests locally: browser binaries are not installed and the download host is unreachable from this sandbox; the Browser end-to-end CI job covers them on the PR branch",
     "Real-browser or assistive-technology accessibility audit; component tests use jsdom",
-    "PowerShell launcher behavior on Windows or non-Node-22 Node/npm toolchains"
+    "The Hugging Face model fetch remains on the unpinned resolve/main revision; no authoritative digest was reachable from this environment"
   ]
 }

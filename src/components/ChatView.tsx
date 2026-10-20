@@ -486,6 +486,17 @@ export function ChatView({
                   <span className="field__hint" style={{ display: 'block' }}>Off by default. File contents and credentials are never persisted. Brave result history also requires explicit storage-rights confirmation.</span>
                 </span>
               </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={conversation.toolSettings?.selectionRecovery === true}
+                  disabled={!profileTools.enabled || availableToolIds.length === 0}
+                  onChange={(event) => updateConversationToolSettings({ selectionRecovery: event.target.checked })}
+                />
+                <span>Allow one corrective round when the model answers without considering the tools
+                  <span className="field__hint" style={{ display: 'block' }}>Off by default. When on, a first plain-text answer spends at most one extra model round asking whether a listed tool is actually needed; the model may still answer directly, and no tool runs without its normal permissions or approval.</span>
+                </span>
+              </label>
             </details>
           ) : null}
 

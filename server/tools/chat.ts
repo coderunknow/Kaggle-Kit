@@ -4,9 +4,9 @@ import { redactSecrets } from '../../shared/api/errors';
 import { buildChatCompletionBody, type InferenceParams, type ServerCapabilities } from '../../shared/api/requests';
 import type { ChatCompletionResponse, ChatMessageInput, OpenAIToolCall } from '../../shared/api/types';
 import { parseInferenceParams } from '../../shared/api/validation';
-import type { ConversationToolSettings, SourceCitation, ToolExecutionLimits, ToolProfileSettings, ToolTraceRecord } from '../../shared/tools/types';
+import type { ConversationToolSettings, SourceCitation, ToolExecutionLimits, ToolProfileSettings, ToolRecoveryRecord, ToolTraceRecord } from '../../shared/tools/types';
 import { mergeConversationLimits, shouldPersistToolHistory } from '../../shared/tools/types';
-import { buildToolDefinitions, httpModelName, mcpModelName, toOpenAITools } from '../../shared/tools/catalog';
+import { buildToolDefinitions, httpModelName, mcpModelName, measureToolCatalog, toOpenAITools, toolCatalogNotice, TOOL_CATALOG_MAX_BYTES } from '../../shared/tools/catalog';
 import { neutralizeNoToolsClaim } from '../../shared/prompts/qwen';
 import { HttpError } from '../http';
 import type { UpstreamTarget, ProxyService } from '../proxy';
@@ -66,6 +66,18 @@ interface ToolChatSession {
   deniedOperations: Set<string>;
   pending?: PendingCall;
   trace: ToolTraceRecord[];
+  /** Corrective attempts spent in the current correction episode (max 1). */
+  recoveryAttempts: number;
+  /** Corrective attempts spent across the whole job, for diagnostics. */
+  recoveryTotal: number;
+  /** Secret-free evidence of every recovery event in this job. */
+  recoveryEvents: string[];
+  /** Set when a recovery episode ended in a second failure. */
+  recoveryFailed: boolean;
+  selectionRecoveryUsed: boolean;
+  /** Counts identical invalid calls so a repeated one is never re-fed silently. */
+  failedCallCounts: Map<string, number>;
+  contextNotice?: string;
   lastCompletion?: ChatCompletionResponse;
   lastAssistantContent?: string;
   lastReasoning?: string;
@@ -100,6 +112,10 @@ export interface ToolChatResult {
   /** The answer must stay session-only unless both retention rights and history persistence are confirmed. */
   transientContent?: boolean;
   pendingApproval?: PendingApprovalView;
+  /** Present only when a bounded corrective recovery round was spent. */
+  recovery?: ToolRecoveryRecord;
+  /** Truthful context-pressure hint about the serialized tool catalog. */
+  contextNotice?: string;
 }
 
 export class ToolChatService {
@@ -128,6 +144,14 @@ export class ToolChatService {
     const limits = mergeConversationLimits(settings.limits, conversationSettings);
     const definitions = buildToolDefinitions(settings, conversationSettings);
     if (definitions.length === 0) throw new HttpError(409, 'No available tools are enabled for this profile or conversation. Ordinary chat remains available.');
+    // Exact serialized catalog size guards the documented 8192-token context:
+    // user-configured HTTP/MCP schemas can otherwise silently consume the
+    // whole window and starve the conversation. Bytes are exact; the token
+    // figure derived from them is a labelled estimate, never a tokenizer.
+    const measurement = measureToolCatalog(definitions);
+    if (measurement.serializedBytes > TOOL_CATALOG_MAX_BYTES) {
+      throw new HttpError(409, `The enabled tool catalog is too large for the model context: ${measurement.count} definition(s), ${measurement.serializedBytes} serialized bytes (~${measurement.estimatedTokens} estimated tokens) exceeds the ${TOOL_CATALOG_MAX_BYTES}-byte budget. Disable tools or simplify configured HTTP/MCP schemas for this profile or conversation. Ordinary chat remains available.`);
+    }
     if (!Array.isArray(input.messages) || input.messages.length === 0 || input.messages.length > MAX_MESSAGES) {
       throw new HttpError(400, `The tool chat requires between 1 and ${MAX_MESSAGES} messages.`);
     }
@@ -164,6 +188,13 @@ export class ToolChatService {
       pendingQueue: [],
       deniedOperations: new Set(),
       trace: [],
+      recoveryAttempts: 0,
+      recoveryTotal: 0,
+      recoveryEvents: [],
+      recoveryFailed: false,
+      selectionRecoveryUsed: false,
+      failedCallCounts: new Map(),
+      ...(toolCatalogNotice(measurement) ? { contextNotice: toolCatalogNotice(measurement) } : {}),
       persistHistory: shouldPersistToolHistory(settings, conversationSettings),
       usedBraveSearch: false,
     };
@@ -250,6 +281,9 @@ export class ToolChatService {
       trace.error = safeError(error);
       session.messages.push(toolResultMessage(pending.call, wrapUntrustedOutput(JSON.stringify({ error: trace.error }), session.limits.maxOutputBytes)));
     }
+    // The approved call was protocol-valid and reached execution: end the
+    // correction episode exactly like the automatic path does.
+    session.recoveryAttempts = 0;
     return await this.run(session, linked.signal);
     } finally {
       linked.dispose();
@@ -260,6 +294,36 @@ export class ToolChatService {
     const session = this.jobs.get(jobId);
     session?.activeController?.abort();
     return this.discard(jobId);
+  }
+
+  /**
+   * Spend the single corrective attempt of the current episode, if it is
+   * still available and the loop budget allows another model round.
+   *
+   * The corrective message carries the actual failure evidence and the exact
+   * tool list for this turn, and it explicitly permits a direct answer, so
+   * recovery never forces a tool call, never executes anything itself, and
+   * never bypasses an approval, a denial, or an exhausted budget (the caller
+   * only reaches this method on protocol-level failures where nothing ran).
+   */
+  private beginRecovery(session: ToolChatSession, evidence: string): boolean {
+    if (session.recoveryAttempts >= 1) return false;
+    if (session.round >= session.limits.maxRounds) return false;
+    if (Date.now() - session.startedAt >= session.limits.loopTimeoutMs) return false;
+    session.recoveryAttempts += 1;
+    session.recoveryTotal += 1;
+    session.recoveryEvents.push(evidence);
+    const toolNames = session.definitions.map((definition) => definition.function.name).join(', ');
+    session.messages.push({
+      role: 'system',
+      content: [
+        `Bounded corrective round (at most one per correction episode; this episode's attempt is now used). Failure evidence: ${evidence}`,
+        `The tools offered for this turn are exactly: ${toolNames}.`,
+        "If the user's request needs one of these tools, call it now with arguments that match its published schema. If it does not need a tool, answer directly.",
+        'Never claim an action ran unless its tool result is present in the conversation, and never invent a tool name.',
+      ].join('\n'),
+    });
+    return true;
   }
 
   private linkSignal(session: ToolChatSession, signal?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
@@ -304,7 +368,22 @@ export class ToolChatService {
             const message = safeError(error);
             session.trace.push(makeFailureTrace(traceId, call, message));
             session.messages.push(toolResultMessage(call, JSON.stringify({ error: message })));
-            continue;
+            // Bounded recovery: the first invalid call in a correction episode
+            // is fed back to the model as its single corrective opportunity.
+            // A second failure in the same episode — or the same invalid call
+            // repeated at all — ends the loop honestly instead of looping.
+            const fingerprint = `${call.function.name}\u0000${call.function.arguments}`;
+            const failures = (session.failedCallCounts.get(fingerprint) ?? 0) + 1;
+            session.failedCallCounts.set(fingerprint, failures);
+            if (session.recoveryAttempts === 0 && failures === 1) {
+              session.recoveryAttempts += 1;
+              session.recoveryTotal += 1;
+              session.recoveryEvents.push(`Invalid tool call "${call.function.name}" was not executed; the validation error was returned to the model as its one corrective opportunity: ${message}`);
+              continue;
+            }
+            session.recoveryFailed = true;
+            session.recoveryEvents.push(`The model produced another invalid tool call ("${call.function.name}") in the same correction episode; it was not executed and the loop ended.`);
+            return this.finishBudget(session, 'The model repeated an invalid tool call after its single corrective opportunity. The call was not executed, no result was fabricated, and the tool loop ended. Whatever succeeded earlier is preserved above.');
           }
           const safeArguments = await this.safeArguments(prepared.args);
           const operationKey = operationFingerprint(prepared);
@@ -369,6 +448,9 @@ export class ToolChatService {
             trace.error = safeError(error);
             session.messages.push(toolResultMessage(call, wrapUntrustedOutput(JSON.stringify({ error: trace.error }), session.limits.maxOutputBytes)));
           }
+          // The call was protocol-valid and reached execution: the correction
+          // episode ends, so a later failure gets its own single attempt.
+          session.recoveryAttempts = 0;
           continue;
         }
 
@@ -415,6 +497,12 @@ export class ToolChatService {
             for (const invalid of rawCalls) {
               session.trace.push(makeFailureTrace(randomUUID(), invalid, 'The endpoint returned tool-call data without finish_reason=tool_calls; it was not run.'));
             }
+            // Protocol failures are recoverable once per episode: nothing was
+            // executed, so a single corrective round with the failure evidence
+            // cannot duplicate a side effect or bypass an approval.
+            const evidence = `The endpoint returned tool-call data with finish_reason="${choice?.finish_reason ?? 'unknown'}" instead of "tool_calls"; the calls were not executed.`;
+            if (this.beginRecovery(session, evidence)) continue;
+            session.recoveryFailed = session.recoveryAttempts > 0;
             session.lastAssistantContent = typeof message?.content === 'string'
               ? message.content
               : 'The endpoint returned inconsistent tool-call data. No tool was executed.';
@@ -445,12 +533,29 @@ export class ToolChatService {
             session.pendingQueue = accepted;
             continue;
           }
+          if (this.beginRecovery(session, 'The model returned malformed tool-call data (invalid correlation ID, type, function name, or arguments); no tool was executed.')) continue;
+          session.recoveryFailed = session.recoveryAttempts > 0;
           session.lastAssistantContent ||= 'The endpoint returned malformed tool-call data. No tool was executed.';
           this.jobs.delete(session.jobId);
           return this.completeResult(session);
         }
         const content = typeof message?.content === 'string' ? message.content : '';
         const reasoning = message?.reasoning_content ?? message?.reasoning ?? undefined;
+        // Opt-in selection recovery: only when the conversation explicitly
+        // asked for it, only for the first plain-text answer of the job, only
+        // once, and only while budget remains. The corrective message lets
+        // the model answer directly, so ordinary questions are never forced
+        // through a tool and nothing is executed by this path.
+        if (
+          session.conversationSettings?.selectionRecovery === true &&
+          !session.selectionRecoveryUsed &&
+          session.callCount === 0 &&
+          session.recoveryAttempts === 0 &&
+          session.round < session.limits.maxRounds
+        ) {
+          session.selectionRecoveryUsed = true;
+          if (this.beginRecovery(session, 'Selection recovery: the first model round answered with plain text while verified tools were offered and none ran.')) continue;
+        }
         session.lastAssistantContent = content;
         session.lastReasoning = reasoning ?? undefined;
         session.lastFinishReason = choice?.finish_reason ?? undefined;
@@ -518,6 +623,8 @@ export class ToolChatService {
       sourceCitations: citationsFromTrace(session.trace),
       persistToolHistory: session.persistHistory,
       ...(session.usedBraveSearch && !session.persistHistory ? { transientContent: true } : {}),
+      ...(recoveryRecord(session) ? { recovery: recoveryRecord(session) } : {}),
+      ...(session.contextNotice ? { contextNotice: session.contextNotice } : {}),
       pendingApproval: {
         jobId: session.jobId,
         approvalId,
@@ -543,6 +650,8 @@ export class ToolChatService {
       sourceCitations: citationsFromTrace(session.trace),
       persistToolHistory: session.persistHistory,
       ...(session.usedBraveSearch && !session.persistHistory ? { transientContent: true } : {}),
+      ...(recoveryRecord(session) ? { recovery: recoveryRecord(session) } : {}),
+      ...(session.contextNotice ? { contextNotice: session.contextNotice } : {}),
     };
   }
 
@@ -681,6 +790,16 @@ function isValidToolCall(value: unknown): value is OpenAIToolCall {
   return typeof fn.name === 'string' && fn.name.length <= 64 && typeof fn.arguments === 'string';
 }
 
+/** Diagnostics for the bounded recovery policy; `undefined` when none was used. */
+function recoveryRecord(session: ToolChatSession): ToolRecoveryRecord | undefined {
+  if (session.recoveryTotal === 0 && session.recoveryEvents.length === 0) return undefined;
+  return {
+    attempts: session.recoveryTotal,
+    outcome: session.recoveryFailed ? 'failed' : 'corrected',
+    events: [...session.recoveryEvents],
+  };
+}
+
 function citationsFromTrace(trace: ToolTraceRecord[]): SourceCitation[] {
   const seen = new Set<string>();
   return trace.flatMap((entry) => entry.citations ?? []).filter((citation) => {
@@ -715,6 +834,7 @@ function sanitizeConversationSettings(raw: ConversationToolSettings | undefined)
     ...(typeof raw.maxCalls === 'number' ? { maxCalls: Math.floor(raw.maxCalls) } : {}),
     ...(typeof raw.loopTimeoutMs === 'number' ? { loopTimeoutMs: Math.floor(raw.loopTimeoutMs) } : {}),
     ...(typeof raw.historyPersistence === 'boolean' ? { historyPersistence: raw.historyPersistence } : {}),
+    ...(typeof raw.selectionRecovery === 'boolean' ? { selectionRecovery: raw.selectionRecovery } : {}),
   };
 }
 

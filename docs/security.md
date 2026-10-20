@@ -276,7 +276,15 @@ No capability is claimed from a model family, URL or template flag alone.
   model: the API key is the only protection. The URL is temporary and changes
   on every run – do not publish it.
 * The key is passed to `llama-server` through `--api-key-file` when the
-  installed build supports it, so it does not show up in the process list.
+  installed build supports it, and otherwise through the `LLAMA_API_KEY`
+  environment variable, which the pinned builds (b11717–b11719) also read
+  (`common/arg.cpp`, `set_env("LLAMA_API_KEY")`). The key never appears in
+  the process argument list, which every local user can read through
+  `/proc/<pid>/cmdline`, and a build that supports neither mechanism is
+  refused instead of starting an unauthenticated server.
+* The `cloudflared` tunnel binary is downloaded from one pinned release
+  (`2026.10.2`) and verified against its published SHA-256 digest before it
+  is executed; the moving `releases/latest` URL is no longer used.
 
 ## What is never stored
 

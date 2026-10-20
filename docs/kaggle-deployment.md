@@ -24,13 +24,18 @@ cell exposes.
 | Model | Reuses a complete GGUF file from `/kaggle/input` (Kaggle Dataset), from the working directory (Notebook Output) or from an earlier run. Otherwise it downloads the pinned file with resume support. |
 | Server | Reuses a healthy server of a previous run when its configuration still fits, restarts a server of this cell that no longer fits, and starts a new one otherwise. A process that the cell did not start is never touched. |
 | Smoke test | Sends a **real** chat completion (`Reply with exactly: OK`) before success is announced. The test proves that the model answers; it does **not** prove that speculative decoding is active. |
-| Tunnel | Starts a Cloudflare Quick Tunnel and verifies the public URL with an authenticated **chat completion**. |
+| Tunnel | Downloads `cloudflared` from one pinned release (SHA-256-verified, no `latest` target), starts a Cloudflare Quick Tunnel and verifies the public URL with an authenticated **chat completion**. |
 | Runtime bundle | Writes `api_key.txt` (mode `0600`), `server-state.json`, `runtime.json` and `profile.json` into `/kaggle/working/qwen38_api`. |
 
 ### Verified start-up configuration
 
 ```
---model <gguf> --host 127.0.0.1 --port 8000 --api-key <generated>
+--model <gguf> --host 127.0.0.1 --port 8000
+--api-key-file <api_key.txt, mode 0600>        (when the build supports it;
+                                                otherwise the key is passed
+                                                via the LLAMA_API_KEY
+                                                environment variable — it is
+                                                never an argv element)
 --n-gpu-layers 99 --split-mode layer --tensor-split 1,1
 --ctx-size 8192 --parallel 1 --batch-size 512 --ubatch-size 128
 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildToolDefinitions, findToolDefinition, httpModelName, mcpModelName, toOpenAITools } from './catalog';
+import { buildToolDefinitions, findToolDefinition, httpModelName, mcpModelName, measureToolCatalog, toOpenAITools, toolCatalogNotice, TOOL_CATALOG_MAX_BYTES, TOOL_CATALOG_NOTICE_BYTES } from './catalog';
 import { DEFAULT_TOOL_PROFILE_SETTINGS, type ToolProfileSettings } from './types';
 
 function profile(overrides: Partial<ToolProfileSettings> = {}): ToolProfileSettings {
@@ -63,5 +63,34 @@ describe('server-built tool catalog', () => {
     expect(buildToolDefinitions(noSecret)).toEqual([]);
     const withSecret = profile({ enabled: true, allowedTools: ['web_search'], web: { provider: 'brave', secretRef: 'brave-1' } });
     expect(buildToolDefinitions(withSecret)[0]?.function.name).toBe('web_search');
+  });
+
+  it('measures the serialized catalog in exact bytes and labels tokens as an estimate', () => {
+    const settings = profile({
+      enabled: true,
+      allowedTools: ['calculator_calculate', 'calculator_convert', 'files_list', 'files_read', 'files_analyze', 'web_search', 'web_open', 'diagnostics_check', 'code_execute'],
+      web: { provider: 'brave', secretRef: 'brave-1' },
+      code: { ...DEFAULT_TOOL_PROFILE_SETTINGS.code, provider: 'docker', image: `python:3.12-alpine@sha256:${'a'.repeat(64)}` },
+    });
+    const definitions = buildToolDefinitions(settings);
+    const measurement = measureToolCatalog(definitions);
+    const exactBytes = new TextEncoder().encode(JSON.stringify(toOpenAITools(definitions))).length;
+
+    expect(definitions).toHaveLength(9);
+    expect(measurement.count).toBe(9);
+    expect(measurement.serializedBytes).toBe(exactBytes);
+    expect(measurement.estimatedTokens).toBe(Math.ceil(exactBytes / 3.6));
+    // The full built-in catalog stays well inside the 8192-token deployment
+    // context budget, so the guard only bites on user-configured schemas.
+    expect(measurement.serializedBytes).toBeLessThan(TOOL_CATALOG_NOTICE_BYTES);
+    expect(toolCatalogNotice(measurement)).toBeUndefined();
+  });
+
+  it('produces a truthful notice above the soft threshold and stays below the hard cap', () => {
+    const notice = toolCatalogNotice({ count: 12, serializedBytes: TOOL_CATALOG_NOTICE_BYTES + 1, estimatedTokens: Math.ceil((TOOL_CATALOG_NOTICE_BYTES + 1) / 3.6) });
+    expect(notice).toMatch(/estimated tokens/);
+    expect(notice).toMatch(/estimate, not a tokenizer count/);
+    expect(notice).toMatch(/8192-token/);
+    expect(TOOL_CATALOG_MAX_BYTES).toBeGreaterThan(TOOL_CATALOG_NOTICE_BYTES);
   });
 });

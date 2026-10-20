@@ -837,3 +837,82 @@ unmerged.
   workflow verification step plus exact size parity.
 * Also ignored Playwright artifacts (`test-results/`, `playwright-report/`,
   `e2e-output.txt`) in this docs-only post-tag commit.
+
+## 2026-10-20 – v0.1.0-dev6 audit, implementation and release-candidate validation
+
+**Branch and base.** Work runs on `arena/acff7542-kaggle-kit`, branched from
+`ad7995b6829325c3bd002215255939af52da06e0` — the actual current `main`
+(merge of PR #11; PR #10 with dev4/dev5 work is already merged and was not
+reopened or repeated). Implementation commit: `ff569f6` (bounded tool-call
+recovery + selection-recovery opt-in, tool-catalog byte budget and notice,
+live-model benchmark `tools/model-benchmark.mjs`, notebook `LLAMA_API_KEY`
+env fallback instead of the argv key, refusal of unauthenticated builds,
+cloudflared pinned to 2026.10.2 with its published SHA-256, docs and version
+bump to 0.1.0-dev6).
+
+**Audit evidence.** Full tool-lifecycle re-read on current `main`; catalog
+size measured (built-ins 3,728 B ≈ 1,036 estimated tokens; a single
+configured schema can reach the 24 KB sanitizer bound, so the aggregate
+needed a hard cap); llama.cpp b11717–b11719 `common/arg.cpp` verified
+through the GitHub API (`--api-key-file` exists; `--api-key` reads
+`LLAMA_API_KEY`); cloudflared digest taken from the GitHub releases API for
+tag 2026.10.2. Details and the defect list are in the DESIGN_LOG entry of
+the same date. Dev5 protections were re-verified by their existing tests and
+left untouched.
+
+**Checks executed (real output).**
+
+* Baseline before edits: typecheck + lint + Vitest 43 files/373 tests green.
+* `npm run typecheck` — passed. `npm run lint` — passed (after fixing two
+  lint errors in the new benchmark files).
+* `npm test` — **44 files, 398 tests passed**.
+* `npm run build` — passed. `npm run check:integration` — **29/29** against
+  the built bundle, including the new bounded-recovery check.
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` — **46 passed,
+  0 skipped** with `requests` installed (`pip install requests
+  --break-system-packages`); without it, 46 ran / 7 skipped earlier in the
+  session.
+* `python3 -m unittest discover -s tools -p 'test_*.py'` — **25 passed**.
+* `npm audit --json` — 0 vulnerabilities. `git diff --check` — passed.
+* `npm run test:e2e` — **blocked**: `browserType.launch: Executable doesn't
+  exist … chromium_headless_shell-1194`; `npx playwright install` cannot
+  reach the download host from this sandbox (same limitation recorded for
+  dev5). The CI `Browser end-to-end` job is the verification path.
+* Benchmark smoke runs (mock upstream, not a real model): model mode 6/6
+  passed, exit 0, report leak-check clean; integration mode against a closed
+  port reported 3 skipped, exit 0; `--api-key` on argv was rejected with
+  exit 2 semantics.
+* `tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6` — exit 0 on `ff569f6`;
+  staged notebook (89,165 B), app zip (2,154,558 B), source zip (837,737 B),
+  manifest, checksums and verification report; "The release v0.1.0-dev6 is
+  valid" in both staged and simulated-download validation. No tag was
+  created and nothing was published.
+
+**Not verified.** No live Kaggle endpoint, deployed model, tunnel, Docker
+runtime, Brave account, live MCP/HTTP service or real browser was available;
+real-model tool behaviour is explicitly *not* claimed to have improved — the
+new benchmark is the instrument for the operator to establish that. The
+`LLAMA_API_KEY` fallback and the pinned cloudflared download are verified
+against published sources/digests and unit tests, not on Kaggle hardware.
+
+**Release state at time of writing.** This docs commit follows `ff569f6`;
+the branch is then pushed and a **new PR against `main`** is opened for
+v0.1.0-dev6. The PR is left open and unmerged; no `v0.1.0-dev6` tag is
+created and no release is published (explicitly out of scope for this task).
+
+## 2026-10-20 – v0.1.0-dev6 PR record
+
+* Pushed `arena/acff7542-kaggle-kit` and opened PR
+  [#13](https://github.com/coderunknow/Kaggle-Kit/pull/13) against `main`
+  (base `ad7995b`, head at the time `b0db270`); left open and unmerged as
+  instructed. No `v0.1.0-dev6` tag was created and no release was published.
+* CI on `b0db270` (run 39439485725): `typecheck, lint, test and build`,
+  `notebook tests`, `docker sandbox integration`, `Browser end-to-end`
+  (Playwright/Chromium — the locally blocked e2e path), `windows launcher`
+  and CodeRabbit all passed. `Kilo Code Review` reports
+  `fail`/`action_required` as on PRs #9–#11 (billing/quota gate); it
+  produced no code findings.
+* This docs-only commit follows `b0db270`; the release dry-run
+  (`tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6`) is re-executed on the
+  resulting commit and its exit status is reported in the PR conversation /
+  completion report. A successful dry run is not a published release.

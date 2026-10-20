@@ -316,6 +316,89 @@ sanitized trace; secrets are never stored either way. A call that was
 pending when the page reloaded is shown as *interrupted* and is never
 re-run automatically.
 
+### The model produced an invalid tool call — what happens now (v0.1.0-dev6)
+
+The tool loop distinguishes failure layers and never fabricates a result:
+
+* **Inconsistent protocol data** (tool-call data with a wrong
+  `finish_reason`, or malformed calls): nothing is executed. The loop spends
+  **one bounded corrective round** per correction episode — the model gets
+  the exact failure evidence and the valid tool list — and ends honestly if
+  the next turn fails again. The message note reports that a corrective
+  round was used and whether it worked (`recovery` in the result).
+* **Invalid arguments or an unknown tool name**: the call is not executed;
+  the validation error is returned to the model once as its corrective
+  opportunity. A repeated identical invalid call, or a second invalid call
+  in the same episode, ends the loop with a truthful "what remains undone"
+  report instead of looping.
+* **A successful execution closes the episode**: a later failure gets its
+  own single corrective attempt. All corrective rounds count against the
+  round/time budgets, never around them.
+* Recovery never bypasses an approval, a denial, an unavailable service or
+  an exhausted budget, and ordinary questions are never forced through a
+  tool. For conversations where the model tends to answer tool-dependent
+  requests with plain text, enable **"Allow one corrective round…"** in the
+  conversation's *Tools and privacy* panel: the first plain-text answer of a
+  turn then spends at most one extra round asking the model whether a listed
+  tool is actually needed. It may still answer directly; the option is off
+  by default so ordinary chats do not pay for an extra round.
+
+### "The enabled tool catalog is too large for the model context"
+
+Every enabled tool definition is serialized into every tool round. The
+proxy measures the **exact serialized byte size** of the catalog, refuses
+catalogs above 16,000 bytes (HTTP 409) and shows a truthful notice above
+6,000 bytes — on the documented 8192-token deployment context, a large
+catalog (often one configured HTTP/MCP tool with a big schema) crowds out
+the conversation and degrades tool selection. The notice quotes an
+*estimated* token count derived from bytes (bytes ÷ 3.6); it is an estimate,
+not a tokenizer measurement. Fix: disable tools this conversation does not
+need, or simplify the configured tool's input schema.
+
+### Live-model tool benchmark
+
+`tools/model-benchmark.mjs` answers the question mocks cannot: does the
+**real deployed model** select the right tool with valid arguments? Run it
+from a machine that can reach your endpoint (your laptop, or the sandbox
+where you keep the tunnel URL) — you never have to share the URL or key:
+
+```bash
+export OPENAI_BASE_URL="https://<your-tunnel>/v1"
+export OPENAI_API_KEY="<your key>"          # or answer the masked prompt
+node tools/model-benchmark.mjs --model "<model id>" --trials 3 --report bench.json
+# optional: also verify streamed tool-call fragments
+node tools/model-benchmark.mjs --model "<model id>" --include-streaming
+# optional: end-to-end through a running Kaggle-Kit proxy
+node tools/model-benchmark.mjs --model "<model id>" --mode integration \
+  --profile-id <toolProfileId>
+```
+
+Prerequisites: Node ≥ 20.19 (the repo's `engines`), network access to the
+endpoint, and — for `--mode integration` — a running proxy (`npm start`)
+whose profile has tools enabled and passed the capability probe.
+
+What each layer proves (weaker layers never imply stronger ones):
+
+| Layer | Proven by | A pass means |
+| --- | --- | --- |
+| `protocol` | handshake, synthetic follow-up, optional streaming probe | The endpoint speaks the native tool-call protocol and accepts tool results. |
+| `selection` | unambiguous calculator task + a negative no-tool question | The model picks the right tool when one is needed and none when not. |
+| `arguments` | schema + semantic check (`17*23+101 = 492`) | The call arguments are schema-valid and semantically correct. |
+| `execution` | integration mode only (approval/denial path) | A real Kaggle-Kit executor path ran; code execution is never approved by the benchmark. |
+| `end_to_end` | integration mode calculator loop | A complete user task succeeded through the real tool loop. |
+
+What it **cannot** prove: model mode feeds the model clearly-marked
+**synthetic** results and never runs a real tool — a model-mode pass is not
+evidence that the app's executors work (that is `--mode integration`, and
+even that skips cases whose configuration is missing; skipped is reported
+as skipped, never as passed). Scores are sample counts over `--trials`
+runs, not statistical significance. Credentials are read from the
+environment or a masked prompt; passing `--api-key` on the command line is
+rejected, the report contains only a sanitized endpoint identity
+(scheme/host/path) and the key's length, and a final leak check refuses to
+write a report that contains any secret value. Exit code: `0` no failures,
+`1` at least one failed case, `2` usage/credential error.
+
 ## Development
 
 ### `npm test` fails with "Found multiple elements"

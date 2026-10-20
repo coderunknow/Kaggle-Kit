@@ -74,7 +74,7 @@ async function harness(
   } as unknown as ProxyService;
   const executor = new ToolExecutor(store, proxy, new FileVault(), createLogger({ sink: () => undefined }));
   const service = new ToolChatService(store, proxy, executor);
-  const start = (conversationSettings?: { toolIds?: string[]; maxRounds?: number; historyPersistence?: boolean }) => service.start({
+  const start = (conversationSettings?: { toolIds?: string[]; maxRounds?: number; historyPersistence?: boolean; selectionRecovery?: boolean }) => service.start({
     profileId: 'profile-1',
     conversationId: 'conversation-1',
     target: { baseUrl: 'https://model.example.invalid/v1' },
@@ -180,13 +180,176 @@ describe('bounded server-side tool chat', () => {
   it('refuses structured tool calls unless the endpoint marks finish_reason as tool_calls', async () => {
     const inconsistent = functionCall('calculator_calculate', { expression: '2 + 2' });
     inconsistent.choices[0]!.finish_reason = 'stop';
-    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [inconsistent]);
+    const second = functionCall('calculator_calculate', { expression: '2 + 2' }, 'call-2');
+    second.choices[0]!.finish_reason = 'stop';
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [inconsistent, second]);
+
+    const result = await test.start();
+
+    // The first inconsistent turn spends the single corrective round of the
+    // episode; the second one ends the loop honestly instead of looping.
+    expect(result.content).toMatch(/inconsistent tool-call data/i);
+    expect(result.toolTrace[0]).toMatchObject({ status: 'failed', error: expect.stringMatching(/finish_reason=tool_calls/) });
+    expect(result.recovery).toMatchObject({ attempts: 1, outcome: 'failed' });
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('spends one bounded corrective round after an inconsistent finish_reason and accepts the correction', async () => {
+    const inconsistent = functionCall('calculator_calculate', { expression: '2 + 2' });
+    inconsistent.choices[0]!.finish_reason = 'stop';
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      inconsistent,
+      functionCall('calculator_calculate', { expression: '2 + 2' }, 'call-2'),
+      answer('The result is 4.'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('The result is 4.');
+    expect(result.recovery?.attempts).toBe(1);
+    expect(result.recovery?.outcome).toBe('corrected');
+    expect(result.recovery?.events.join(' ')).toMatch(/finish_reason/i);
+    // The corrective round carries the failure evidence and the exact tool list.
+    const corrective = (test.bodies[1]?.messages as Array<{ role: string; content?: string }> | undefined)?.filter((message) => message.role === 'system').map((message) => message.content).join('\n') ?? '';
+    expect(corrective).toMatch(/Bounded corrective round/i);
+    expect(corrective).toContain('calculator_calculate');
+    expect(test.fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.toolTrace.some((entry) => entry.status === 'succeeded')).toBe(true);
+  });
+
+  it('does not spend a corrective round when the round budget is already exhausted', async () => {
+    const inconsistent = functionCall('calculator_calculate', { expression: '2 + 2' });
+    inconsistent.choices[0]!.finish_reason = 'stop';
+    const test = await harness(profile({
+      allowedTools: ['calculator_calculate'],
+      limits: { ...DEFAULT_TOOL_PROFILE_SETTINGS.limits, maxRounds: 1 },
+    }), [inconsistent]);
 
     const result = await test.start();
 
     expect(result.content).toMatch(/inconsistent tool-call data/i);
-    expect(result.toolTrace[0]).toMatchObject({ status: 'failed', error: expect.stringMatching(/finish_reason=tool_calls/) });
+    expect(result.recovery).toBeUndefined();
     expect(test.fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('feeds an invalid-argument failure back once and ends when the identical call repeats', async () => {
+    const invalid = () => functionCall('calculator_calculate', { expression: 42 as unknown as string });
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      invalid(),
+      invalid(),
+      answer('must not be reached'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toMatch(/repeated an invalid tool call/i);
+    expect(result.recovery?.attempts).toBe(1);
+    expect(result.recovery?.outcome).toBe('failed');
+    expect(result.toolTrace).toHaveLength(2);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    // Exactly two model rounds: the corrective feedback and the repeat; no third.
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+    const fedBack = (test.bodies[1]?.messages as Array<Record<string, unknown>> | undefined)?.filter((message) => message.role === 'tool') ?? [];
+    expect(JSON.stringify(fedBack)).toMatch(/invalid/i);
+  });
+
+  it('ends the episode after a second, different invalid call instead of looping', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      functionCall('calculator_calculate', { expression: '2 + 2', extra: 'not allowed' }),
+      functionCall('nonexistent_tool', {}),
+      answer('must not be reached'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.content).toMatch(/repeated an invalid tool call/i);
+    expect(result.recovery?.outcome).toBe('failed');
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives a new correction episode its own single attempt after a successful execution', async () => {
+    const inconsistent = functionCall('calculator_calculate', { expression: '3 + 3' }, 'call-2');
+    inconsistent.choices[0]!.finish_reason = 'stop';
+    const test = await harness(profile({
+      allowedTools: ['calculator_calculate'],
+      limits: { ...DEFAULT_TOOL_PROFILE_SETTINGS.limits, maxRounds: 5 },
+    }), [
+      functionCall('calculator_calculate', { expression: '2 + 2' }),
+      inconsistent,
+      functionCall('calculator_calculate', { expression: '3 + 3' }, 'call-3'),
+      answer('Both results are in.'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('Both results are in.');
+    // The successful execution closed the first episode without any attempt;
+    // the later protocol failure got its own single corrective round.
+    expect(result.recovery?.attempts).toBe(1);
+    expect(result.recovery?.outcome).toBe('corrected');
+    expect(test.fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('leaves ordinary direct answers untouched when selection recovery is off', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [answer('A direct answer.')]);
+
+    const result = await test.start();
+
+    expect(result.content).toBe('A direct answer.');
+    expect(result.recovery).toBeUndefined();
+    expect(test.fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('spends one opt-in selection-recovery round and lets the model call the tool', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      answer('You could compute 17*23 yourself.'),
+      functionCall('calculator_calculate', { expression: '17 * 23' }),
+      answer('The product is 391.'),
+    ]);
+
+    const result = await test.start({ selectionRecovery: true });
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('The product is 391.');
+    expect(result.recovery?.attempts).toBe(1);
+    expect(result.recovery?.outcome).toBe('corrected');
+    expect(result.recovery?.events.join(' ')).toMatch(/Selection recovery/i);
+    const corrective = (test.bodies[1]?.messages as Array<{ role: string; content?: string }> | undefined)?.filter((message) => message.role === 'system').map((message) => message.content).join('\n') ?? '';
+    expect(corrective).toMatch(/Selection recovery/i);
+    expect(corrective).toMatch(/answer directly/i);
+    expect(test.fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.toolTrace[0]).toMatchObject({ toolName: 'calculator_calculate', status: 'succeeded' });
+  });
+
+  it('accepts a second direct answer when selection recovery does not change the model mind', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      answer('First direct answer.'),
+      answer('The answer does not need a tool.'),
+    ]);
+
+    const result = await test.start({ selectionRecovery: true });
+
+    expect(result.content).toBe('The answer does not need a tool.');
+    expect(result.recovery).toMatchObject({ attempts: 1, outcome: 'corrected' });
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('never runs selection recovery a second time in the same job', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      answer('First direct answer.'),
+      answer('Second direct answer.'),
+    ]);
+
+    const result = await test.start({ selectionRecovery: true });
+
+    // Only the first plain-text answer may trigger the single corrective
+    // round; the second one completes the job even though no tool ran.
+    expect(result.content).toBe('Second direct answer.');
+    expect(result.recovery?.attempts).toBe(1);
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('labels tool error text as untrusted before returning it to the model', async () => {
@@ -512,6 +675,51 @@ describe('bounded server-side tool chat', () => {
     expect(result.content).toMatch(/round budget \(1\) was reached/i);
     expect(result.toolTrace[0]?.status).toBe('succeeded');
     expect(test.fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a tool catalog that exceeds the serialized-byte context budget', async () => {
+    // Few nodes but heavy descriptions: this passes the schema sanitizer's
+    // node bound while still blowing the serialized context budget.
+    const hugeSchema = {
+      type: 'object',
+      properties: Object.fromEntries(Array.from({ length: 14 }, (_unused, index) => [`prop_${index}`, { type: 'string', description: 'x'.repeat(1_400) }])),
+      additionalProperties: false,
+    };
+    const test = await harness(profile({
+      allowedTools: ['http_big'],
+      httpTools: [{
+        id: 'big', name: 'Big', description: 'A configured tool with a very large schema.',
+        endpoint: 'https://api.example.com/big', method: 'GET', inputSchema: hugeSchema,
+        headers: [], permission: 'read_only', timeoutMs: 10_000,
+      }],
+    }), []);
+
+    await expect(test.start()).rejects.toThrow(/tool catalog is too large/i);
+    // The refusal happens before any model request is constructed.
+    expect(test.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a truthful context notice when the catalog is large but within budget', async () => {
+    const largeSchema = {
+      type: 'object',
+      properties: Object.fromEntries(Array.from({ length: 130 }, (_unused, index) => [`prop_${index}`, { type: 'string', description: 'x'.repeat(20) }])),
+      additionalProperties: false,
+    };
+    const test = await harness(profile({
+      allowedTools: ['http_mid'],
+      httpTools: [{
+        id: 'mid', name: 'Mid', description: 'A configured tool with a large schema.',
+        endpoint: 'https://api.example.com/mid', method: 'GET', inputSchema: largeSchema,
+        headers: [], permission: 'read_only', timeoutMs: 10_000,
+      }],
+    }), [answer('Done without calling the tool.')]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.contextNotice).toMatch(/serialized bytes/i);
+    expect(result.contextNotice).toMatch(/estimated tokens/i);
+    expect(result.contextNotice).toMatch(/8192-token/);
   });
 
   it('stops an active model request when the caller cancels', async () => {

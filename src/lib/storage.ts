@@ -532,6 +532,7 @@ function sanitizeConversationToolSettings(raw: unknown): ConversationToolSetting
     ...(typeof value.maxCalls === 'number' && Number.isFinite(value.maxCalls) ? { maxCalls: Math.max(1, Math.min(24, Math.floor(value.maxCalls))) } : {}),
     ...(typeof value.loopTimeoutMs === 'number' && Number.isFinite(value.loopTimeoutMs) ? { loopTimeoutMs: Math.max(1, Math.min(300_000, Math.floor(value.loopTimeoutMs))) } : {}),
     ...(typeof value.historyPersistence === 'boolean' ? { historyPersistence: value.historyPersistence } : {}),
+    ...(typeof value.selectionRecovery === 'boolean' ? { selectionRecovery: value.selectionRecovery } : {}),
   };
 }
 

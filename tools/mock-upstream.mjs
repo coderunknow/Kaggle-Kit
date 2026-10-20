@@ -127,10 +127,18 @@ const server = http.createServer((request, response) => {
 
       // Deterministic native tool calls, selected by the offered functions.
       let scriptedCall = null;
+      let scriptedFinishReason = 'tool_calls';
       if (toolNames.size > 0) {
+        const inconsistent = /inconsistent calculate:\s*(.+)/i.exec(prompt);
         const calculate = /calculate:\s*(.+)/i.exec(prompt);
         const runCode = /run code:\s*([\s\S]+)/i.exec(prompt);
-        if (calculate && toolNames.has('calculator_calculate')) {
+        if (inconsistent && toolNames.has('calculator_calculate')) {
+          // A protocol-violating response: valid tool-call data but the wrong
+          // finish_reason. Used by the integration check to prove the bounded
+          // corrective recovery of the tool loop against the built bundle.
+          scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expression: inconsistent[1].trim() }) };
+          scriptedFinishReason = 'stop';
+        } else if (calculate && toolNames.has('calculator_calculate')) {
           scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expression: calculate[1].trim() }) };
         } else if (runCode && toolNames.has('code_execute')) {
           scriptedCall = { name: 'code_execute', arguments: JSON.stringify({ language: 'python', code: runCode[1].trim() }) };
@@ -170,7 +178,7 @@ const server = http.createServer((request, response) => {
               content: null,
               tool_calls: [{ id: callId, type: 'function', function: scriptedCall }],
             },
-            finish_reason: 'tool_calls',
+            finish_reason: scriptedFinishReason,
           }],
           usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
         });

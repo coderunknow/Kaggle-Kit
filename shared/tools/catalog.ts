@@ -239,3 +239,49 @@ function safeTarget(value: string): string {
 export function builtinToolNames(): string[] {
   return Object.keys(BUILT_INS);
 }
+
+/**
+ * Context-budget guard for the serialized tool catalog.
+ *
+ * The deployed llama.cpp configuration documents an 8192-token context that
+ * is shared between the system prompt, the tool catalog, the conversation
+ * and the answer. A hard cap keeps a large user-configured HTTP/MCP schema
+ * from silently consuming the whole window; the notice threshold flags a
+ * catalog that already costs a meaningful share of it. Both numbers are
+ * *exact serialized bytes* of the JSON sent upstream, not tokenizer counts.
+ */
+export const TOOL_CATALOG_MAX_BYTES = 16_000;
+export const TOOL_CATALOG_NOTICE_BYTES = 6_000;
+
+export interface ToolCatalogMeasurement {
+  /** Number of definitions offered to the model. */
+  count: number;
+  /** Exact size of the serialized `tools` array, in UTF-8 bytes. */
+  serializedBytes: number;
+  /**
+   * Rough estimate derived from the byte count (bytes / 3.6, the same
+   * documented estimate as `estimatePromptTokens`). It is an estimate, not a
+   * tokenizer measurement, and is always labelled as one.
+   */
+  estimatedTokens: number;
+}
+
+/** Measure the exact serialized size of the catalog offered to the model. */
+export function measureToolCatalog(definitions: readonly ToolDefinition[]): ToolCatalogMeasurement {
+  // TextEncoder, not Buffer: this module is shared with the browser client.
+  const serializedBytes = new TextEncoder().encode(JSON.stringify(toOpenAITools(definitions))).length;
+  return {
+    count: definitions.length,
+    serializedBytes,
+    estimatedTokens: Math.ceil(serializedBytes / 3.6),
+  };
+}
+
+/**
+ * A truthful user-facing notice when the catalog is large relative to the
+ * documented 8192-token deployment context, or `undefined` when it is not.
+ */
+export function toolCatalogNotice(measurement: ToolCatalogMeasurement): string | undefined {
+  if (measurement.serializedBytes <= TOOL_CATALOG_NOTICE_BYTES) return undefined;
+  return `The tool catalog for this turn is large: ${measurement.count} definition(s), ${measurement.serializedBytes} serialized bytes (~${measurement.estimatedTokens} estimated tokens — an estimate, not a tokenizer count). On the documented 8192-token context this leaves less room for the conversation and may degrade tool selection; disable tools this conversation does not need.`;
+}
