@@ -79,11 +79,17 @@ The risks and the controls:
 | A stream runs forever | The streaming route aborts the upstream request when the client disconnects and after a timeout, and the reader of the upstream body is always closed. |
 | The secret API is used by another program on the machine | The secret store only returns references. Any local program can still talk to the backend, so the backend has to stay on the loopback interface. |
 
-**Known limits.** The allow list works on the name of the host, not on the
-address it resolves to: a name that points to a private address is not
-detected (DNS rebinding). The private network check has the same limit. Both
-are documented trade-offs of a tool whose main job is to reach a
-`llama-server` on `127.0.0.1`.
+**DNS rebinding.** The hostname policy alone cannot see the address a name
+resolves to, so every proxy and tool request validates the resolved address
+set at connect time (`server/pinnedFetch.ts`, the same pinning used by the
+web/HTTP/MCP fetches). A rebinding name that answers with a loopback,
+link-local, multicast, unspecified or cloud-metadata address is refused
+before anything is sent; with `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1` any
+private answer is refused. The remaining residual risk is a name that
+resolves to an ordinary private LAN address with private networks allowed —
+that is the intended behaviour for reaching servers on the user's own
+network. Set `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1` and/or
+`KAGGLE_KIT_ALLOWED_HOSTS` to close it.
 
 **The defaults keep the product usable.** There is no allow list and no
 private network block by default, because the normal setup is a local
@@ -99,7 +105,7 @@ configured.
 | `KAGGLE_KIT_PORT` | `8787` | Port of the backend |
 | `KAGGLE_KIT_ALLOWED_HOSTS` | *(empty)* | Comma separated list of reachable hosts, `*.example.com` is allowed |
 | `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS` | `0` | `1` refuses loopback, private and link local destinations |
-| `KAGGLE_KIT_ALLOWED_ORIGINS` | *(empty)* | Extra browser origins that may call `/api/*` |
+| `KAGGLE_KIT_ALLOWED_ORIGINS` | *(empty)* | Extra browser origins that may call `/api/*`. Required when the app is served through a non-loopback name (e.g. a LAN hostname), because only loopback origins are trusted automatically. |
 | `KAGGLE_KIT_MAX_BODY_BYTES` | `1000000` | Maximum size of a request body |
 | `KAGGLE_KIT_CLIENT_DIR` | `dist/client` | Directory with the built browser client |
 | `KAGGLE_KIT_DATA_DIR` | `.data` | Directory with the secret store |

@@ -201,8 +201,12 @@ three model rounds, eight calls, 8 KiB input per call, bounded output, and a
 120-second loop; profile and conversation settings are clamped server-side.
 
 Approval is for one exact prepared operation, not a standing permission. It
-expires, cannot be replayed, and is invalidated if tool settings change or the
-job is cancelled. The activity timeline shows the bounded/redacted arguments,
+expires, cannot be replayed, and is invalidated if tool settings change, the
+job is cancelled, or a credential the call would use is rotated while the
+approval is pending (the credential fingerprint captured at proposal time is
+re-checked at approval). Sandbox runs use named containers; timeout,
+cancellation, output overflow and Docker errors force-remove the container so
+a stopped program cannot keep running invisibly. The activity timeline shows the bounded/redacted arguments,
 target, approval state and outcome; pending approval IDs and live job IDs are
 never restored as active after reload. **Clear** and **Delete** abort in-flight
 requests, cancel paused jobs and remove that conversation's in-memory files.

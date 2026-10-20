@@ -23,7 +23,8 @@
     "test:coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run lint && npm run test",
     "mock:upstream": "node tools/mock-upstream.mjs",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server/index.js --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\""
+    "build:server": "esbuild server/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/server/index.js --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
@@ -42,6 +43,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.56.1",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",

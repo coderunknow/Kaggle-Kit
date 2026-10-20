@@ -7,14 +7,20 @@
  * are never presented as complete.
  */
 
-import { memo, useState } from 'react';
+import { lazy, memo, Suspense, useState } from 'react';
 
 import { describeErrorKind } from '../../shared/api/errors';
 import type { ChatMessage } from '../../shared/domain';
 import type { SourceCitation, ToolTraceRecord } from '../../shared/tools/types';
 import { formatMessageTime } from '../lib/id';
-import { Markdown } from './Markdown';
 import { Icon } from './ui';
+
+// react-markdown + highlighting is the heaviest client dependency; it loads
+// as its own chunk on the first assistant message instead of blocking the
+// initial chat paint. The fallback renders the same text unformatted.
+const Markdown = lazy(() =>
+  import('./Markdown').then((module) => ({ default: module.Markdown })),
+);
 
 export interface MessageItemProps {
   message: ChatMessage;
@@ -267,7 +273,9 @@ function MessageItemImpl({
           ) : isUser ? (
             <p className="msg__text">{message.content}</p>
           ) : hasContent ? (
-            <Markdown content={message.content} streaming={isPending} />
+            <Suspense fallback={<p className="msg__text">{message.content}</p>}>
+              <Markdown content={message.content} streaming={isPending} />
+            </Suspense>
           ) : null}
 
           {isPending ? (

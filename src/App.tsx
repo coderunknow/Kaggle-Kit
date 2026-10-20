@@ -7,12 +7,18 @@
  * from the composer.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import { effectiveProfileTarget, resolveConnectionView } from '../shared/connection';
 import type { ChatMessage } from '../shared/domain';
 import { ChatView, type ConnectionState } from './components/ChatView';
-import { SettingsPanel, type SettingsTab } from './components/SettingsPanel';
+import type { SettingsTab } from './components/SettingsPanel';
+
+// The settings surface (profiles, inference, tools) is only needed after the
+// user opens it; loading it lazily keeps the first chat paint small.
+const SettingsPanel = lazy(() =>
+  import('./components/SettingsPanel').then((module) => ({ default: module.SettingsPanel })),
+);
 import { Sidebar } from './components/Sidebar';
 import { Icon, StatusDot, type StatusTone } from './components/ui';
 import { copyText } from './lib/clipboard';
@@ -361,12 +367,14 @@ export function App() {
         </main>
       </div>
 
-      <SettingsPanel
-        open={settingsOpen}
-        tab={settingsTab}
-        onTabChange={setSettingsTab}
-        onClose={closeSettings}
-      />
+      <Suspense fallback={null}>
+        <SettingsPanel
+          open={settingsOpen}
+          tab={settingsTab}
+          onTabChange={setSettingsTab}
+          onClose={closeSettings}
+        />
+      </Suspense>
     </div>
   );
 }

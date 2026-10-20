@@ -93,14 +93,12 @@ async function main(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 1_500));
   check('no container remains after abort', (await leftoverContainers()) === '', await leftoverContainers());
 
-  let missingImageFailedClosed = false;
   try {
     const result = await runPythonInDocker('print(1)', { ...settings, image: `python:3.12-alpine@sha256:${'0'.repeat(64)}` });
-    missingImageFailedClosed = result.exitCode !== 0;
+    check('a missing image fails closed without host execution', result.exitCode !== 0, JSON.stringify(result).slice(0, 160));
   } catch {
-    missingImageFailedClosed = true;
+    check('a missing image fails closed without host execution', true);
   }
-  check('a missing image fails closed without host execution', missingImageFailedClosed);
 
   process.stdout.write(failures === 0 ? '\nsandbox integration: all checks passed\n' : `\nsandbox integration: ${failures} failure(s)\n`);
   if (failures > 0) process.exit(1);
