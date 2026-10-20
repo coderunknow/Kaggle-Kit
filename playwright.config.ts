@@ -21,7 +21,8 @@ export default defineConfig({
   webServer: [
     {
       command: `node tools/mock-upstream.mjs --port ${MOCK_PORT} --api-key e2e-test-key`,
-      url: `http://127.0.0.1:${MOCK_PORT}/v1/models`,
+      // The mock answers 401 without its API key, so readiness is the open port.
+      port: MOCK_PORT,
       reuseExistingServer: false,
       timeout: 30_000,
     },

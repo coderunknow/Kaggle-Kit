@@ -184,4 +184,16 @@ jobs:
       - name: Build application
         run: npm run build
       - name: Run browser end-to-end tests
-        run: npm run test:e2e
+        run: |
+          set +e
+          npm run test:e2e 2>&1 | tee e2e-output.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '## Browser end-to-end failure (last 120 lines)'
+              echo '```'
+              tail -n 120 e2e-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
