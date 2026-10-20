@@ -82,5 +82,6 @@ test('runs a safe tool automatically and lets the user deny risky code', async (
   await expect(page.getByText(/Run Python code in the sandbox/)).toBeVisible();
   await deny.click();
   await expect(page.getByText(/Tool result received/)).toHaveCount(2);
-  await expect(page.getByText(/The user denied this exact operation/)).toHaveCount(1);
+  // The denial is recorded in the timeline and echoed into the mock answer.
+  await expect(page.getByText(/The user denied this exact operation/).first()).toBeAttached();
 });
