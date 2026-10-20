@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { ApiProfile, Conversation } from '../../shared/domain';
+import { DEFAULT_TOOL_PROFILE_SETTINGS } from '../../shared/tools/types';
 import {
   STORAGE_KEYS,
   clearAllStoredData,
@@ -124,5 +125,159 @@ describe('browser storage', () => {
     saveDrafts({ 'conv-1': 'draft text' });
     clearAllStoredData();
     expect(loadDrafts()).toEqual({});
+  });
+
+  it('does not persist tool traces by default', () => {
+    const withTrace: Conversation = {
+      ...conversation,
+      messages: [{
+        id: 'assistant-1', role: 'assistant', content: 'answer', status: 'complete', createdAt: '2026-01-01T00:00:00.000Z',
+        toolJobId: 'runtime-job',
+        toolTrace: [{
+          id: 'trace-1', toolName: 'calculator_calculate', status: 'succeeded', approvalRequired: false,
+          safeArguments: { expression: '1+1' }, requestedAt: '2026-01-01T00:00:00.000Z',
+        }],
+        sourceCitations: [{ url: 'https://example.com/source' }],
+      }],
+    };
+    saveConversations([withTrace]);
+    const serialized = window.localStorage.getItem(STORAGE_KEYS.conversations) ?? '';
+    expect(serialized).not.toContain('calculator_calculate');
+    expect(serialized).not.toContain('example.com');
+    expect(serialized).not.toContain('runtime-job');
+  });
+
+  it('does not persist Brave-derived assistant text or citations without retention rights', () => {
+    const resultText = 'Search excerpt secret-to-retain';
+    const withTransientResult: Conversation = {
+      ...conversation,
+      toolHistoryPersistence: true,
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Find current information', status: 'complete', createdAt: '2026-01-01T00:00:00.000Z' },
+        {
+          id: 'assistant-1', role: 'assistant', content: resultText, reasoning: `Reasoning based on ${resultText}`,
+          status: 'complete', createdAt: '2026-01-01T00:00:01.000Z', transientToolContent: true,
+          toolTrace: [{ id: 'trace', toolName: 'web_search', status: 'succeeded', approvalRequired: false, safeArguments: { query: 'current info' }, requestedAt: '2026-01-01T00:00:00.000Z' }],
+          sourceCitations: [{ url: 'https://example.com/result', title: resultText }],
+        },
+        { id: 'user-2', role: 'user', content: 'What else?', status: 'complete', createdAt: '2026-01-01T00:00:02.000Z' },
+        { id: 'assistant-2', role: 'assistant', content: `Later summary of ${resultText}`, status: 'complete', createdAt: '2026-01-01T00:00:03.000Z' },
+      ],
+    };
+
+    saveConversations([withTransientResult]);
+    const serialized = window.localStorage.getItem(STORAGE_KEYS.conversations) ?? '';
+    expect(serialized).not.toContain(resultText);
+    expect(serialized).not.toContain('example.com/result');
+    expect(serialized).toContain('provider retention rights were not confirmed');
+    const restored = loadConversations()[0]?.messages;
+    expect(restored?.[1]?.content).toMatch(/not saved because .*provider retention rights/i);
+    expect(restored?.[3]?.content).toMatch(/not saved because .*provider retention rights/i);
+    expect(restored?.[1]?.transientToolContent).toBeUndefined();
+  });
+
+  it('does not restore legacy tool traces or citations when persistence was false or unspecified', () => {
+    const message = {
+      id: 'assistant-legacy', role: 'assistant', content: 'answer', status: 'complete', createdAt: '2026-01-01T00:00:00.000Z',
+      toolTrace: [{ id: 'trace', toolName: 'web_search', status: 'succeeded', approvalRequired: false, safeArguments: { query: 'private query' }, requestedAt: '2026-01-01T00:00:00.000Z' }],
+      sourceCitations: [{ url: 'https://example.com/result' }],
+    };
+    for (const policy of [false, undefined]) {
+      window.localStorage.setItem(STORAGE_KEYS.conversations, JSON.stringify([{
+        ...conversation,
+        ...(policy === undefined ? {} : { toolHistoryPersistence: policy }),
+        messages: [message],
+      }]));
+      const restored = loadConversations()[0]?.messages[0];
+      expect(restored?.toolTrace).toBeUndefined();
+      expect(restored?.sourceCitations).toBeUndefined();
+    }
+  });
+
+  it('persists only sanitized tool metadata when explicitly enabled and removes live approval IDs', () => {
+    const withTrace: Conversation = {
+      ...conversation,
+      toolHistoryPersistence: true,
+      messages: [{
+        id: 'assistant-1', role: 'assistant', content: 'waiting', status: 'pending', createdAt: '2026-01-01T00:00:00.000Z',
+        toolJobId: 'runtime-job',
+        toolTrace: [{
+          id: 'trace-1', toolName: 'code_execute', status: 'awaiting_approval', approvalRequired: true,
+          approvalState: 'pending', approvalId: 'short-lived-approval', safeArguments: { code: 'print(1)', apiKey: 'do-not-store' },
+          requestedAt: '2026-01-01T00:00:00.000Z',
+        }],
+        sourceCitations: [{ url: 'javascript:alert(1)' }, { url: 'https://example.com/source', title: 'Source' }],
+      }],
+    };
+    saveConversations([withTrace]);
+    const serialized = window.localStorage.getItem(STORAGE_KEYS.conversations) ?? '';
+    expect(serialized).not.toContain('runtime-job');
+    expect(serialized).not.toContain('short-lived-approval');
+    expect(serialized).not.toContain('do-not-store');
+    expect(serialized).toContain('[redacted]');
+    expect(serialized).not.toContain('javascript:');
+
+    const restored = loadConversations()[0]?.messages[0];
+    expect(restored?.toolTrace?.[0]?.status).toBe('interrupted');
+    expect(restored?.toolTrace?.[0]?.approvalState).toBe('stale');
+    expect(restored?.toolTrace?.[0]?.approvalId).toBeUndefined();
+    expect(restored?.sourceCitations).toEqual([{ url: 'https://example.com/source', title: 'Source' }]);
+    expect(restored?.toolJobId).toBeUndefined();
+  });
+
+  it('strips legacy direct HTTP credentials and unsupported profile fields on load and save', () => {
+    const raw = {
+      ...profile,
+      tools: {
+        ...structuredClone(DEFAULT_TOOL_PROFILE_SETTINGS),
+        httpTools: [{
+          id: 'lookup', name: 'Lookup', description: 'Read', endpoint: 'https://api.example.com/data', method: 'GET',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false }, permission: 'read_only', timeoutMs: 5000,
+          headers: [
+            { name: 'Authorization', value: 'legacy-bearer-value' },
+            { name: 'X-Tenant', value: 'legacy-tenant-credential' },
+            { name: 'Accept', value: 'application/json' },
+            { name: 'Authorization', secretRef: 'server-header-key' },
+          ],
+        }],
+        mcpServers: [{
+          id: 'remote', name: 'Remote', transport: 'streamable_http', url: 'https://mcp.example.com/mcp', enabled: false, confirmed: false,
+          timeoutMs: 5000, tools: [], headers: [{ name: 'X-Token', value: 'legacy-mcp-token' }],
+          command: '/legacy/local-server', environment: { API_TOKEN: 'legacy-env-token' },
+        }],
+        code: { ...DEFAULT_TOOL_PROFILE_SETTINGS.code, apiKey: 'legacy-code-secret' },
+      },
+    } as unknown as ApiProfile;
+
+    window.localStorage.setItem(STORAGE_KEYS.profiles, JSON.stringify([raw]));
+    const loaded = loadProfiles()[0];
+    expect(loaded?.tools?.httpTools[0]?.headers).toEqual([
+      { name: 'Accept', value: 'application/json' },
+      { name: 'Authorization', secretRef: 'server-header-key' },
+    ]);
+    expect(loaded?.tools?.mcpServers[0]).not.toHaveProperty('command');
+    expect(loaded?.tools?.mcpServers[0]).not.toHaveProperty('environment');
+    expect(loaded?.tools?.code).not.toHaveProperty('apiKey');
+    expect(JSON.stringify(loaded)).not.toContain('legacy-bearer-value');
+    expect(JSON.stringify(loaded)).not.toContain('legacy-tenant-credential');
+    expect(JSON.stringify(loaded)).not.toContain('legacy-mcp-token');
+    expect(JSON.stringify(loaded)).not.toContain('legacy-env-token');
+    expect(JSON.stringify(loaded)).not.toContain('legacy-code-secret');
+
+    saveProfiles([raw]);
+    const serialized = window.localStorage.getItem(STORAGE_KEYS.profiles) ?? '';
+    expect(serialized).not.toContain('legacy-bearer-value');
+    expect(serialized).not.toContain('legacy-tenant-credential');
+    expect(serialized).not.toContain('legacy-mcp-token');
+    expect(serialized).not.toContain('legacy-env-token');
+    expect(serialized).not.toContain('legacy-code-secret');
+  });
+
+  it('migrates older profiles without tools to the disabled safe defaults', () => {
+    window.localStorage.setItem(STORAGE_KEYS.profiles, JSON.stringify([{ ...profile, apiKey: 'legacy-secret' }]));
+    const migrated = loadProfiles()[0];
+    expect(migrated?.tools?.enabled).toBe(false);
+    expect(migrated?.tools?.historyPersistence).toBe(false);
+    expect(JSON.stringify(migrated)).not.toContain('legacy-secret');
   });
 });

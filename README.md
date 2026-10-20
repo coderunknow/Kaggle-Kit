@@ -102,8 +102,10 @@ unreliable from Kaggle (`RemoteDisconnected`). It downloads the pinned
   effort and the streaming switch. Start-up options of the server (context
   size, GPU split, MTP) are shown separately because the browser cannot change
   them.
-* **Data & credentials tab** – shows exactly what is stored where and removes
-  keys, conversations or all local data.
+* **Data & credentials tab** – shows what is stored in the browser and by the
+  local proxy, clears browser-held keys, deletes conversations, removes proxy
+  secret references individually, and erases browser-local data (not proxy-held
+  secrets or tool profiles).
 
 The interface is a full chat workspace rather than a settings form:
 
@@ -126,9 +128,47 @@ The interface is a full chat workspace rather than a settings form:
 * keyboard access (Alt+Shift+N, Ctrl/Cmd+/, Escape), visible focus and a
   reduced-motion layout.
 
-See [docs/chat-interface.md](docs/chat-interface.md) for the details and
-[docs/release-notes/0.1.0-dev3.md](docs/release-notes/0.1.0-dev3.md) for what
-changed in this release.
+### Tool-using chat (opt-in)
+
+Tools are disabled by default and enabled per connection profile. Before the
+model can use them, run the **model-specific tool probe**: the proxy requires a
+harmless native function call with `finish_reason=tool_calls`, then verifies an
+isolated follow-up containing a synthetic tool result and a final stop response.
+The probe never executes its function. URL shape, model family, normal chat, or
+`--jinja` alone do not count as evidence; unverified endpoints keep ordinary
+chat available and tool calls disabled. Streamed tool-call fragments are
+verified separately by the probe (reported as `streamingSupported`); tool
+rounds themselves are non-streaming so approvals can pause the loop. The
+recommended Qwen prompt ships in two variants — the base text for ordinary
+chat and a tool-use variant for verified profiles.
+
+The catalog covers calculator/unit conversion, conversation-scoped uploaded
+files, public web search/page retrieval, read-only endpoint diagnostics,
+optional Python sandbox execution, configured HTTP tools, and remote MCP tools.
+Uploads are extracted into a bounded in-memory vault; the app cannot browse host
+files. Remote MCP uses public HTTPS only (no local stdio process). The code
+runner is disabled by default and can be configured only with a digest-pinned
+Python image; **every run requires a separate approval**. If Docker or the image
+is unavailable, execution fails closed without a host-code fallback. Known
+read-only operations may run automatically; writes and unknown operations
+require approval each time. Calls, rounds, inputs, outputs, time and
+file size are bounded server-side. An exact denied operation is refused without
+a second approval prompt during that turn.
+
+HTTP header credentials and provider keys use the local proxy's protected
+SecretStore; profiles keep references, not direct credentials. MCP servers and
+tools require review and an explicit grant. Changing the URL, headers, timeout,
+adding a selected tool, or changing a selected tool's schema or permission
+invalidates the grant; narrowing the selected set does not expand its scope.
+Tool traces are not saved by default. Unless provider retention rights are
+confirmed **and** tool-history persistence is opted in, Brave-derived assistant
+answers remain visible for the current session but are not saved or exported.
+Provider availability, account terms and fees are separate from the local
+checks.
+
+See [docs/chat-interface.md](docs/chat-interface.md) and [docs/security.md](docs/security.md)
+for details, and [docs/release-notes/0.1.0-dev4.md](docs/release-notes/0.1.0-dev4.md)
+for this development release's changes and verification limits.
 
 ## Security model
 
@@ -143,9 +183,9 @@ changed in this release.
   whenever the server mode is used.
 * `src/security.test.ts` fails the build when a tunnel URL or a credential
   appears in the source.
-* The backend refuses browser requests from another origin, requires a JSON
-  content type and resolves every static file inside the client directory
-  with a proper containment check.
+* The backend accepts only its own browser origin or an explicitly configured
+  allowed origin, requires a JSON content type and resolves every static file
+  inside the client directory with a proper containment check.
 * The upstream host can be restricted with `KAGGLE_KIT_ALLOWED_HOSTS`; the
   default stays open so that any OpenAI-compatible endpoint keeps working.
 
@@ -177,7 +217,7 @@ stages the assets, validates them and uploads them to a prerelease of the same
 tag. Nothing is uploaded by hand.
 
 ```bash
-git tag v0.1.0-dev3 <commit> && git push origin v0.1.0-dev3
+git tag v0.1.0-dev4 <commit> && git push origin v0.1.0-dev4
 ```
 
 The version of `package.json` has to match the tag and the release notes have

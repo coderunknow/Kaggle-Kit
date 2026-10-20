@@ -19,11 +19,14 @@ import { createHash } from 'node:crypto';
 import { ApiError, redactSecrets } from '../shared/api/errors';
 import { OpenAIClient } from '../shared/api/client';
 import { CONNECTION_STAGE_ORDER } from '../shared/connection';
-import { extractDelta, parseSseStream } from '../shared/api/stream';
+import { extractDelta, parseSseStream, ToolCallAccumulator } from '../shared/api/stream';
 import { buildChatCompletionBody } from '../shared/api/requests';
 import type { InferenceParams, ServerCapabilities } from '../shared/api/requests';
+import type { ToolCallingCapability } from '../shared/tools/types';
 import { joinApiPath, normalizeBaseUrlDetailed, UrlValidationError } from '../shared/api/url';
 import { assertDestinationAllowed } from './destinations';
+import { createPinnedFetch } from './pinnedFetch';
+import type { FetchLike } from '../shared/api/client';
 import type {
   ChatCompletionRequestBody,
   ChatCompletionResponse,
@@ -55,9 +58,12 @@ interface CapabilityCacheEntry {
 }
 
 const STREAM_PROBE_TTL_MS = 10 * 60 * 1000;
+const TOOL_PROBE_TTL_MS = 10 * 60 * 1000;
+const MAX_TOOL_PROBE_RESPONSE_BYTES = 16_384;
 
 export class ProxyService {
   private readonly capabilities = new Map<string, CapabilityCacheEntry>();
+  private readonly toolCallingCapabilities = new Map<string, { capability: ToolCallingCapability; expiresAt: number }>();
   /**
    * Capabilities belong to an endpoint *and* a credential. A server started
    * with a rotated key can answer differently, and a streaming probe is only
@@ -71,11 +77,26 @@ export class ProxyService {
     return `${baseUrl}\u0000${digest}`;
   }
 
+  /**
+   * Every upstream connection is pinned to a policy-validated DNS answer
+   * (see pinnedFetch.ts), so a hostname that rebinds between the policy
+   * check and the socket connect cannot reach loopback or metadata
+   * addresses it was not configured as.
+   */
+  readonly pinnedFetch: FetchLike;
+
   constructor(
     private readonly config: ServerConfig,
     private readonly store: SecretStore,
     private readonly logger: Logger,
-  ) {}
+    /** Test seam only: production code must use the DNS-pinned fetch. */
+    fetchOverride?: FetchLike,
+  ) {
+    this.pinnedFetch = fetchOverride ?? createPinnedFetch({
+      allowedHosts: config.allowedHosts,
+      blockPrivateNetworks: config.blockPrivateNetworks,
+    });
+  }
 
   /** Normalize and validate an incoming target. */
   async resolveTarget(target: UpstreamTarget): Promise<{ baseUrl: string; apiKey?: string }> {
@@ -116,11 +137,23 @@ export class ProxyService {
     }
   }
 
-  private client(baseUrl: string, apiKey: string | undefined, timeoutMs: number): OpenAIClient {
+  /**
+   * The one way server code may build an upstream client: DNS-pinned
+   * connections plus the redirect destination policy are always attached,
+   * so no call site can accidentally fall back to an unpinned fetch or
+   * follow a redirect to a host outside the allow list.
+   */
+  createClient(baseUrl: string, apiKey: string | undefined, timeoutMs: number, maxResponseBytes?: number): OpenAIClient {
+    return this.client(baseUrl, apiKey, timeoutMs, maxResponseBytes);
+  }
+
+  private client(baseUrl: string, apiKey: string | undefined, timeoutMs: number, maxResponseBytes?: number): OpenAIClient {
     return new OpenAIClient({
       baseUrl,
       apiKey,
       timeoutMs,
+      fetchImpl: this.pinnedFetch,
+      ...(maxResponseBytes !== undefined ? { maxResponseBytes } : {}),
       validateRedirect: (target) => this.isRedirectAllowed(target),
     });
   }
@@ -372,6 +405,226 @@ export class ProxyService {
     return finish(true, { modelId, capabilities });
   }
 
+  /**
+   * Harmless, model-specific native tool-call probe. The probe only inspects
+   * the response; it never dispatches or executes the returned function.
+   */
+  async probeToolCalling(
+    target: UpstreamTarget,
+    options: { model?: string; timeoutMs: number; force?: boolean },
+  ): Promise<ToolCallingCapability> {
+    const model = options.model?.trim() ?? '';
+    if (!model || model.length > 256) {
+      return { status: 'not_verified', detail: 'A valid model ID is required for the isolated tool-calling probe.' };
+    }
+    const { baseUrl, apiKey } = await this.resolveTarget(target);
+    const key = `${this.capabilityKey(baseUrl, apiKey)}\u0000${model}`;
+    const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 20);
+    const cached = this.toolCallingCapabilities.get(key);
+    if (!options.force && cached && cached.expiresAt > Date.now()) return { ...cached.capability };
+
+    const capability: ToolCallingCapability = {
+      status: 'failed_verification',
+      model,
+      configurationFingerprint: fingerprint,
+      checkedAt: new Date().toISOString(),
+      detail: 'The endpoint did not return the expected harmless tool-call response. Tools remain disabled.',
+    };
+    const probeTimeoutMs = Math.max(1, Math.min(options.timeoutMs, 30_000));
+    const deadline = Date.now() + probeTimeoutMs;
+    const client = this.client(baseUrl, apiKey, probeTimeoutMs, MAX_TOOL_PROBE_RESPONSE_BYTES);
+    const probeMessages: ChatMessageInput[] = [
+      {
+        role: 'system',
+        content: 'This is an isolated no-op capability probe. Never perform external actions. Call the named function exactly once with an empty object. After receiving the synthetic tool result, do not call a function again; reply with exactly KAGGLE_KIT_TOOL_PROBE_OK.',
+      },
+      {
+        role: 'user',
+        content: 'Call the function named kaggle_kit_capability_probe exactly once with an empty JSON object. The function is harmless and will not be executed.',
+      },
+    ];
+    const probeTools = [{
+      type: 'function' as const,
+      function: {
+        name: 'kaggle_kit_capability_probe',
+        description: 'Harmless capability check. It has no side effects and must never be executed.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    }];
+    let probeStage = 'initial function-call turn';
+    try {
+      const response = await client.chatCompletion({
+        model,
+        messages: probeMessages,
+        tools: probeTools,
+        tool_choice: 'auto',
+        parallel_tool_calls: false,
+        max_tokens: 64,
+        temperature: 0,
+        stream: false,
+      }, { timeoutMs: Math.max(1, deadline - Date.now()) });
+      const firstChoice = response.choices?.length === 1 ? response.choices[0] : undefined;
+      const calls = firstChoice?.message?.tool_calls;
+      const call = Array.isArray(calls) && calls.length === 1 ? calls[0] : undefined;
+      let validArguments = false;
+      if (call?.function?.name === 'kaggle_kit_capability_probe' && typeof call.function.arguments === 'string' && Buffer.byteLength(call.function.arguments) <= 256) {
+        try {
+          const parsed = JSON.parse(call.function.arguments) as unknown;
+          validArguments = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+        } catch { /* invalid model output is a failed probe */ }
+      }
+      const validCall = firstChoice?.finish_reason === 'tool_calls' && call?.type === 'function' &&
+        typeof call.id === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(call.id) && validArguments;
+      if (!validCall || !call) {
+        capability.status = 'failed_verification';
+        capability.detail = 'The initial probe did not return exactly one valid function call with finish_reason=tool_calls. Tool use remains disabled; ordinary chat is unchanged.';
+      } else {
+        probeStage = 'synthetic tool-result follow-up';
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new ApiError('timeout', 'The capability probe timed out before its synthetic follow-up.');
+        const safeCall = {
+          id: call.id,
+          type: 'function' as const,
+          function: { name: 'kaggle_kit_capability_probe', arguments: '{}' },
+        };
+        const followUp = await client.chatCompletion({
+          model,
+          messages: [
+            ...probeMessages,
+            { role: 'assistant', content: null, tool_calls: [safeCall] },
+            { role: 'tool', tool_call_id: safeCall.id, name: 'kaggle_kit_capability_probe', content: '{"ok":true,"result":"synthetic-no-op"}' },
+          ],
+          tools: probeTools,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          max_tokens: 64,
+          temperature: 0,
+          stream: false,
+        }, { timeoutMs: Math.max(1, remaining) });
+        const finalChoice = followUp.choices?.length === 1 ? followUp.choices[0] : undefined;
+        const finalMessage = finalChoice?.message;
+        const noAdditionalCalls = finalMessage?.tool_calls === undefined ||
+          (Array.isArray(finalMessage.tool_calls) && finalMessage.tool_calls.length === 0);
+        if (finalChoice?.finish_reason === 'stop' && noAdditionalCalls &&
+          typeof finalMessage?.content === 'string' && finalMessage.content.trim() === 'KAGGLE_KIT_TOOL_PROBE_OK') {
+          capability.status = 'supported_verified';
+          // Non-streaming support is proven. Streaming tool-call deltas are a
+          // separate wire behaviour: verify them independently and report the
+          // outcome without downgrading the proven non-streaming result.
+          probeStage = 'streamed function-call turn';
+          capability.streamingSupported = await this.probeStreamingToolCall(
+            baseUrl, apiKey, model, probeMessages, probeTools, deadline,
+          );
+          capability.detail = capability.streamingSupported
+            ? 'The endpoint completed an isolated two-step native tool round trip: one valid function call (finish_reason=tool_calls), then an accepted synthetic tool result and a final stop response. Streamed tool-call fragments were also assembled successfully. The function was never executed.'
+            : 'The endpoint completed an isolated two-step native tool round trip: one valid function call (finish_reason=tool_calls), then an accepted synthetic tool result and a final stop response. The function was never executed. Streamed tool-call fragments were not verified; tool rounds use non-streaming requests.';
+        } else {
+          capability.status = 'failed_verification';
+          capability.detail = 'The endpoint did not accept and complete the synthetic tool-result follow-up with a final stop response. Tool use remains disabled; ordinary chat is unchanged.';
+        }
+      }
+    } catch (error) {
+      const apiError = toApiError(error);
+      capability.status = apiError.httpStatus === 400 || apiError.httpStatus === 404 || apiError.httpStatus === 422
+        ? 'unsupported'
+        : 'temporarily_unavailable';
+      capability.detail = apiError.httpStatus === 400 || apiError.httpStatus === 404 || apiError.httpStatus === 422
+        ? `The endpoint rejected the ${probeStage} (HTTP ${apiError.httpStatus}). Tool use remains disabled; ordinary chat is unchanged.`
+        : `The ${probeStage} could not be completed: ${apiError.message}`;
+    }
+    this.toolCallingCapabilities.delete(key);
+    this.toolCallingCapabilities.set(key, { capability: { ...capability }, expiresAt: Date.now() + TOOL_PROBE_TTL_MS });
+    while (this.toolCallingCapabilities.size > ProxyService.CAPABILITY_CACHE_LIMIT) {
+      const oldest = this.toolCallingCapabilities.keys().next().value;
+      if (oldest === undefined) break;
+      this.toolCallingCapabilities.delete(oldest);
+    }
+    return capability;
+  }
+
+  /**
+   * Verify streamed tool-call fragments with the same harmless no-op function.
+   * Any failure returns false; it never downgrades the non-streaming result
+   * and never executes the returned call.
+   */
+  private async probeStreamingToolCall(
+    baseUrl: string,
+    apiKey: string | undefined,
+    model: string,
+    messages: ChatMessageInput[],
+    tools: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>,
+    deadline: number,
+  ): Promise<boolean> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(remaining, 30_000));
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const response = await this.pinnedFetch(joinApiPath(baseUrl, '/chat/completions'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model,
+          messages,
+          tools,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          max_tokens: 64,
+          temperature: 0,
+          stream: true,
+        }),
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+      if (!response.ok || !response.body) return false;
+      if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream')) return false;
+      const accumulator = new ToolCallAccumulator(1, 1_024);
+      let events = 0;
+      for await (const event of parseSseStream(response.body, controller.signal)) {
+        events += 1;
+        if (events > 500) return false;
+        const delta = extractDelta(event);
+        if (delta.error) return false;
+        accumulator.add(delta);
+        if (delta.finishReason) break;
+      }
+      const assembled = accumulator.finish();
+      if (!assembled.announced || assembled.overflow || assembled.calls.length !== 1) return false;
+      const call = assembled.calls[0]!;
+      if (call.function.name !== 'kaggle_kit_capability_probe') return false;
+      try {
+        const parsed = JSON.parse(call.function.arguments) as unknown;
+        return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+      } catch {
+        return false;
+      }
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Return only an explicit, still-fresh probe result; never infer support. */
+  async getToolCallingCapability(target: UpstreamTarget, model: string): Promise<ToolCallingCapability> {
+    const { baseUrl, apiKey } = await this.resolveTarget(target);
+    const key = `${this.capabilityKey(baseUrl, apiKey)}\u0000${model.trim()}`;
+    const cached = this.toolCallingCapabilities.get(key);
+    if (cached && cached.expiresAt > Date.now()) return { ...cached.capability };
+    const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 20);
+    return {
+      status: 'not_verified',
+      model: model.trim(),
+      configurationFingerprint: fingerprint,
+      detail: 'Native tool calling has not been verified for this exact endpoint, credential, and model. Run the isolated probe before enabling tools.',
+    };
+  }
+
   /** Detect optional server capabilities. Failures are not fatal. */
   async detectCapabilities(
     baseUrl: string,
@@ -451,7 +704,7 @@ export class ProxyService {
       };
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-      const response = await fetch(joinApiPath(baseUrl, '/chat/completions'), {
+      const response = await this.pinnedFetch(joinApiPath(baseUrl, '/chat/completions'), {
         method: 'POST',
         headers,
         body: JSON.stringify({

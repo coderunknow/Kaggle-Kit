@@ -7,6 +7,16 @@
  * interface without a GPU.
  *
  *   node tools/mock-upstream.mjs --port 8000 --api-key demo-key
+ *
+ * Deterministic tool behaviour for integration checks: when a request carries
+ * tools, the mock answers with a native tool call instead of prose.
+ *
+ *   - the harmless `kaggle_kit_capability_probe` function -> `{}` call, and
+ *     the exact `KAGGLE_KIT_TOOL_PROBE_OK` sentinel after the tool result,
+ *   - a user message `calculate: <expression>` -> `calculator_calculate`,
+ *   - a user message `run code: <python>` -> `code_execute`.
+ *
+ * Streamed tool calls are emitted as argument fragments, like a real server.
  */
 
 import http from 'node:http';
@@ -32,6 +42,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 const MODEL_ID = 'mock-model';
+let mockCallCounter = 0;
 
 function sendJson(response, status, payload) {
   const body = JSON.stringify(payload);
@@ -84,7 +95,87 @@ const server = http.createServer((request, response) => {
         return;
       }
 
-      const prompt = (parsed.messages ?? []).at(-1)?.content ?? '';
+      const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+      const lastMessage = messages.at(-1) ?? {};
+      const prompt = typeof lastMessage.content === 'string' ? lastMessage.content : '';
+      const toolNames = new Set(
+        (Array.isArray(parsed.tools) ? parsed.tools : [])
+          .map((tool) => tool?.function?.name)
+          .filter((name) => typeof name === 'string'),
+      );
+      const isProbe = toolNames.has('kaggle_kit_capability_probe');
+
+      // A tool result ends the scripted round trip.
+      if (lastMessage.role === 'tool') {
+        sendJson(response, 200, {
+          id: 'chatcmpl-mock',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: MODEL_ID,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: isProbe ? 'KAGGLE_KIT_TOOL_PROBE_OK' : `Tool result received: ${prompt.slice(0, 300)}`,
+            },
+            finish_reason: 'stop',
+          }],
+          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+        });
+        return;
+      }
+
+      // Deterministic native tool calls, selected by the offered functions.
+      let scriptedCall = null;
+      if (toolNames.size > 0) {
+        const calculate = /calculate:\s*(.+)/i.exec(prompt);
+        const runCode = /run code:\s*([\s\S]+)/i.exec(prompt);
+        if (calculate && toolNames.has('calculator_calculate')) {
+          scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expression: calculate[1].trim() }) };
+        } else if (runCode && toolNames.has('code_execute')) {
+          scriptedCall = { name: 'code_execute', arguments: JSON.stringify({ language: 'python', code: runCode[1].trim() }) };
+        } else if (isProbe) {
+          scriptedCall = { name: 'kaggle_kit_capability_probe', arguments: '{}' };
+        }
+      }
+
+      if (scriptedCall) {
+        mockCallCounter += 1;
+        const callId = `mock-call-${mockCallCounter}`;
+        if (parsed.stream) {
+          response.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          const split = Math.max(1, Math.floor(scriptedCall.arguments.length / 2));
+          const frames = [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: scriptedCall.name, arguments: scriptedCall.arguments.slice(0, split) } }] } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: scriptedCall.arguments.slice(split) } }] }, finish_reason: 'tool_calls' }] },
+          ];
+          for (const frame of frames) response.write(`data: ${JSON.stringify(frame)}\n\n`);
+          response.write('data: [DONE]\n\n');
+          response.end();
+          return;
+        }
+        sendJson(response, 200, {
+          id: 'chatcmpl-mock',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: MODEL_ID,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{ id: callId, type: 'function', function: scriptedCall }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+        });
+        return;
+      }
 
       if (parsed.stream) {
         response.writeHead(200, {

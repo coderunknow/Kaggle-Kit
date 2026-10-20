@@ -7,12 +7,18 @@
  * from the composer.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import { effectiveProfileTarget, resolveConnectionView } from '../shared/connection';
 import type { ChatMessage } from '../shared/domain';
 import { ChatView, type ConnectionState } from './components/ChatView';
-import { SettingsPanel, type SettingsTab } from './components/SettingsPanel';
+import type { SettingsTab } from './components/SettingsPanel';
+
+// The settings surface (profiles, inference, tools) is only needed after the
+// user opens it; loading it lazily keeps the first chat paint small.
+const SettingsPanel = lazy(() =>
+  import('./components/SettingsPanel').then((module) => ({ default: module.SettingsPanel })),
+);
 import { Sidebar } from './components/Sidebar';
 import { Icon, StatusDot, type StatusTone } from './components/ui';
 import { copyText } from './lib/clipboard';
@@ -24,8 +30,8 @@ import { useChat } from './state/useChat';
 
 export function App() {
   const app = useApp();
-  const { activeProfile, activeConversation, state, newConversation, cancelRequest } = app;
-  const { sendMessage, editMessage, retryMessage, resendMessage, isPending } = useChat();
+  const { activeProfile, activeConversation, state, newConversation } = app;
+  const { sendMessage, editMessage, retryMessage, resendMessage, approveToolCall, cancelToolJob, isPending } = useChat();
   const isWide = useMediaQuery('(min-width: 1024px)');
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)');
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
@@ -136,8 +142,12 @@ export function App() {
   }, [conversationId, sendMessage]);
 
   const handleCancel = useCallback(() => {
-    if (conversationId) cancelRequest(conversationId);
-  }, [cancelRequest, conversationId]);
+    if (conversationId) void cancelToolJob(conversationId);
+  }, [cancelToolJob, conversationId]);
+
+  const handleToolApproval = useCallback((messageId: string, approvalId: string, approved: boolean) => {
+    if (conversationId) void approveToolCall(conversationId, messageId, approvalId, approved);
+  }, [approveToolCall, conversationId]);
 
   const handleCopy = useCallback((message: ChatMessage) => copyText(message.content), []);
 
@@ -345,6 +355,7 @@ export function App() {
             connectionState={connectionState}
             onSend={handleSend}
             onCancel={handleCancel}
+            onToolApproval={handleToolApproval}
             onCopy={handleCopy}
             onEdit={handleEdit}
             onRetry={handleRetry}
@@ -356,12 +367,14 @@ export function App() {
         </main>
       </div>
 
-      <SettingsPanel
-        open={settingsOpen}
-        tab={settingsTab}
-        onTabChange={setSettingsTab}
-        onClose={closeSettings}
-      />
+      <Suspense fallback={null}>
+        <SettingsPanel
+          open={settingsOpen}
+          tab={settingsTab}
+          onTabChange={setSettingsTab}
+          onClose={closeSettings}
+        />
+      </Suspense>
     </div>
   );
 }

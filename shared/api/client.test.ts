@@ -82,6 +82,30 @@ describe('OpenAIClient', () => {
     expect((error as ApiError).kind).toBe('invalid_response');
   });
 
+  it('stops reading a response when a configured byte limit is exceeded', async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"data":[] }'));
+          controller.enqueue(new TextEncoder().encode(' '.repeat(1024)));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 200 },
+    );
+    const fetchImpl = vi.fn().mockResolvedValue(response);
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl, maxResponseBytes: 16 });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).kind).toBe('invalid_response');
+    expect((error as ApiError).message).toContain('16-byte response limit');
+    expect(cancelled).toBe(true);
+  });
+
   it('reports an empty body as an invalid response', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
     const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
@@ -105,6 +129,22 @@ describe('OpenAIClient', () => {
           init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
         }),
     );
+    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl, timeoutMs: 20 });
+
+    const error = await client.listModels().catch((caught: unknown) => caught);
+    expect((error as ApiError).kind).toBe('timeout');
+  });
+
+  it('keeps the timeout active while the response body is being read', async () => {
+    const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"data":'));
+          init.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true });
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200 }));
+    });
     const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl, timeoutMs: 20 });
 
     const error = await client.listModels().catch((caught: unknown) => caught);
@@ -141,6 +181,11 @@ describe('OpenAIClient', () => {
 
   it('rejects an empty API key', () => {
     expect(() => new OpenAIClient({ baseUrl: 'https://example.com', apiKey: '   ' })).toThrow(ApiError);
+  });
+
+  it('rejects an invalid response byte limit instead of silently disabling the cap', () => {
+    expect(() => new OpenAIClient({ baseUrl: 'https://example.com', maxResponseBytes: 0 })).toThrow(ApiError);
+    expect(() => new OpenAIClient({ baseUrl: 'https://example.com', maxResponseBytes: 1.5 })).toThrow(ApiError);
   });
 
   it('returns null from props() when the endpoint is missing', async () => {

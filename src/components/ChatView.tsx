@@ -8,10 +8,12 @@
  * itself live, which would read every streamed token aloud.
  */
 
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObject } from 'react';
 
 import type { ConnectionViewState } from '../../shared/connection';
 import type { ApiProfile, ChatMessage, Conversation } from '../../shared/domain';
+import { effectiveToolSelection, shouldPersistToolHistory, type ConversationToolSettings, type UploadedFileReference } from '../../shared/tools/types';
+import { gateway } from '../lib/gateway';
 import { PROMPT_STARTERS } from '../lib/promptStarters';
 import { useApp } from '../state/AppProvider';
 import { useDraft } from '../state/useDraft';
@@ -28,6 +30,7 @@ export interface ChatViewProps {
   connectionState: ConnectionState;
   onSend: (content: string) => void;
   onCancel: () => void;
+  onToolApproval: (messageId: string, approvalId: string, approved: boolean) => void;
   onCopy: (message: ChatMessage) => Promise<boolean>;
   onEdit: (messageId: string, content: string) => void;
   onRetry: (messageId: string) => void;
@@ -181,6 +184,7 @@ export function ChatView({
   connectionState,
   onSend,
   onCancel,
+  onToolApproval,
   onCopy,
   onEdit,
   onRetry,
@@ -190,7 +194,12 @@ export function ChatView({
   composerRef,
 }: ChatViewProps) {
   const app = useApp();
+  const dispatch = app.dispatch;
   const [draft, setDraft] = useDraft(conversation?.id);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const uploadedFilesRef = useRef<UploadedFileReference[]>(conversation?.uploadedFiles ?? []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -201,6 +210,76 @@ export function ChatView({
   const lastId = lastMessage?.id ?? '';
   const lastStatus = lastMessage?.status ?? '';
   const lastLength = lastMessage?.content.length ?? 0;
+  const conversationId = conversation?.id;
+  const profileTools = profile?.tools;
+  const availableToolIds = profileTools?.allowedTools ?? [];
+  const selectedToolIds = conversation?.toolSettings?.toolIds ?? availableToolIds;
+  const effectiveTools = profileTools ? effectiveToolSelection(profileTools, conversation?.toolSettings) : [];
+  const canUploadFiles = Boolean(conversation && effectiveTools.some((id) => id.startsWith('files_')));
+  const uploadedFiles = conversation?.uploadedFiles ?? [];
+
+  useEffect(() => {
+    uploadedFilesRef.current = conversation?.uploadedFiles ?? [];
+  }, [conversation?.id, conversation?.uploadedFiles]);
+
+  useEffect(() => {
+    if (!conversationId) return undefined;
+    let cancelled = false;
+    void gateway.listConversationFiles(conversationId).then((files) => {
+      if (cancelled) return;
+      uploadedFilesRef.current = files;
+      dispatch({
+        type: 'conversations/patch',
+        id: conversationId,
+        changes: { uploadedFiles: files, updatedAt: new Date().toISOString() },
+      });
+    }).catch(() => {
+      // Keep local metadata visible if the proxy is temporarily unavailable.
+    });
+    return () => { cancelled = true; };
+  }, [conversationId, dispatch]);
+
+  const updateConversationToolSettings = (changes: Partial<ConversationToolSettings>) => {
+    if (!conversation) return;
+    const toolSettings = { ...conversation.toolSettings, ...changes };
+    const persistence = profileTools ? shouldPersistToolHistory(profileTools, toolSettings) : false;
+    app.dispatch({
+      type: 'conversations/patch',
+      id: conversation.id,
+      changes: {
+        toolSettings,
+        ...(changes.historyPersistence !== undefined ? { toolHistoryPersistence: persistence } : {}),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  };
+
+  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (!conversation || selected.length === 0) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const remaining = Math.max(0, 16 - uploadedFilesRef.current.length);
+      if (remaining === 0) throw new Error('This conversation already has the maximum of 16 in-memory uploads.');
+      const uploaded: UploadedFileReference[] = [];
+      for (const file of selected.slice(0, remaining)) {
+        uploaded.push(await gateway.uploadConversationFile(conversation.id, file));
+      }
+      const next = [...uploadedFilesRef.current, ...uploaded];
+      uploadedFilesRef.current = next;
+      app.dispatch({
+        type: 'conversations/patch',
+        id: conversation.id,
+        changes: { uploadedFiles: next, updatedAt: new Date().toISOString() },
+      });
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'The file could not be uploaded.');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const scrollToBottom = useCallback((smooth: boolean) => {
     const element = scrollRef.current;
@@ -308,6 +387,7 @@ export function ChatView({
                   message={message}
                   isLast={message.id === lastId}
                   disabled={pending}
+                  onToolApproval={onToolApproval}
                   onCopy={onCopy}
                   onEdit={onEdit}
                   onRetry={onRetry}
@@ -346,6 +426,91 @@ export function ChatView({
               <button type="button" className="button button--small" onClick={onOpenSettings}>
                 Review connection
               </button>
+            </div>
+          ) : null}
+
+          {conversation && profile && profileTools ? (
+            <details className="conversation-tools">
+              <summary>Conversation tools and privacy</summary>
+              <p className="field__hint">Profile settings remain the outer allowlist; this conversation can only disable tools, select a subset, and tighten budgets.</p>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={profileTools.enabled && conversation.toolSettings?.enabled !== false}
+                  disabled={!profileTools.enabled || availableToolIds.length === 0}
+                  onChange={(event) => updateConversationToolSettings({ enabled: event.target.checked })}
+                />
+                <span>Use the profile's enabled tools in this conversation</span>
+              </label>
+              {availableToolIds.length > 0 ? (
+                <fieldset className="conversation-tools__list">
+                  <legend>Allowed subset</legend>
+                  {availableToolIds.map((id) => (
+                    <label className="checkbox" key={id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedToolIds.includes(id)}
+                        onChange={(event) => {
+                          const current = conversation.toolSettings?.toolIds ?? availableToolIds;
+                          const next = event.target.checked ? [...new Set([...current, id])] : current.filter((entry) => entry !== id);
+                          updateConversationToolSettings({ toolIds: next });
+                        }}
+                      />
+                      <span>{id}</span>
+                    </label>
+                  ))}
+                </fieldset>
+              ) : <p className="text-subtle">No tools are in the profile allowlist.</p>}
+              <label className="field">
+                <span className="field__label">Maximum tool rounds in this conversation</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={profileTools.limits.maxRounds}
+                  value={conversation.toolSettings?.maxRounds ?? profileTools.limits.maxRounds}
+                  disabled={!profileTools.enabled}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value)) updateConversationToolSettings({ maxRounds: Math.max(1, Math.min(profileTools.limits.maxRounds, Math.floor(value))) });
+                  }}
+                />
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={conversation.toolSettings?.historyPersistence ?? profileTools.historyPersistence}
+                  disabled={!profileTools.enabled || (profileTools.web.provider === 'brave' && !profileTools.web.storageRightsConfirmed)}
+                  onChange={(event) => updateConversationToolSettings({ historyPersistence: event.target.checked })}
+                />
+                <span>Persist tool history for this conversation
+                  <span className="field__hint" style={{ display: 'block' }}>Off by default. File contents and credentials are never persisted. Brave result history also requires explicit storage-rights confirmation.</span>
+                </span>
+              </label>
+            </details>
+          ) : null}
+
+          {canUploadFiles && conversation ? (
+            <div className="conversation-uploads" aria-label="Conversation uploads">
+              <input
+                ref={uploadInputRef}
+                className="visually-hidden"
+                type="file"
+                multiple
+                accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx"
+                onChange={(event) => void handleUpload(event)}
+              />
+              <div className="row row--between">
+                <button type="button" className="button button--small" disabled={uploading || pending || uploadedFiles.length >= 16} onClick={() => uploadInputRef.current?.click()}>
+                  <Icon name="plus" size={13} /> {uploading ? 'Uploading…' : 'Upload a file'}
+                </button>
+                <span className="field__hint">Up to 4 MiB each; kept in proxy memory for at most one hour.</span>
+              </div>
+              {uploadedFiles.length > 0 ? (
+                <ul className="conversation-uploads__list">
+                  {uploadedFiles.map((file) => <li key={file.id}><strong>{file.name}</strong><span>{file.size.toLocaleString()} bytes · {file.extractedCharacters.toLocaleString()} extracted characters{file.truncated ? ' · truncated' : ''}</span></li>)}
+                </ul>
+              ) : null}
+              {uploadError ? <p className="field__error" role="alert">{uploadError}</p> : null}
             </div>
           ) : null}
 

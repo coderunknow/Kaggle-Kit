@@ -211,6 +211,44 @@ class AssetNotFound(Exception):
     """The requested release asset does not exist."""
 
 
+class ChecksumMismatch(Exception):
+    """A downloaded file does not match its pinned SHA-256 digest."""
+
+
+# SHA-256 digests of the official llama.cpp release assets, as published by
+# the GitHub API for each release. A download that does not match is deleted
+# and aborts the deployment: executing an unverified binary is never an
+# acceptable fallback.
+LLAMA_CPP_SHA256 = {
+    "llama-b11719-bin-ubuntu-cuda-12.8-x64.tar.gz": "e283eb9a2c245501317d4abbb822e5ab429a84693580f4ff5c533712db014f3b",
+    "cudart-llama-b11719-bin-ubuntu-cuda-12.8-x64.tar.gz": "0b8816822a8258683fe15e7bb29eb8aaca9f9a36a949c985430e0f94ad838722",
+    "llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz": "491595b522685a7b51974e80c21a8458e3afb5cf630fa48dc74fa854c378b3e0",
+    "cudart-llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz": "57ec265d78c97fa23399226d3228d6be5295d5ae9214681fa292b88c809873d5",
+    "llama-b11717-bin-ubuntu-cuda-12.8-x64.tar.gz": "50db91afc85f5e1c96ed0edb5cf8fde5102c342a55c964887ca35610c4163bf4",
+    "cudart-llama-b11717-bin-ubuntu-cuda-12.8-x64.tar.gz": "d79451494f2e990b1fb0742163bfb308a77152c6912cb4075968d4a3fe1fed2f",
+}
+
+
+def sha256_of(path: Path) -> str:
+    """The SHA-256 digest of a file, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_sha256(path: Path, expected_sha256: str) -> None:
+    """Refuse a file whose digest differs from the pinned one."""
+    actual = sha256_of(path)
+    if actual.lower() != expected_sha256.lower():
+        raise ChecksumMismatch(
+            f"{path.name} does not match its pinned SHA-256 digest "
+            f"(expected {expected_sha256.lower()}, got {actual}). "
+            "The file was deleted and nothing was executed."
+        )
+
+
 def download_resumable(
     session: requests.Session,
     url: str,
@@ -218,6 +256,7 @@ def download_resumable(
     min_bytes: int = 1_000_000,
     verify_tar: bool = False,
     attempts: int = 10,
+    expected_sha256: Optional[str] = None,
 ) -> Path:
     """
     Download ``url`` to ``destination`` and continue after an interruption.
@@ -232,11 +271,18 @@ def download_resumable(
     part = destination.with_name(destination.name + ".part")
 
     if destination.exists() and destination.stat().st_size >= min_bytes:
-        if not verify_tar or _is_valid_tar(destination):
+        if expected_sha256 is not None:
+            try:
+                verify_sha256(destination, expected_sha256)
+            except ChecksumMismatch:
+                log(f"Removing {destination.name}: it does not match the pinned SHA-256 digest.")
+                destination.unlink(missing_ok=True)
+        if destination.exists() and (not verify_tar or _is_valid_tar(destination)):
             log(f"Reusing {destination.name} ({destination.stat().st_size / 1e9:.2f} GB)")
             return destination
-        log(f"Removing the damaged archive {destination.name}")
-        destination.unlink(missing_ok=True)
+        if destination.exists():
+            log(f"Removing the damaged archive {destination.name}")
+            destination.unlink(missing_ok=True)
 
     last_error: Optional[BaseException] = None
 
@@ -297,11 +343,18 @@ def download_resumable(
             if verify_tar and not _is_valid_tar(part):
                 raise IOError("The downloaded archive is not a readable tar file.")
 
+            if expected_sha256 is not None:
+                try:
+                    verify_sha256(part, expected_sha256)
+                except ChecksumMismatch:
+                    part.unlink(missing_ok=True)
+                    raise
+
             os.replace(part, destination)
             log(f"Downloaded {destination.name} ({destination.stat().st_size / 1e9:.2f} GB)")
             return destination
 
-        except AssetNotFound:
+        except (AssetNotFound, ChecksumMismatch):
             raise
 
         except Exception as exc:  # noqa: BLE001 - the reason is reported to the user
@@ -517,6 +570,7 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
                 min_bytes=10_000_000,
                 verify_tar=True,
                 attempts=config.download_attempts,
+                expected_sha256=LLAMA_CPP_SHA256.get(main_name),
             )
             cuda_archive = download_resumable(
                 session,
@@ -525,6 +579,7 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
                 min_bytes=1_000_000,
                 verify_tar=True,
                 attempts=config.download_attempts,
+                expected_sha256=LLAMA_CPP_SHA256.get(cuda_name),
             )
         except AssetNotFound:
             warn(f"The assets of {tag} are not available, trying an older build.")
@@ -882,11 +937,20 @@ def read_server_state(config: DeploymentConfig) -> Optional[Dict[str, Any]]:
 def write_server_state(config: DeploymentConfig, state: Dict[str, Any]) -> Path:
     """Write the state of the running server."""
     path = state_file(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
     # The state never contains the API key.
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    _write_private_text(path, json.dumps(state, indent=2, sort_keys=True) + "\n")
     return path
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    """Write ``text`` so the file is owner-only from the first byte."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    path.chmod(0o600)
 
 
 def clear_server_state(config: DeploymentConfig) -> None:
@@ -896,9 +960,7 @@ def clear_server_state(config: DeploymentConfig) -> None:
 def write_api_key(config: DeploymentConfig, api_key: str) -> Path:
     """Store the API key of the running server, readable by the owner only."""
     path = key_file(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(api_key + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    _write_private_text(path, api_key + "\n")
     return path
 
 

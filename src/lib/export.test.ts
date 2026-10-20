@@ -78,6 +78,21 @@ describe('conversation export', () => {
     expect(markdown).toContain('_(no text)_');
   });
 
+  it('does not export retention-restricted search-derived assistant content', () => {
+    const markdown = conversationToMarkdown({
+      ...conversation,
+      messages: [
+        conversation.messages[0]!,
+        { id: 'transient', role: 'assistant', content: 'Search result excerpt', status: 'complete', createdAt: '2026-01-01T10:01:00.000Z', transientToolContent: true },
+        { id: 'later', role: 'assistant', content: 'A later summary of that excerpt', status: 'complete', createdAt: '2026-01-01T10:02:00.000Z' },
+      ],
+    }, profile);
+
+    expect(markdown).not.toContain('Search result excerpt');
+    expect(markdown).not.toContain('A later summary of that excerpt');
+    expect(markdown.match(/not exported because tool-history persistence was off or provider retention rights/g)).toHaveLength(2);
+  });
+
   it('only reports token usage that the server actually returned', () => {
     const markdown = conversationToMarkdown(conversation, profile);
     expect(markdown).toContain('_Tokens reported by the server: 30_');

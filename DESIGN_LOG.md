@@ -927,3 +927,311 @@ are **not run**, not passed. The PowerShell wrapper was not executed on a real
 Windows machine; the Node launcher was executed on Linux (readiness, port
 conflict, forced conflict, clean shutdown). Real GPU inference and a real
 browser remain outside this environment.
+
+## 2026-10-20 – v0.1.0-dev4: policy-enforced tool use, not prompt promises
+
+### Decisions
+
+* Keep ordinary chat as the fallback. Tool definitions are sent only when a
+  harmless, model/endpoint/credential-specific native probe succeeds; no model
+  family, compatible URL, normal inference or `--jinja` flag is treated as
+  evidence. The probe validates call correlation, accepted synthetic tool
+  result and exact final sentinel without running any function.
+* Use the existing API gateway, proxy, reducer, settings/profile model,
+  conversation persistence and release workflow. Tool execution and authority
+  stay in the local server; the browser only requests, displays and approves
+  bounded operations. The server rejects unknown catalog names and validates
+  bounded JSON/schema input before dispatch.
+* Keep seven separate categories and explicit permissions. Read-only tools may
+  run automatically; non-GET HTTP, `write`/`unknown` MCP and every code run
+  pause for an exact single-use approval. Exact denials are not retried in the
+  same turn. Execution budgets are enforced server-side, not by model prose.
+* Keep uploaded files in a size/character-bounded, in-memory conversation vault;
+  expose no host filesystem and remove vaults on delete/clear/expiry. Code
+  execution is Docker-only, disabled until configured with a digest-pinned
+  Python image, requires approval every run and has no host fallback. Docker
+  absence means fail closed, not a claim that sandboxing was tested.
+* Keep SecretStore v2 as `{ version: 2, secrets, toolProfiles }`. Tool profiles
+  carry secret references, never direct credential values; the store migrates
+  valid v1 data, checks both records as plain objects and retains secure file
+  permissions. `clear()` intentionally erases secret values but preserves
+  non-secret tool settings/references; browser-local erasure is documented as
+  distinct from proxy-side erasure.
+* Treat MCP discovery as server-owned data. A target change clears stale tools;
+  profile writes cannot forge names, descriptions or schemas; a grant requires
+  selected discovered tools. Adding a selected tool or changing its schema,
+  permission, endpoint, headers or timeout requires rediscovery/reapproval.
+* Brave-derived assistant content remains session-only unless both retention
+  rights are confirmed and tool-history persistence is opted in. The same
+  policy is applied to later assistant replies, browser history and Markdown
+  export; rights and pricing remain operator/provider-specific.
+* Cancellation distinguishes a job cancelled while waiting for approval (no
+  operation ran) from one cancelled after approval/running (the operation may
+  have started or completed). This avoids a false safety claim in the timeline.
+
+### Validation and limits
+
+* `npm run check`: typecheck/lint passed; Vitest **42 files, 332 tests passed**.
+* Notebook Python tests: **39 passed, 7 skipped**; release-tool tests: **18
+  passed**.
+* Production build passed. Mock integration passed **19/19**. `git diff --check`
+  passed. Non-failing warnings: Vite's >500 kB chunk advisory and PDF.js's
+  missing optional canvas/font-data fallback in text-PDF tests.
+* The release dry-run is pending the committed candidate. No GitHub workflow,
+  release tag or publication is claimed. The Kaggle runtime, deployed model's
+  native tool round trip, Docker isolation, provider rights, live MCP/HTTP and
+  real-browser accessibility remain unverified. The model proxy's existing
+  hostname check is not DNS pinning; documented allowlisting remains advised.
+
+## 2026-10-20 – Review hardening before release dry-run
+
+The final review added two fail-closed cases: parsed non-finite numeric
+arguments are rejected, and configured HTTP tool arguments containing
+credential-like field names cannot be sent in URLs or request bodies. Public
+web requests reject credential-like query names; matching results are not
+emitted as citations. This favors explicit server-side SecretStore header
+references over model-supplied credential fields.
+
+Validation on this working tree:
+
+* Focused security suite: **6 files, 47 tests passed**.
+* `npm run check`: typecheck/ESLint passed; Vitest **42 files, 344 tests
+  passed**.
+* Notebook suite: **39 passed, 7 skipped**; release-tool suite: **18 passed**.
+* Release/environment JSON parsed successfully; `git diff --check` passed.
+* Build, integration, and the archive/checksum release dry-run are pending
+  execution against the committed candidate. No live model, Docker isolation,
+  provider retention rights, or external endpoint was verified.
+
+The local release pipeline passed on commit
+`80b9a9203b890707d0866e3a6c9044fad7d87e89`:
+`tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` completed with exit 0.
+All configured checks passed, the production bundle and 19-check mock
+integration suite passed, and generated app/notebook/source archives, manifest,
+checksums and the verification report passed both staged and simulated
+post-download validation. This is local evidence only; no GitHub workflow,
+tag or publication was executed. The report retains the unverified live model,
+Kaggle, Docker, provider, external endpoint and real-browser limits.
+
+## 2026-10-20 – v0.1.0-dev4 audit completion: streaming probe, tool prompt, E2E tool loop
+
+### Original intent and audit result
+
+The dev4 implementation from the earlier entry was re-audited requirement by
+requirement on branch `arena/bef31f06-kaggle-kit` (base commit `0fce9de`,
+which was already open as PR #9 with green CI). The audit confirmed the
+server-governed tool loop, seven tool categories, SecretStore v2, approvals,
+persistence rules and timeline were implemented and tested. Five gaps were
+found and fixed in commit `63c8c31`:
+
+1. **Prompt truthfulness.** The recommended Qwen prompt still said "You have
+   no tools here", contradicting a verified tool profile. The base prompt is
+   unchanged (it stays truthful for ordinary chat and keeps its research
+   mirror). A derived tool-use variant (`qwen-selfhosted-tools-v1`) replaces
+   that exact sentence and appends tool rules (schema arguments, untrusted
+   output, real-source citations, approvals, bounded loops, honest final
+   answers). The profile editor offers both; the server tool loop also
+   neutralizes the known sentence so a tool list is never sent with it.
+2. **Streamed tool calls.** Previously streaming tool deltas were only
+   documented as unverified, with no fragment handling at all.
+   `shared/api/stream.ts` now extracts `delta.tool_calls` fragments and
+   assembles them per index (`ToolCallAccumulator`): partial argument JSON
+   is concatenated, never parsed or executed, bounds are enforced, and a
+   call is only "announced" with `finish_reason=tool_calls`. The capability
+   probe runs a third, streamed stage with the same harmless no-op function
+   and reports `streamingSupported` independently; a streaming failure never
+   downgrades proven non-streaming support. Tool rounds stay non-streaming
+   by design so approvals can pause between rounds.
+3. **Settings completeness.** The bounded-execution card lacked the maximum
+   tool input size, and the sandbox card had no resource controls. Both are
+   now editable within the same bounds the server enforces (sandbox:
+   timeout 1–60 s, memory 64–2048 MiB, CPU 0.1–2 cores, processes 1–128,
+   output 256–32768 bytes). Isolation remains fixed to strict because that
+   is what the Docker backend enforces; weaker modes are not offered.
+4. **Integration depth.** The built-bundle check never exercised the tool
+   loop. The mock upstream now speaks deterministic native tool calls
+   (probe function, `calculate:`, `run code:`, streamed fragments), and
+   `tools/integration-check.mjs` drives profile storage, the unverified
+   409 refusal, the probe (both stages), an automatic calculator round
+   trip, a denied code approval and approval-replay refusal (28 checks).
+5. **Troubleshooting documentation.** `docs/troubleshooting.md` had no tool
+   coverage; a Tools section now documents probe states, approvals, limits,
+   Brave, Docker, MCP re-grants, HTTP policy refusals, uploads and
+   persistence.
+
+### Alternatives considered
+
+* Executing tool rounds over streaming once `streamingSupported` is true:
+  rejected for this release. The approval pause points make streamed rounds
+  substantially more complex, and no live endpoint was available to verify
+  real streamed tool behaviour. The protocol layer and probe now verify the
+  capability honestly without claiming the loop uses it.
+* Rewriting the base Qwen prompt to be tool-aware: rejected. It would make
+  the default prompt false for the majority (ordinary chat) case and break
+  the character-for-character research mirror. Derivation keeps one source.
+* A regex/prose fallback protocol for endpoints without native tool calls:
+  still rejected, unchanged from the earlier entry. No fallback can be made
+  deterministic enough to execute safely.
+
+### Validation on commit `63c8c31`
+
+* `npm run typecheck` and `npm run lint`: passed.
+* `npm test`: Vitest **42 files, 356 tests passed** (12 new: fragment
+  assembly, streaming probe success/failure, prompt variant, no-tools
+  neutralization in the tool loop).
+* Notebook tests: **39 passed, 7 skipped**; release-tool tests: **18
+  passed**.
+* `npm run build`: passed (existing >500 kB chunk advisory only).
+* `npm run check:integration`: **28/28 passed** against the built bundle.
+* `git diff --check`: passed.
+* `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4`: exit 0; archives,
+  manifest, checksums and verification report validated, including the
+  simulated downloaded-asset check.
+
+### Unresolved / unverified
+
+Unchanged and explicitly recorded in the release notes: no live Kaggle
+endpoint, model weights, tunnel, Docker runtime, Brave account, live MCP or
+HTTP service, or real-browser audit was available. Mock-based verification
+proves the local protocol, policy and orchestration; it does not prove the
+deployed model's tool behaviour. Capability therefore remains
+`not_verified` until the operator's probe succeeds on the live profile.
+
+## 2026-10-20 – v0.1.0-dev4 published
+
+* Final implementation/log commit `0d3a7424730b7454abfc234bd9bb192627da5795`
+  passed a second full `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4`
+  (exit 0; 28/28 integration checks; staged and simulated-download
+  validation valid) before being tagged.
+* PR [#10](https://github.com/coderunknow/Kaggle-Kit/pull/10) against `main`
+  is open and unmerged (mergeable; CI green). PR #9 was closed as superseded
+  because it contained only the pre-audit commit, which is an ancestor of
+  the #10 branch.
+* Tag `v0.1.0-dev4` (lightweight) points at `0d3a742`. Release workflow
+  [run 39414208382](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39414208382)
+  succeeded, including "Verify the published release" (download +
+  checksum/manifest validation of every asset).
+* Prerelease (published 2026-10-20T11:21:27Z):
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev4> with
+  six assets — `v0.1.0-dev4-notebook.ipynb` (83 561 B),
+  `v0.1.0-dev4-app.zip` (1 925 281 B), `v0.1.0-dev4-source.zip`
+  (767 600 B), `manifest.json`, `SHA256SUMS`, `verification-report.json`.
+  Sizes for the notebook and app bundle match the local dry-run staging.
+  The sandbox cannot download from `release-assets.githubusercontent.com`
+  (EOF), so asset digests were verified by the workflow step, not locally.
+* Publication does not change the unverified list: no live Kaggle endpoint,
+  model weights, Docker isolation, Brave account, external MCP/HTTP service
+  or real-browser test has run. Tool capability on any real endpoint stays
+  `not_verified` until the operator runs the probe.
+
+## 2026-10-20 – Full audit remediation and v0.1.0-dev5 preparation
+
+A whole-repository audit of v0.1.0-dev4 (workflows, shared protocol, backend,
+tool authorization, secrets, UI/state/persistence, launchers, notebook,
+release tooling, tests, docs) was executed on the PR #10 branch, and every
+confirmed finding was fixed with regression tests. The published
+`v0.1.0-dev4` tag/release at `0d3a742` was not moved or modified; PR #10
+remains open and unmerged.
+
+### Confirmed defects fixed (verified by tests/CI as noted)
+
+1. **P0 – release workflow shell injection.** `release.yml` interpolated the
+   untrusted tag into shell source before validation. All `${{ }}` values now
+   reach shells only via `env:`; the tag is fully validated before any path,
+   Git or publish use; checked-out commit, `package.json`, notes, manifest
+   and checksums must agree. Actions are full-SHA pinned; permissions are
+   least-privilege. `tools/test_workflow_security.py` proves hostile tags
+   cannot execute shell, alter outputs or influence the release early.
+2. **P1 – proxy DNS rebinding.** The model proxy validated only hostnames.
+   All server-side upstream paths now use `server/pinnedFetch.ts`: the
+   complete DNS answer is validated at connect time (link-local/metadata
+   always refused; hostname→loopback refused; private answers refused under
+   `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`; literal local endpoints and default
+   LAN names preserved; SNI/Host unchanged). A side fix gave non-streaming
+   chat the redirect destination validation it had skipped.
+3. **P1 – sandbox orphan containers.** Stopping a Python run signalled only
+   the Docker CLI; SIGKILL cannot be forwarded, so containers could outlive
+   the run. Containers are now named and force-removed on every stop path,
+   and code is fed on stdin instead of argv. A real-Docker CI job runs the
+   app's execution path (success, bounded output, timeout/abort cleanup,
+   fail-closed without the image) and passes.
+4. **P1 – origin policy trusted any Host.** A rebinding domain presenting
+   matching Host/Origin passed the CSRF check. Self-origin is auto-trusted
+   only for loopback hosts; other serving origins require
+   `KAGGLE_KIT_ALLOWED_ORIGINS`.
+5. **P1 – approvals not bound to credential values.** Rotating a secret while
+   an approval was pending would execute the approved call under the new
+   credential. Approvals now carry a fingerprint of the credential values and
+   are refused (409) on rotation.
+6. **P2 – approval UI understandability.** Approvals showed a generic tool
+   description with arguments collapsed. They now show an operation-specific
+   summary (method + endpoint, code size + first line, search query, URL)
+   with arguments expanded.
+7. **P2 – static symlink escape.** Lexical containment only; canonical-path
+   containment added with a regression test.
+8. **P2 – unverified notebook binaries.** llama.cpp release tarballs are now
+   verified against SHA-256 digests pinned from the GitHub API; mismatch
+   aborts before extraction/execution. Key/state files are `0600` from
+   creation.
+9. **P2 – bundle size.** Measured entry chunk 710,229 B; after lazy
+   Settings/Markdown splitting it is 307,923 B (gzip ≈ 93 kB), no chunk
+   ≥ 500 kB, advisory gone.
+
+### Reviewed and found sound (no change)
+
+SecretStore v1→v2 migration/permissions/ref validation, file-vault lifetime
+and conversation scoping, browser storage sanitization and export shape,
+launcher argument handling (Windows `npm` shell use is fixed-argument),
+release tooling validation suite, tool protocol state machine (probes,
+correlation, budgets, replay/expiry already covered by the existing tests).
+
+### Corrections to earlier records
+
+The dev4 entries reporting the notebook suite as "39 passed, 7 skipped" were
+inaccurate: unittest counts skipped tests inside "Ran 39", so locally without
+the `requests` package only 32 tests actually ran. The 7 gated tests are the
+`RangeServerTests` class (`skipUnless(REQUESTS_READY)`); with `requests`
+installed they run and pass locally (43 total after the new checksum tests)
+and have always run in CI. No test was unskipped or weakened.
+
+### Residual risks (documented, not fixed here)
+
+Hugging Face model fetch uses `resolve/main` and `cloudflared` uses the
+`latest` URL (HTTPS, unpinned) — pinning either changes model/tunnel
+defaults and requires live Kaggle evidence first. A LAN hostname resolving to
+a private address is reachable by default (intended for local servers);
+`KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1`/`KAGGLE_KIT_ALLOWED_HOSTS` close it.
+
+### Verification state legend
+
+Implemented **and runtime-verified**: workflow boundary, DNS pinning (real
+loopback sockets + injected DNS), sandbox lifecycle (real Docker in CI),
+origin policy, credential-bound approvals, approval summaries, symlink
+refusal, notebook checksum logic (unit), code splitting (build output),
+browser flows incl. approval/denial (Playwright/Chromium in CI), Windows
+launcher (windows-latest in CI). **Implemented, not runtime-verified**: the
+notebook checksum path on live Kaggle hardware. **Blocked / not run**: live
+Kaggle endpoint and model weights, Brave account, live MCP/HTTP services —
+no such credentials/endpoints exist in this environment; failure and
+missing-credential paths are covered by tests.
+
+## 2026-10-20 – v0.1.0-dev5 published
+
+* Release commit `df699bdcdb629a3ce0cdf4f5aa3a11f5f0967536` passed the full
+  required suite on the exact HEAD (typecheck, lint, Vitest 43 files/373
+  tests, build, integration 28/28, notebooks 43/0-skipped, tools 25,
+  `git diff --check`, `npm audit` 0 vulnerabilities) and
+  `tools/release-dry-run.sh 0.1.0-dev5 v0.1.0-dev5` (valid in staged and
+  simulated-download validation). All CI jobs on that commit passed,
+  including the new `docker sandbox integration`, `windows launcher` and
+  `Browser end-to-end` jobs (run 39421934675).
+* Tag `v0.1.0-dev5` (lightweight) points at `df699bd`; release workflow
+  [run 39422153705](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39422153705)
+  succeeded including published-release verification. Prerelease published
+  2026-10-20T12:26:56Z:
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev5> with
+  six assets whose sizes match the local dry-run staging exactly
+  (app 2 150 258 B, notebook 87 038 B, source 795 886 B).
+* `v0.1.0-dev4` remains unchanged at `0d3a742` (verified via API after the
+  dev5 publication); PR #10 remains open and unmerged. This entry is a
+  docs-only commit after the tag; the tag was not moved.

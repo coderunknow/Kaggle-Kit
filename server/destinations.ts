@@ -13,10 +13,13 @@
  *    default because the primary use case is a `llama-server` on
  *    `127.0.0.1` or a private LAN address.
  *
- * The checks work on the host name of the URL. A host name that resolves to a
- * private address (DNS rebinding) is not detected here – that is why the
- * allow list is the recommended control for a proxy that is reachable from
- * another machine.
+ * The checks here work on the host name of the URL. DNS rebinding (a name
+ * that resolves differently at connect time) is handled at the socket by
+ * `pinnedFetch.ts`, which validates the complete DNS answer before dialing
+ * and refuses loopback/metadata answers for non-literal host names. The
+ * allow list remains the strongest control for a proxy that is reachable
+ * from another machine, because it also covers intentional private LAN
+ * destinations that the default policy deliberately permits.
  */
 
 import { ApiError } from '../shared/api/errors';
@@ -55,12 +58,47 @@ export function hostnameMatches(pattern: string, host: string): boolean {
 
 const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
+/** Unwrap an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its IPv4 form. */
+export function unwrapMappedAddress(address: string): string {
+  const normalized = normalizeHostname(address);
+  if (normalized.startsWith('::ffff:')) {
+    const mapped = normalized.slice('::ffff:'.length);
+    if (IPV4_PATTERN.test(mapped)) return mapped;
+  }
+  return normalized;
+}
+
+/** True for loopback in any spelling (127.0.0.0/8, ::1, mapped forms). */
+export function isLoopbackAddress(host: string): boolean {
+  const normalized = unwrapMappedAddress(host);
+  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
+  const ipv4 = IPV4_PATTERN.exec(normalized);
+  return Boolean(ipv4 && Number.parseInt(ipv4[1]!, 10) === 127);
+}
+
+const METADATA_ADDRESSES = new Set(['169.254.169.254', '100.100.100.200', 'fd00:ec2::254']);
+
+/**
+ * True for link-local and cloud-metadata destinations. A model endpoint is
+ * never legitimately served from these ranges, so the proxy refuses them
+ * even in the permissive local configuration.
+ */
+export function isLinkLocalOrMetadata(host: string): boolean {
+  const normalized = unwrapMappedAddress(host);
+  if (METADATA_ADDRESSES.has(normalized)) return true;
+  const ipv4 = IPV4_PATTERN.exec(normalized);
+  if (ipv4) {
+    return Number.parseInt(ipv4[1]!, 10) === 169 && Number.parseInt(ipv4[2]!, 10) === 254;
+  }
+  return /^fe[89ab][0-9a-f]:/.test(normalized);
+}
+
 /** True when the host is an address in a range that is not reachable publicly. */
 export function isPrivateAddress(host: string): boolean {
-  const normalized = normalizeHostname(host);
+  const normalized = unwrapMappedAddress(host);
 
   if (normalized === 'localhost' || normalized.endsWith('.localhost')) return true;
-  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
+  if (normalized === '::' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
 
   const ipv4 = IPV4_PATTERN.exec(normalized);
   if (ipv4) {

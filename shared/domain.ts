@@ -5,6 +5,13 @@
 import type { InferenceParams, ServerCapabilities } from './api/requests';
 import type { ApiErrorKind } from './api/errors';
 import type { TokenUsage } from './api/types';
+import type {
+  ConversationToolSettings,
+  ToolProfileSettings,
+  ToolTraceRecord,
+  UploadedFileReference,
+  SourceCitation,
+} from './tools/types';
 
 /**
  * How the API key for a profile is handled.
@@ -33,6 +40,8 @@ export interface ApiProfile {
   defaultParams: InferenceParams;
   createdAt: string;
   updatedAt: string;
+  /** Backward compatible: absent on profiles created before tool settings. */
+  tools?: ToolProfileSettings;
 }
 
 export type MessageStatus = 'pending' | 'complete' | 'cancelled' | 'error';
@@ -63,6 +72,18 @@ export interface ChatMessage {
    * the answer was fetched with a regular request instead.
    */
   streamFellBack?: boolean;
+  /** Runtime tool trace; persistence is filtered by the conversation policy. */
+  toolTrace?: ToolTraceRecord[];
+  /** Server job used only while a specific approval is pending; never persisted. */
+  toolJobId?: string;
+  /** Honest reason tool calls were skipped while ordinary chat still ran. */
+  toolNote?: string;
+  /** True when generated from retention-restricted provider results; never saved verbatim. */
+  transientToolContent?: boolean;
+  /** Real, retrieved source URLs; never inferred from generated prose. */
+  sourceCitations?: SourceCitation[];
+  /** Metadata only. File bytes and extracted contents stay in the proxy's memory vault. */
+  attachments?: UploadedFileReference[];
 }
 
 export interface Conversation {
@@ -72,6 +93,12 @@ export interface Conversation {
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+  /** Optional conversation-level tightening; older conversations omit this. */
+  toolSettings?: ConversationToolSettings;
+  /** Profile defaults copied at first tool use, used to filter persistence. */
+  toolHistoryPersistence?: boolean;
+  /** In-memory file metadata only; extracted file contents stay in proxy memory. */
+  uploadedFiles?: UploadedFileReference[];
 }
 
 export const THEMES = ['system', 'light', 'dark'] as const;

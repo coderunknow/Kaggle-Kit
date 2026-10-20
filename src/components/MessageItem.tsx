@@ -7,19 +7,27 @@
  * are never presented as complete.
  */
 
-import { memo, useState } from 'react';
+import { lazy, memo, Suspense, useState } from 'react';
 
 import { describeErrorKind } from '../../shared/api/errors';
 import type { ChatMessage } from '../../shared/domain';
+import type { SourceCitation, ToolTraceRecord } from '../../shared/tools/types';
 import { formatMessageTime } from '../lib/id';
-import { Markdown } from './Markdown';
 import { Icon } from './ui';
+
+// react-markdown + highlighting is the heaviest client dependency; it loads
+// as its own chunk on the first assistant message instead of blocking the
+// initial chat paint. The fallback renders the same text unformatted.
+const Markdown = lazy(() =>
+  import('./Markdown').then((module) => ({ default: module.Markdown })),
+);
 
 export interface MessageItemProps {
   message: ChatMessage;
   isLast: boolean;
   /** A request is running for this conversation. */
   disabled: boolean;
+  onToolApproval: (messageId: string, approvalId: string, approved: boolean) => void;
   onCopy: (message: ChatMessage) => Promise<boolean>;
   onEdit: (messageId: string, content: string) => void;
   onRetry: (messageId: string) => void;
@@ -52,10 +60,99 @@ function stopReasonLabel(message: ChatMessage): string | null {
   return null;
 }
 
+const TOOL_STATUS_LABELS: Record<ToolTraceRecord['status'], string> = {
+  requested: 'Requested',
+  awaiting_approval: 'Waiting for your approval',
+  approved: 'Approved',
+  running: 'Running',
+  succeeded: 'Completed',
+  failed: 'Failed',
+  denied: 'Denied; not run',
+  cancelled: 'Cancelled',
+  interrupted: 'Interrupted',
+};
+
+function CitationList({ citations }: { citations: SourceCitation[] }) {
+  if (citations.length === 0) return null;
+  return (
+    <section className="source-citations" aria-label="Retrieved sources">
+      <strong>Retrieved sources</strong>
+      <ol>
+        {citations.map((citation) => (
+          <li key={citation.url}>
+            <a href={citation.url} target="_blank" rel="noopener noreferrer">
+              {citation.title || citation.publisher || citation.url}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ToolTimeline({
+  message,
+  disabled,
+  onApproval,
+}: {
+  message: ChatMessage;
+  disabled: boolean;
+  onApproval: MessageItemProps['onToolApproval'];
+}) {
+  const trace = message.toolTrace ?? [];
+  if (trace.length === 0 && !message.sourceCitations?.length) return null;
+  return (
+    <div className="tool-timeline">
+      {trace.length > 0 ? (
+        <details open={message.status === 'pending' && trace.some((entry) => entry.status === 'awaiting_approval')}>
+          <summary>Tool activity ({trace.length})</summary>
+          <ol className="tool-timeline__list">
+            {trace.map((entry) => {
+              const canApprove = entry.status === 'awaiting_approval' && Boolean(entry.approvalId && message.toolJobId);
+              return (
+                <li key={entry.id} className="tool-timeline__item">
+                  <div className="tool-timeline__heading">
+                    <strong>{entry.toolName}</strong>
+                    <span role="status">{TOOL_STATUS_LABELS[entry.status]}</span>
+                  </div>
+                  {entry.target ? <code className="tool-timeline__target">{entry.target}</code> : null}
+                  {entry.resultSummary ? <p>{entry.resultSummary}</p> : null}
+                  {entry.error ? <p className="field__error">{entry.error}</p> : null}
+                  {Object.keys(entry.safeArguments).length > 0 ? (
+                    <details className="tool-timeline__arguments" open={canApprove}>
+                      <summary>Review bounded arguments</summary>
+                      <pre>{JSON.stringify(entry.safeArguments, null, 2)}</pre>
+                    </details>
+                  ) : null}
+                  {canApprove ? (
+                    <div className="tool-timeline__approval" aria-label={`Approval for ${entry.toolName}`}>
+                      <p>This exact operation has not run. Approving authorizes this call only.</p>
+                      <div className="row">
+                        <button type="button" className="button button--primary button--small" disabled={disabled && !canApprove} onClick={() => onApproval(message.id, entry.approvalId!, true)}>
+                          Approve once
+                        </button>
+                        <button type="button" className="button button--small button--danger" disabled={disabled && !canApprove} onClick={() => onApproval(message.id, entry.approvalId!, false)}>
+                          Deny
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
+        </details>
+      ) : null}
+      <CitationList citations={message.sourceCitations ?? []} />
+    </div>
+  );
+}
+
 function MessageItemImpl({
   message,
   isLast,
   disabled,
+  onToolApproval,
   onCopy,
   onEdit,
   onRetry,
@@ -176,7 +273,9 @@ function MessageItemImpl({
           ) : isUser ? (
             <p className="msg__text">{message.content}</p>
           ) : hasContent ? (
-            <Markdown content={message.content} streaming={isPending} />
+            <Suspense fallback={<p className="msg__text">{message.content}</p>}>
+              <Markdown content={message.content} streaming={isPending} />
+            </Suspense>
           ) : null}
 
           {isPending ? (
@@ -223,6 +322,20 @@ function MessageItemImpl({
             </div>
           ) : null}
 
+          {message.toolNote ? (
+            <p className="msg__fallback" role="status">
+              <Icon name="info" size={12} />
+              {message.toolNote}
+            </p>
+          ) : null}
+
+          {message.transientToolContent ? (
+            <p className="msg__fallback" role="status">
+              <Icon name="info" size={12} />
+              This answer and later assistant replies based on it are visible in this session only. They will not be saved or exported unless you confirm Brave retention rights and enable tool-history persistence.
+            </p>
+          ) : null}
+
           {message.streamFellBack && message.status === 'complete' ? (
             <p className="msg__fallback">
               <Icon name="info" size={12} />
@@ -245,6 +358,8 @@ function MessageItemImpl({
             <pre>{message.reasoning}</pre>
           </details>
         ) : null}
+
+        <ToolTimeline message={message} disabled={disabled} onApproval={onToolApproval} />
 
         {!editing ? (
           <div className="msg__actions">

@@ -6,7 +6,7 @@
 #
 # Trigger: a push of a version tag (`v*`).
 #
-#   git tag v0.1.0-dev3 <commit> && git push origin v0.1.0-dev3
+#   git tag v0.1.0-dev4 <commit> && git push origin v0.1.0-dev4
 #
 # The assets of a release are:
 #
@@ -48,16 +48,20 @@ jobs:
 
     steps:
       - name: Check out the tagged commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Resolve the release metadata
         id: meta
+        env:
+          # Untrusted workflow input / ref data reaches the shell ONLY as an
+          # environment value (data), never interpolated into shell source.
+          RAW_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RAW_TAG"
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "The tag '$TAG' is not a version tag (v<major>.<minor>.<patch>[-<suffix>])." >&2
             exit 1
@@ -89,13 +93,13 @@ jobs:
           echo "Releasing $TAG from $SOURCE_SHA"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -127,11 +131,12 @@ jobs:
 
       - name: Stage the release artifacts
         id: stage
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.meta.outputs.version }}"
-          TAG="${{ steps.meta.outputs.tag }}"
-          SOURCE_SHA="${{ steps.meta.outputs.source_sha }}"
           STAGE="release"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
@@ -201,13 +206,17 @@ jobs:
           ls -la "$STAGE"
 
       - name: Validate the staged artifacts
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
         run: |
           set -euo pipefail
           python3 tools/validate_release.py \
             --stage release \
-            --version "${{ steps.meta.outputs.version }}" \
-            --tag "${{ steps.meta.outputs.tag }}" \
-            --source-sha "${{ steps.meta.outputs.source_sha }}"
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA"
 
       - name: Publish the GitHub prerelease
         id: publish
@@ -266,6 +275,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -290,7 +300,7 @@ jobs:
 
           python3 tools/validate_release.py \
             --stage release \
-            --version "${{ steps.meta.outputs.version }}" \
+            --version "$VERSION" \
             --tag "$TAG" \
             --source-sha "$SOURCE_SHA" \
             --downloaded downloaded

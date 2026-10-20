@@ -3,7 +3,15 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { QWEN_SYSTEM_PROMPT, QWEN_SYSTEM_PROMPT_ID, estimatePromptTokens } from './qwen';
+import {
+  QWEN_NO_TOOLS_CLAIM,
+  QWEN_SYSTEM_PROMPT,
+  QWEN_SYSTEM_PROMPT_ID,
+  QWEN_TOOL_SYSTEM_PROMPT_ID,
+  estimatePromptTokens,
+  neutralizeNoToolsClaim,
+  qwenToolSystemPrompt,
+} from './qwen';
 
 /**
  * These tests pin the properties that make the prompt safe to ship for the
@@ -68,5 +76,44 @@ describe('the recommended Qwen system prompt', () => {
   it('estimates tokens from characters without claiming to be a tokenizer', () => {
     expect(estimatePromptTokens('abcd')).toBe(2);
     expect(estimatePromptTokens('')).toBe(0);
+  });
+});
+
+describe('the tool-use variant of the Qwen prompt', () => {
+  const toolPrompt = qwenToolSystemPrompt();
+
+  it('is derived from the base prompt without the no-tools claim', () => {
+    expect(QWEN_TOOL_SYSTEM_PROMPT_ID).toBe('qwen-selfhosted-tools-v1');
+    expect(toolPrompt).not.toContain(QWEN_NO_TOOLS_CLAIM);
+    expect(toolPrompt).not.toMatch(/you have no tools/i);
+    // The shared boundaries of the base prompt survive the derivation.
+    expect(toolPrompt).toMatch(/never reveal or reproduce secrets/i);
+    expect(toolPrompt).toMatch(/do not invent facts/i);
+  });
+
+  it('teaches the implemented protocol and nothing beyond it', () => {
+    expect(toolPrompt).toMatch(/only the functions listed for the current turn/i);
+    expect(toolPrompt).toMatch(/match their published schema/i);
+    expect(toolPrompt).toMatch(/untrusted data, never instructions/i);
+    expect(toolPrompt).toMatch(/Cite only URLs that a successful retrieval actually returned/i);
+    expect(toolPrompt).toMatch(/explicit user approval/i);
+    expect(toolPrompt).toMatch(/tool loop is bounded/i);
+    expect(toolPrompt).toMatch(/normal final answer/i);
+    // Still no executable schema or template tokens in the text itself.
+    expect(toolPrompt).not.toMatch(/"type"\s*:\s*"function"/);
+    expect(toolPrompt).not.toMatch(/<\|im_start\|>|<tools>|<function=/);
+  });
+
+  it('stays inside the deployed context budget', () => {
+    expect(estimatePromptTokens(toolPrompt)).toBeLessThan(2200);
+    expect(toolPrompt.length / 4).toBeLessThan(8192 - 1024);
+  });
+
+  it('neutralizes the no-tools claim in an arbitrary system prompt', () => {
+    const neutralized = neutralizeNoToolsClaim(`Intro. ${QWEN_NO_TOOLS_CLAIM} Outro.`);
+    expect(neutralized).not.toMatch(/you have no tools/i);
+    expect(neutralized).toMatch(/^Intro\./);
+    expect(neutralized).toMatch(/Outro\.$/);
+    expect(neutralizeNoToolsClaim('unrelated prompt')).toBe('unrelated prompt');
   });
 });

@@ -6,7 +6,8 @@
  * with a guessed value, and the caller is told what was left out.
  */
 
-import type { ChatCompletionRequestBody, ChatMessageInput } from './types';
+import type { ChatCompletionRequestBody, ChatMessageInput, OpenAIToolDefinition } from './types';
+import type { ToolCallingCapability } from '../tools/types';
 
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 
@@ -31,6 +32,8 @@ export interface ServerCapabilities {
   reasoningEffortSupported: boolean;
   /** Optional human readable note, e.g. "configured at server startup". */
   notes: string[];
+  /** Independent native tool-calling probe result; never inferred from connection health. */
+  toolCalling?: ToolCallingCapability;
 }
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
@@ -48,6 +51,7 @@ export interface BuildChatBodyInput {
   messages: ChatMessageInput[];
   params: InferenceParams;
   capabilities?: ServerCapabilities;
+  tools?: OpenAIToolDefinition[];
 }
 
 export interface BuildChatBodyResult {
@@ -89,11 +93,28 @@ export function buildChatCompletionBody(input: BuildChatBodyInput): BuildChatBod
     }
   }
 
+  const toolCallingReady = Boolean(
+    input.tools && input.tools.length > 0 && capabilities?.toolCalling?.status === 'supported_verified',
+  );
+
   if (params.stream) {
-    if (capabilities?.streamingVerified) {
+    if (capabilities?.streamingVerified && !toolCallingReady) {
       body.stream = true;
+    } else if (toolCallingReady) {
+      omitted.push('stream (tool turns use non-streaming requests; streamed tool-call support is reported separately by the capability probe)');
     } else {
       omitted.push('stream');
+    }
+  }
+
+  if (input.tools && input.tools.length > 0) {
+    if (toolCallingReady) {
+      body.tools = input.tools.map(({ type, function: fn }) => ({ type, function: fn }));
+      body.tool_choice = 'auto';
+      // Tool execution is sequential by default. The app does not rely on model-side parallelism.
+      body.parallel_tool_calls = false;
+    } else {
+      omitted.push('tools');
     }
   }
 

@@ -14,7 +14,6 @@ import fsp from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 
-import { OpenAIClient } from '../shared/api/client';
 import { ApiError, redactSecrets } from '../shared/api/errors';
 import { joinApiPath } from '../shared/api/url';
 import type { ChatCompletionRequestBody, ChatMessageInput } from '../shared/api/types';
@@ -30,6 +29,12 @@ import {
   watchForDisconnect,
 } from './requestPolicy';
 import { SecretStore } from './secrets';
+import { FileVault, MAX_UPLOAD_BYTES, FileProcessingError } from './tools/files';
+import { ToolExecutor, ToolExecutionError } from './tools/executor';
+import { ToolChatService, validateToolChatMessages } from './tools/chat';
+import { discoverMcpTools, McpConnectionError } from './tools/mcp';
+import { grantMcpServer, sanitizeToolProfileForStorage, ToolPolicyError } from './tools/policy';
+import { WebToolError } from './tools/web';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -58,6 +63,8 @@ export interface App {
   logger: Logger;
   store: SecretStore;
   proxy: ProxyService;
+  files: FileVault;
+  toolChat: ToolChatService;
 }
 
 export function createApp(options: AppOptions = {}): App {
@@ -65,6 +72,9 @@ export function createApp(options: AppOptions = {}): App {
   const logger = options.logger ?? createLogger({ verbose: config.verbose });
   const store = new SecretStore(config.secretsFile);
   const proxy = new ProxyService(config, store, logger);
+  const files = new FileVault();
+  const toolExecutor = new ToolExecutor(store, proxy, files, logger);
+  const toolChat = new ToolChatService(store, proxy, toolExecutor);
 
   const server = http.createServer((request, response) => {
     void handleRequest(request, response).catch((error: unknown) => {
@@ -139,10 +149,11 @@ export function createApp(options: AppOptions = {}): App {
           const body = await readJsonBody(request, config.maxBodyBytes);
           const reference = typeof body.ref === 'string' ? body.ref.trim() : '';
           const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
-          if (!reference) throw new HttpError(400, 'A reference for the key is required.');
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(reference)) throw new HttpError(400, 'The key reference must contain 1–128 safe identifier characters.');
           if (!apiKey) throw new HttpError(400, 'The API key must not be empty.');
+          if (apiKey.length > 16_384) throw new HttpError(413, 'The key is too long to store.');
           await store.set(reference, apiKey);
-          logger.info('Stored an API key in the local secret store', { ref: reference });
+          logger.info('Stored an API key in the local secret store');
           sendJson(response, 200, { ok: true, ref: reference });
           return;
         }
@@ -182,6 +193,146 @@ export function createApp(options: AppOptions = {}): App {
           return;
         }
 
+        case 'POST /api/tools/capability': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const result = await proxy.probeToolCalling(readTarget(body), {
+            model: readOptionalString(body, 'model'),
+            timeoutMs: readTimeout(body),
+            force: true,
+          });
+          sendJson(response, 200, result);
+          return;
+        }
+
+        case 'GET /api/tools/profile': {
+          const profileId = readQueryId(url, 'profileId');
+          sendJson(response, 200, { settings: await store.getToolProfile(profileId) });
+          return;
+        }
+
+        case 'DELETE /api/tools/profile': {
+          const profileId = readQueryId(url, 'profileId');
+          const deleted = await store.deleteToolProfile(profileId);
+          sendJson(response, deleted ? 200 : 404, { ok: deleted });
+          return;
+        }
+
+        case 'PUT /api/tools/profile': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const profileId = readId(body, 'profileId');
+          const previous = await store.getToolProfile(profileId);
+          const settings = sanitizeToolProfileForStorage(body.settings, previous);
+          await assertToolSecretsExist(settings, store);
+          await store.setToolProfile(profileId, settings, { preserveGrantedMcpServers: true });
+          sendJson(response, 200, { ok: true, settings });
+          return;
+        }
+
+        case 'POST /api/tools/mcp/discover': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const profileId = readId(body, 'profileId');
+          const serverId = readId(body, 'serverId');
+          const settings = await store.getToolProfile(profileId);
+          const serverSetting = settings?.mcpServers.find((entry) => entry.id === serverId);
+          if (!settings || !serverSetting) throw new HttpError(404, 'The configured MCP server was not found.');
+          const headers = await resolveStoredHeaders(serverSetting.headers ?? [], store, logger);
+          const tools = await discoverMcpTools(serverSetting, { headers, timeoutMs: serverSetting.timeoutMs });
+          const mcpServers = settings.mcpServers.map((entry) => entry.id === serverId
+            ? { ...entry, enabled: false, confirmed: false, tools }
+            : entry);
+          const updated = { ...settings, mcpServers };
+          await store.setToolProfile(profileId, updated, { preserveGrantedMcpServers: true });
+          sendJson(response, 200, { tools, granted: false, message: 'Tools were discovered but not granted. Review the list and explicitly grant the connection.' });
+          return;
+        }
+
+        case 'POST /api/tools/mcp/grant': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const profileId = readId(body, 'profileId');
+          const serverId = readId(body, 'serverId');
+          const settings = await store.getToolProfile(profileId);
+          if (!settings) throw new HttpError(404, 'The tool profile was not found.');
+          const granted = grantMcpServer(settings, serverId);
+          await store.setToolProfile(profileId, granted, { preserveGrantedMcpServers: true });
+          sendJson(response, 200, { ok: true, settings: granted });
+          return;
+        }
+
+        case 'POST /api/tools/files/upload': {
+          const maxUploadBody = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 + 64_000;
+          const body = await readJsonBody(request, maxUploadBody);
+          const conversationId = readId(body, 'conversationId');
+          const name = readString(body, 'name');
+          const mediaType = readOptionalString(body, 'mediaType') ?? 'application/octet-stream';
+          const encoded = readString(body, 'contentBase64');
+          const bytes = decodeUpload(encoded);
+          const file = await files.upload({ name, mediaType, bytes, conversationId });
+          sendJson(response, 201, { file });
+          return;
+        }
+
+        case 'GET /api/tools/files': {
+          const conversationId = readQueryId(url, 'conversationId');
+          sendJson(response, 200, { files: files.list(conversationId) });
+          return;
+        }
+
+        case 'DELETE /api/tools/files': {
+          const conversationId = readQueryId(url, 'conversationId');
+          files.removeConversation(conversationId);
+          sendJson(response, 200, { ok: true });
+          return;
+        }
+
+        case 'POST /api/tools/chat': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const controller = new AbortController();
+          const stopWatching = watchForDisconnect(response, () => controller.abort());
+          try {
+            const parsed = parseInferenceParams(body.params);
+            const result = await toolChat.start({
+              profileId: readId(body, 'profileId'),
+              conversationId: readId(body, 'conversationId'),
+              target: readTarget(body),
+              model: readString(body, 'model'),
+              messages: validateToolChatMessages(body.messages),
+              params: parsed.params,
+              timeoutMs: readTimeout(body),
+              ...(body.conversationSettings && typeof body.conversationSettings === 'object'
+                ? { conversationSettings: body.conversationSettings as never }
+                : {}),
+            }, controller.signal);
+            sendJson(response, 200, result);
+          } finally {
+            stopWatching();
+          }
+          return;
+        }
+
+        case 'POST /api/tools/approve': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const controller = new AbortController();
+          const stopWatching = watchForDisconnect(response, () => controller.abort());
+          try {
+            const result = await toolChat.approve({
+              jobId: readId(body, 'jobId'),
+              approvalId: readId(body, 'approvalId'),
+              approved: body.approved === true,
+            }, controller.signal);
+            sendJson(response, 200, result);
+          } finally {
+            stopWatching();
+          }
+          return;
+        }
+
+        case 'POST /api/tools/cancel': {
+          const body = await readJsonBody(request, config.maxBodyBytes);
+          const cancelled = toolChat.cancel(readId(body, 'jobId'));
+          sendJson(response, cancelled ? 200 : 404, { ok: cancelled });
+          return;
+        }
+
         default:
           break;
       }
@@ -204,6 +355,27 @@ export function createApp(options: AppOptions = {}): App {
           kind: error.kind,
           hint: error.hint,
         });
+        return;
+      }
+      if (error instanceof ToolPolicyError) {
+        sendError(response, 400, error.message, { kind: 'bad_request' });
+        return;
+      }
+      if (error instanceof FileProcessingError) {
+        sendError(response, 400, error.message, { kind: 'bad_request' });
+        return;
+      }
+      if (error instanceof McpConnectionError) {
+        sendError(response, 502, error.message, { kind: 'network' });
+        return;
+      }
+      if (error instanceof WebToolError) {
+        const status = error.kind === 'blocked' || error.kind === 'invalid' ? 400 : 502;
+        sendError(response, status, error.message, { kind: error.kind === 'blocked' || error.kind === 'invalid' ? 'bad_request' : 'network' });
+        return;
+      }
+      if (error instanceof ToolExecutionError) {
+        sendError(response, 400, error.message, { kind: 'bad_request' });
         return;
       }
       logger.error('API request failed', { message: error instanceof Error ? error.message : String(error) });
@@ -261,11 +433,7 @@ export function createApp(options: AppOptions = {}): App {
     const upstreamBody = proxy.buildUpstreamBody(model, messages, params, capabilities);
 
     if (!wantsStream) {
-      const client = new OpenAIClient({
-        baseUrl: resolved.baseUrl,
-        apiKey: resolved.apiKey,
-        timeoutMs,
-      });
+      const client = proxy.createClient(resolved.baseUrl, resolved.apiKey, timeoutMs);
       const completion = await client.chatCompletion(upstreamBody);
       sendJson(response, 200, { response: completion, model: completion.model ?? model });
       return;
@@ -298,7 +466,7 @@ export function createApp(options: AppOptions = {}): App {
 
     let upstream: Response;
     try {
-      upstream = await fetch(joinApiPath(resolved.baseUrl, '/chat/completions'), {
+      upstream = await proxy.pinnedFetch(joinApiPath(resolved.baseUrl, '/chat/completions'), {
         method: 'POST',
         headers,
         body: JSON.stringify({ ...upstreamBody, stream: true }),
@@ -409,7 +577,7 @@ export function createApp(options: AppOptions = {}): App {
     }
   }
 
-  return { server, config, logger, store, proxy };
+  return { server, config, logger, store, proxy, files, toolChat };
 }
 
 function readString(body: Record<string, unknown>, key: string): string {
@@ -425,6 +593,68 @@ function readOptionalString(body: Record<string, unknown>, key: string): string 
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed === '' ? undefined : trimmed;
+}
+
+function readId(body: Record<string, unknown>, key: string): string {
+  const value = readString(body, key).trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value)) throw new HttpError(400, `The field "${key}" is not a valid identifier.`);
+  return value;
+}
+
+function readQueryId(url: URL, key: string): string {
+  const value = url.searchParams.get(key) ?? '';
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value)) throw new HttpError(400, `The query parameter "${key}" is required and must be a valid identifier.`);
+  return value;
+}
+
+function readTarget(body: Record<string, unknown>): { baseUrl: string; apiKey?: string; secretRef?: string } {
+  return {
+    baseUrl: readString(body, 'baseUrl'),
+    ...(readOptionalString(body, 'apiKey') ? { apiKey: readOptionalString(body, 'apiKey') } : {}),
+    ...(readOptionalString(body, 'secretRef') ? { secretRef: readOptionalString(body, 'secretRef') } : {}),
+  };
+}
+
+function decodeUpload(encoded: string): Buffer {
+  const maximumEncodedLength = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
+  if (!encoded || encoded.length > maximumEncodedLength || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    throw new FileProcessingError('The upload payload is not valid base64 or exceeds the upload limit.');
+  }
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.byteLength > MAX_UPLOAD_BYTES || bytes.toString('base64') !== encoded) {
+    throw new FileProcessingError('The upload payload is not canonical base64 or exceeds the 4 MiB limit.');
+  }
+  return bytes;
+}
+
+async function assertToolSecretsExist(
+  settings: import('../shared/tools/types').ToolProfileSettings,
+  store: SecretStore,
+): Promise<void> {
+  const references = new Set<string>();
+  if (settings.web.provider === 'brave' && settings.web.secretRef) references.add(settings.web.secretRef);
+  for (const tool of settings.httpTools) for (const header of tool.headers) if (header.secretRef) references.add(header.secretRef);
+  for (const server of settings.mcpServers) for (const header of server.headers ?? []) if (header.secretRef) references.add(header.secretRef);
+  for (const reference of references) {
+    if (!await store.get(reference)) throw new HttpError(400, `A configured tool credential reference ("${reference}") is missing from the server-side secret store.`);
+  }
+}
+
+async function resolveStoredHeaders(
+  entries: Array<{ name: string; value?: string; secretRef?: string }>,
+  store: SecretStore,
+  logger: Logger,
+): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  for (const entry of entries) {
+    if (entry.secretRef) {
+      const secret = await store.get(entry.secretRef);
+      if (!secret) throw new HttpError(400, 'A configured MCP credential is missing from the server-side secret store.');
+      logger.registerSecret(secret);
+      headers[entry.name] = secret;
+    } else if (entry.value !== undefined) headers[entry.name] = entry.value;
+  }
+  return headers;
 }
 
 function readTimeout(body: Record<string, unknown>): number {
@@ -525,6 +755,18 @@ async function serveStatic(
     );
     return;
   }
+
+  // Lexical containment is not enough if the client directory contains a
+  // symlink that points outside it; compare canonical paths before reading.
+  const [realBase, realFile] = await Promise.all([
+    fsp.realpath(clientDir).catch(() => undefined),
+    fsp.realpath(filePath).catch(() => undefined),
+  ]);
+  if (!realBase || !realFile || (realFile !== realBase && !realFile.startsWith(`${realBase}${path.sep}`))) {
+    sendError(response, 403, 'Forbidden path.');
+    return;
+  }
+  filePath = realFile;
 
   const extension = path.extname(filePath).toLowerCase();
   const contentType = CONTENT_TYPES[extension] ?? 'application/octet-stream';

@@ -39,7 +39,18 @@ export function conversationToMarkdown(
   lines.push('');
   lines.push('---');
 
-  for (const message of conversation.messages) {
+  let transientToolContentSeen = false;
+  const messages = conversation.messages.map((message) => {
+    if (message.transientToolContent === true) transientToolContentSeen = true;
+    if (!transientToolContentSeen || message.role !== 'assistant') return message;
+    return {
+      ...message,
+      content: '[This tool-derived answer was not exported because tool-history persistence was off or provider retention rights were not confirmed.]',
+      reasoning: undefined,
+    };
+  });
+
+  for (const message of messages) {
     lines.push('');
     lines.push(message.role === 'user' ? '## You' : '## Assistant');
     lines.push('');

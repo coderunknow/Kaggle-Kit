@@ -138,6 +138,7 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
           streamingVerified: result.supported,
           reasoningEffortSupported: capabilities?.reasoningEffortSupported ?? false,
           notes: capabilities?.notes ?? [],
+          ...(capabilities?.toolCalling ? { toolCalling: capabilities.toolCalling } : {}),
         },
       });
     } catch (error) {

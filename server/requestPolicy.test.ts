@@ -27,6 +27,33 @@ describe('origin policy', () => {
     expect(result.allowed).toBe(true);
   });
 
+  it('refuses a DNS-rebinding self-origin (attacker Host and Origin agree)', () => {
+    // evil.test resolves to 127.0.0.1; the browser then sends Host and
+    // Origin that match each other. Self-origin must not auto-trust it.
+    const result = isAllowedOrigin(
+      fakeRequest({ origin: 'http://evil.test:8787', host: 'evil.test:8787' }),
+      { allowedOrigins: null },
+    );
+    expect(result.allowed).toBe(false);
+  });
+
+  it('refuses a LAN-name self-origin unless it is configured explicitly', () => {
+    const request = fakeRequest({ origin: 'http://llama.home:8787', host: 'llama.home:8787' });
+    expect(isAllowedOrigin(request, { allowedOrigins: null }).allowed).toBe(false);
+    expect(isAllowedOrigin(request, { allowedOrigins: ['http://llama.home:8787'] }).allowed).toBe(true);
+  });
+
+  it('accepts localhost and IPv6 loopback self-origins', () => {
+    expect(isAllowedOrigin(
+      fakeRequest({ origin: 'http://localhost:8787', host: 'localhost:8787' }),
+      { allowedOrigins: null },
+    ).allowed).toBe(true);
+    expect(isAllowedOrigin(
+      fakeRequest({ origin: 'http://[::1]:8787', host: '[::1]:8787' }),
+      { allowedOrigins: null },
+    ).allowed).toBe(true);
+  });
+
   it('refuses an origin of another site', () => {
     const result = isAllowedOrigin(
       fakeRequest({ origin: 'https://evil.test', host: '127.0.0.1:8787' }),

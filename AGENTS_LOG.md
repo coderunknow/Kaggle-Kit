@@ -614,3 +614,226 @@ stored profile/chat formats.
 * Release assets could not be downloaded in this sandbox (EOF from
   `release-assets.githubusercontent.com`); the digests come from the GitHub
   API and the workflow's download-and-verify step.
+
+## 2026-10-20 – v0.1.0-dev4 candidate on `arena/c1f569d9-kaggle-kit`
+
+**Scope.** Implemented the opt-in secure tool loop, seven tool categories,
+model-specific native capability probe, per-call approvals, bounded execution,
+conversation settings, profile-scoped tool configuration, SecretStore v2,
+retention-aware Brave handling, and accessible activity timeline. Ordinary
+OpenAI-compatible streaming/non-streaming chat remains available when tools
+are disabled or capability is not verified. Older profile/conversation data
+loads with conservative defaults.
+
+**Security and compatibility work.**
+
+* The native probe must see a valid correlated `tool_calls` response, accept a
+  synthetic tool result and finish with the exact probe sentinel. It never
+  executes the probed function; support is not inferred from endpoint, model
+  family or `--jinja`.
+* MCP connection target changes (URL, headers, transport or timeout) clear
+  discovery metadata and grants. Profile saves cannot introduce MCP tool names,
+  descriptions or schemas from browser input: they retain only server-discovered
+  metadata and apply the user's selection/permission changes. Grant requires at
+  least one selected discovered tool.
+* Tool URLs use checked/pinned public DNS; redirect handling, schema/argument
+  limits, approval single-use/expiry, denied-operation replay refusal, secret
+  redaction, transient Brave-content export/persistence redaction, file-vault
+  cleanup, and cancellation-state uncertainty are covered in code/tests.
+* Stored sanitizer helper accepts the type-predicate parameter `validEntries`;
+  SecretStore v2 is `{ version: 2, secrets, toolProfiles }`, migrates valid v1,
+  checks both maps as plain records, and maintains restrictive file mode.
+* Docker was unavailable (`docker --version`: command not found). Python
+  execution therefore remains fail-closed and runtime isolation is unverified.
+  No live Kaggle model, provider account, external MCP server or public tunnel
+  was tested. The pre-existing model proxy still does not DNS-pin its upstream;
+  that limitation is documented.
+
+**Validation on the working tree.**
+
+* `npm ci` – succeeded; 368 packages installed, 0 vulnerabilities reported.
+* `npm run check` – passed TypeScript client/server typecheck and ESLint;
+  Vitest **42 files, 332 tests passed**.
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` – **39 passed,
+  7 skipped**.
+* `python3 -m unittest discover -s tools -p 'test_*.py'` – **18 passed**.
+* `npm run build` – passed; production client and standalone server bundle
+  built. Vite reported the existing large-chunk advisory; PDF.js emitted
+  missing optional canvas/font-data warnings in the text-PDF tests.
+* `npm run check:integration` – **19/19** loopback mock-upstream checks passed,
+  including ordinary inference, stream delivery/cancellation, PDF/DOCX
+  extraction and request policy.
+* `git diff --check` – passed before the release dry-run.
+* `tools/release-dry-run.sh 0.1.0-dev4` – pending on the committed candidate;
+  no tag or publication has been made.
+
+## 2026-10-20 – Final security review and pre-dry-run validation
+
+* Hardened tool argument parsing against JSON numbers that overflow to Infinity;
+  HTTP tool arguments are recursively rejected when field names look like
+  credentials. Public-web URLs with credential-like query names are rejected,
+  and those URLs are omitted from citations.
+* Focused security regression run: **6 files, 47 tests passed**.
+* Final `npm run check`: typecheck and ESLint passed; Vitest **42 files,
+  344 tests passed**.
+* Notebook tests: **39 passed, 7 skipped**. Release-tool tests: **18 passed**.
+* `docs/release/environment.json`, `package.json` and `package-lock.json` parse
+  as JSON. `git diff --check` passed after the security and documentation edits.
+* Production build, integration suite, and release dry-run will be rerun against
+  the committed candidate. Docker is unavailable; model/provider behavior and
+  external endpoint rights remain unverified. No tag or publication exists.
+
+## 2026-10-20 – Release dry-run result
+
+* `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` – exit 0 on source
+  commit `80b9a9203b890707d0866e3a6c9044fad7d87e89`. Typecheck, lint, 344
+  Vitest tests, 39 notebook tests (7 skipped), 18 release-tool tests, build,
+  and **19/19** integration checks passed.
+* The script generated app, notebook and source archives, manifest, checksums
+  and a verification report; release and simulated-downloaded-asset validation
+  both passed. It does not run GitHub release automation or publish/tag assets.
+* The report explicitly records that Kaggle/live-model behavior, Docker
+  isolation, live provider rights, external services and real-browser
+  accessibility remain unverified. Vite/PDF.js and the integration host-list
+  warnings are non-failing and were retained as limitations.
+
+## 2026-10-20 – v0.1.0-dev4 audit completion and release preparation
+
+**Branch and commits.** Work continued on `arena/bef31f06-kaggle-kit`,
+branched from `0fce9deb15e6e59550a594d725a14c4e1f411102` (the head of PR #9
+from the previous session; CI was green, no tag or release existed). The
+review-bot checks on PR #9 were billing/quota notices, not code findings.
+
+**Audit method.** Re-read the tool implementation module by module (shared
+catalog/types, server executor/policy/chat, web/files/http/mcp/code/
+calculator, proxy probe, SecretStore v2, frontend settings/timeline/
+persistence) and re-ran the full baseline before editing: `npm run check`
+(42 files, 344 tests) passed on the untouched tree.
+
+**Gaps fixed (commit `63c8c31c4bec0ceeeafa77656017bb06659ed322`).**
+
+* Qwen prompt: derived `qwen-selfhosted-tools-v1` tool-use variant, profile
+  editor insert button, and server-side neutralization of the base prompt's
+  no-tools sentence inside the tool loop, with tests.
+* Streaming protocol: `ToolCallAccumulator` fragment assembly in
+  `shared/api/stream.ts` plus an independent streamed stage in the harmless
+  capability probe (`streamingSupported`), with unit/integration tests.
+  Tool rounds remain non-streaming so approvals can pause; this is
+  documented instead of implied otherwise.
+* Settings: maximum tool input bytes and sandbox timeout/memory/CPU/
+  process/output controls with server-matching bounds.
+* Mock upstream gained deterministic native tool calls; the built-bundle
+  integration check grew from 19 to 28 checks and now covers the probe, an
+  automatic calculator loop and a denied single-use approval end to end.
+* Troubleshooting gained a Tools section; README, chat-interface and
+  security docs were aligned with the streaming/prompt behaviour; release
+  notes and `docs/release/environment.json` refreshed (356 tests, 28/28).
+
+**Checks executed on `63c8c31` (real output).**
+
+* `npm run typecheck` – passed. `npm run lint` – passed.
+* `npm test` – **42 files, 356 tests passed**.
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` – **39 passed,
+  7 skipped**. `python3 -m unittest discover -s tools -p 'test_*.py'` –
+  **18 passed**.
+* `npm run build` – passed (Vite chunk-size advisory only).
+* `npm run check:integration` – **28/28 passed**.
+* `git diff --check` – passed.
+* `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` – exit 0 on `63c8c31`;
+  staged notebook/app/source archives, manifest, checksums and the
+  verification report passed staged and simulated-download validation.
+
+**Not verified.** No live Kaggle endpoint, deployed-model tool round trip
+(streaming or not), model weights, tunnel, Docker runtime (CLI absent:
+`docker: command not found`), Brave account, live MCP/HTTP service, or
+real-browser/Windows run was available. These remain recorded as release
+limitations; nothing in this session executed them.
+
+**Release state at time of writing.** This log entry is committed on top of
+`63c8c31`; the resulting commit is re-verified (full checks + dry-run)
+before the branch is pushed, a PR is opened against `main` (superseding
+PR #9, which contains only the pre-audit commit), and tag `v0.1.0-dev4` is
+pushed so `.github/workflows/release.yml` builds and publishes the
+prerelease. The release workflow builds from the tagged commit and does
+not require a merge to `main` first. The PR is intentionally left open and
+unmerged.
+
+## 2026-10-20 – v0.1.0-dev4 publication record
+
+* Pushed `arena/bef31f06-kaggle-kit` and opened PR
+  [#10](https://github.com/coderunknow/Kaggle-Kit/pull/10) against `main`;
+  left open and unmerged as instructed. CI on the PR branch is green
+  (`typecheck, lint, test and build`, `notebook tests`). The Kilo check
+  reports "fail" for the same out-of-credits reason as on PR #9; it
+  produced no findings. PR #9 was closed as superseded with an explanatory
+  comment.
+* Re-ran `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` on the final
+  commit `0d3a7424730b7454abfc234bd9bb192627da5795` — exit 0, release valid
+  in both staged and simulated-download validation.
+* Created and pushed lightweight tag `v0.1.0-dev4` at `0d3a742`. Release
+  workflow [run 39414208382](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39414208382)
+  completed successfully: source validation, build, integration check,
+  staging, staged-artifact validation, prerelease publication and
+  published-release verification all passed.
+* Verified via the GitHub API: release `v0.1.0-dev4` is a non-draft
+  prerelease published 2026-10-20T11:21:27Z targeting `0d3a742`, with the
+  six expected assets. A local `gh release download` attempt failed with
+  EOF from `release-assets.githubusercontent.com` (the known sandbox
+  limitation also recorded for dev3); checksum evidence therefore comes
+  from the workflow's verification step and the matching asset sizes.
+* This entry is a docs-only commit after the tag; the tag was not moved.
+
+## 2026-10-20 – Audit remediation record (pre-dev5)
+
+* Audited from baseline `f4656bc` on `arena/bef31f06-kaggle-kit`; PR #10 left
+  open and unmerged, `v0.1.0-dev4` tag/release untouched at `0d3a742`.
+* Audit commits: `8c2f91c` workflow injection removal + action pinning +
+  `tools/test_workflow_security.py`; `9cd9ecb` DNS-pinned upstream fetch for
+  all proxy paths (+ redirect validation on non-streaming chat); `56b06f5`
+  named sandbox containers with force-remove cleanup and stdin-fed code,
+  loopback-only self-origin, credential-fingerprint-bound approvals, real
+  Docker sandbox integration script + CI jobs (sandbox, windows-launcher);
+  `aa3ccba` Vite code splitting (710,229 B → 307,923 B entry) + Playwright
+  e2e + docs corrections; `527d923` static symlink refusal; `f143b44`
+  notebook llama.cpp SHA-256 pinning (digests from the GitHub API for
+  b11719/b11718/b11717 ubuntu-cuda-12.8) + owner-only key/state files;
+  `6e8f928` operation-specific approval summaries; `365326a`, `0523518`,
+  `95dc19b`, `6f726ee`, `4d4a202`, `ae50ebb` e2e harness fixes driven by CI
+  (mock readiness probe 401, duplicate Settings buttons, wrong mock text,
+  settings tab role, denial text counted twice).
+* Failures encountered and resolved: 8 `server/proxy.test.ts` failures after
+  pinning (global-fetch stubs bypassed by undici) fixed with a documented
+  test-only fetch seam; one ESLint unused-variable in the sandbox script;
+  five Playwright iterations in CI (no local browser: the Chromium download
+  is blocked in this sandbox, failure tails were mirrored into check-run
+  annotations for API diagnosis); PEP 668 blocked `pip install requests`
+  until `--break-system-packages` was used to reproduce the 7 gated notebook
+  tests (all pass; the historical "39 passed, 7 skipped" reading is corrected
+  in DESIGN_LOG).
+* `npm audit --json`: 0 vulnerabilities across 425 dependencies.
+* Local sandbox has no Docker and no browser; those paths are verified by
+  the new CI jobs instead (`docker sandbox integration`, `Browser
+  end-to-end`, `windows launcher` — all green on `ae50ebb`, run 39421344630,
+  except the Kilo credits check which produces no findings).
+* Prepared `v0.1.0-dev5` (version bump + release notes) because the fixes
+  change the distributed app and notebook; publication follows the full
+  check suite and release dry-run on the final commit.
+
+## 2026-10-20 – v0.1.0-dev5 publication record
+
+* Ran the complete required check suite on final HEAD `df699bd` (results in
+  DESIGN_LOG), then `tools/release-dry-run.sh 0.1.0-dev5 v0.1.0-dev5` —
+  exit 0, "The release v0.1.0-dev5 is valid" for both staged artifacts and
+  the simulated download validation.
+* Pushed branch; CI run 39421934675 fully green except Kilo credits.
+  Created/pushed lightweight tag `v0.1.0-dev5` at `df699bd`; release workflow
+  run 39422153705 completed successfully (build, staging, validation,
+  publication, published-release verification).
+* Verified through the GitHub API: prerelease `v0.1.0-dev5` published
+  2026-10-20T12:26:56Z targeting `df699bd`, six assets matching dry-run
+  sizes; `v0.1.0-dev4` still targets `0d3a742` with its original six assets;
+  PR #10 `OPEN`, `mergedAt: null`. Direct asset download from this sandbox
+  remains blocked (release-assets host EOF), so checksum evidence is the
+  workflow verification step plus exact size parity.
+* Also ignored Playwright artifacts (`test-results/`, `playwright-report/`,
+  `e2e-output.txt`) in this docs-only post-tag commit.

@@ -16,6 +16,7 @@ import {
   resolveConnectionView,
 } from '../../shared/connection';
 import type { ApiProfile } from '../../shared/domain';
+import { DEFAULT_TOOL_PROFILE_SETTINGS } from '../../shared/tools/types';
 import { APP_VERSION } from '../../shared/version';
 import { createId } from '../lib/id';
 import { useFocusTrap } from '../lib/useFocusTrap';
@@ -24,13 +25,15 @@ import { DataSettings } from './DataSettings';
 import { InferenceSettings } from './InferenceSettings';
 import { PreferencesSettings } from './PreferencesSettings';
 import { ProfileForm } from './ProfileForm';
+import { ToolsSettings } from './ToolsSettings';
 import { Badge, Icon } from './ui';
 
-export type SettingsTab = 'connections' | 'inference' | 'preferences' | 'data';
+export type SettingsTab = 'connections' | 'inference' | 'tools' | 'preferences' | 'data';
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'connections', label: 'Connections' },
   { id: 'inference', label: 'Inference' },
+  { id: 'tools', label: 'Tools & approvals' },
   { id: 'preferences', label: 'Preferences' },
   { id: 'data', label: 'Data & credentials' },
 ];
@@ -53,6 +56,7 @@ function createDraftProfile(): ApiProfile {
     timeoutMs: 120_000,
     credentialStorage: 'session',
     defaultParams: { ...DEFAULT_INFERENCE_PARAMS },
+    tools: structuredClone(DEFAULT_TOOL_PROFILE_SETTINGS),
     createdAt: now,
     updatedAt: now,
   };
@@ -380,6 +384,7 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
           ) : null}
 
           {tab === 'inference' ? <InferenceSettings profile={app.activeProfile} /> : null}
+          {tab === 'tools' ? <ToolsSettings /> : null}
           {tab === 'preferences' ? <PreferencesSettings /> : null}
           {tab === 'data' ? <DataSettings /> : null}
         </div>

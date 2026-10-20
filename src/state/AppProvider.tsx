@@ -24,6 +24,7 @@ import {
 
 import type { ApiProfile, Conversation } from '../../shared/domain';
 import { createId } from '../lib/id';
+import { gateway } from '../lib/gateway';
 import {
   clearAllStoredData,
   loadBrowserKeys,
@@ -162,6 +163,7 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
   }, []);
 
   const deleteProfile = useCallback((profileId: string) => {
+    void gateway.deleteToolProfile(profileId).catch(() => undefined);
     dispatch({ type: 'profiles/delete', id: profileId });
   }, []);
 
@@ -213,24 +215,37 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
   }, []);
 
   const deleteConversation = useCallback((conversationId: string) => {
-    // Deleting a conversation must also stop a request that is still running
-    // for it, otherwise its late answer keeps working on a deleted thread.
+    // Deleting a conversation must stop both an active request and any paused
+    // approval, then release its in-memory uploads.
     const controller = abortControllers.current.get(conversationId);
     if (controller) {
       controller.abort();
       abortControllers.current.delete(conversationId);
     }
+    const conversation = state.conversations.find((entry) => entry.id === conversationId);
+    const pendingJob = conversation?.messages.find((entry) => entry.toolJobId)?.toolJobId;
+    if (pendingJob) void gateway.cancelToolJob(pendingJob).catch(() => undefined);
+    void gateway.deleteConversationFiles(conversationId).catch(() => undefined);
     removeDraft(conversationId);
     dispatch({ type: 'conversations/delete', id: conversationId });
-  }, []);
+  }, [state.conversations]);
 
   const clearConversation = useCallback((conversationId: string) => {
+    const conversation = state.conversations.find((entry) => entry.id === conversationId);
+    const activeRequest = abortControllers.current.get(conversationId);
+    if (activeRequest) {
+      activeRequest.abort();
+      abortControllers.current.delete(conversationId);
+    }
+    const pendingJob = conversation?.messages.find((entry) => entry.toolJobId)?.toolJobId;
+    if (pendingJob) void gateway.cancelToolJob(pendingJob).catch(() => undefined);
+    void gateway.deleteConversationFiles(conversationId).catch(() => undefined);
     dispatch({
       type: 'conversations/patch',
       id: conversationId,
-      changes: { title: 'New conversation', messages: [], updatedAt: new Date().toISOString() },
+      changes: { title: 'New conversation', messages: [], uploadedFiles: [], updatedAt: new Date().toISOString() },
     });
-  }, []);
+  }, [state.conversations]);
 
   const selectConversation = useCallback((conversationId: string | null) => {
     dispatch({ type: 'conversations/select', id: conversationId });
@@ -259,9 +274,15 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
   const resetEverything = useCallback(() => {
     for (const controller of abortControllers.current.values()) controller.abort();
     abortControllers.current.clear();
+    for (const conversation of state.conversations) {
+      const pendingJob = conversation.messages.find((message) => message.toolJobId)?.toolJobId;
+      if (pendingJob) void gateway.cancelToolJob(pendingJob).catch(() => undefined);
+      void gateway.deleteConversationFiles(conversation.id).catch(() => undefined);
+      removeDraft(conversation.id);
+    }
     clearAllStoredData();
     dispatch({ type: 'state/reset' });
-  }, []);
+  }, [state.conversations]);
 
   const activeProfile = useMemo(
     () => state.profiles.find((profile) => profile.id === state.preferences.activeProfileId),

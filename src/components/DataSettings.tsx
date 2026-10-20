@@ -1,9 +1,9 @@
 /**
  * Data and credential management.
  *
- * Makes it explicit what is stored where and gives the user a way to remove
- * every trace of a credential or a conversation. Errors of the proxy are
- * reported instead of being shown as an empty list.
+ * Makes it explicit what is stored where and provides controls for browser-held
+ * keys, individual proxy secret references, and conversations. Errors of the
+ * proxy are reported instead of being shown as an empty list.
  */
 
 import { useEffect, useState } from 'react';
@@ -72,8 +72,9 @@ export function DataSettings() {
       <section className="card">
         <h3 className="card__title">Stored in this browser</h3>
         <p className="card__description">
-          Profiles, conversations, drafts and UI preferences are kept in local storage so they
-          survive a reload. They never leave this machine.
+          Profiles, conversations, drafts and UI preferences are kept in this browser's local
+          storage. Tool settings are also held by the local proxy when configured; prompts are sent
+          to the selected model endpoint when you chat.
         </p>
         <ul className="list-reset data-list">
           <li>
@@ -109,8 +110,9 @@ export function DataSettings() {
       <section className="card">
         <h3 className="card__title">Stored by the local proxy</h3>
         <p className="card__description">
-          Profiles that use the “local proxy secret store” keep their key in a 0600 file next to the
-          backend. The key is never sent to the browser.
+          Model, Brave and HTTP/MCP credentials are stored as secret values in a 0600 file next to
+          the backend; tool profiles are stored separately and hold references only. Secret values
+          are never sent to the browser.
         </p>
         {serverError ? (
           <div className="notice notice--warning">
@@ -199,14 +201,14 @@ export function DataSettings() {
 
           {confirmation === 'everything' ? (
             <div className="row confirm-row">
-              <span className="text-small">Erase profiles, conversations, drafts and keys?</span>
+              <span className="text-small">Erase browser profiles, conversations, drafts and session/browser keys? Proxy secrets and tool profiles are not removed by this action.</span>
               <button
                 type="button"
                 className="button button--danger button--small"
                 onClick={() => {
                   app.resetEverything();
                   setConfirmation('none');
-                  setStatus('Erased all local data. Reload the page to start over.');
+                  setStatus('Erased browser-local data. Proxy secrets and tool profiles remain until removed separately. Reload the page to start over.');
                 }}
               >
                 Yes, erase everything
@@ -222,7 +224,7 @@ export function DataSettings() {
               onClick={() => setConfirmation('everything')}
             >
               <Icon name="trash" size={14} />
-              Erase all local data
+              Erase all browser data
             </button>
           )}
         </div>
@@ -237,9 +239,10 @@ export function DataSettings() {
       <section className="card card--quiet">
         <h3 className="card__title">Privacy</h3>
         <p className="card__description">
-          Conversations and credentials are never sent to analytics or to a third party service.
-          The only network requests are the ones you configure: between this browser and the local
-          proxy, and from the proxy to the endpoint of the profile.
+          Kaggle-Kit has no analytics or telemetry. When tools are enabled, conversation context is
+          sent to the selected model endpoint and tool queries/arguments are sent to the configured
+          web, HTTP or MCP providers. Review provider terms and retention rights before enabling
+          them; retention-restricted Brave-derived answers are not saved or exported by default.
         </p>
         <p className="text-subtle">
           Kaggle-Kit v{APP_VERSION}. Export a conversation with the download button in the top bar

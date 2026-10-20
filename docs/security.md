@@ -79,11 +79,17 @@ The risks and the controls:
 | A stream runs forever | The streaming route aborts the upstream request when the client disconnects and after a timeout, and the reader of the upstream body is always closed. |
 | The secret API is used by another program on the machine | The secret store only returns references. Any local program can still talk to the backend, so the backend has to stay on the loopback interface. |
 
-**Known limits.** The allow list works on the name of the host, not on the
-address it resolves to: a name that points to a private address is not
-detected (DNS rebinding). The private network check has the same limit. Both
-are documented trade-offs of a tool whose main job is to reach a
-`llama-server` on `127.0.0.1`.
+**DNS rebinding.** The hostname policy alone cannot see the address a name
+resolves to, so every proxy and tool request validates the resolved address
+set at connect time (`server/pinnedFetch.ts`, the same pinning used by the
+web/HTTP/MCP fetches). A rebinding name that answers with a loopback,
+link-local, multicast, unspecified or cloud-metadata address is refused
+before anything is sent; with `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1` any
+private answer is refused. The remaining residual risk is a name that
+resolves to an ordinary private LAN address with private networks allowed —
+that is the intended behaviour for reaching servers on the user's own
+network. Set `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS=1` and/or
+`KAGGLE_KIT_ALLOWED_HOSTS` to close it.
 
 **The defaults keep the product usable.** There is no allow list and no
 private network block by default, because the normal setup is a local
@@ -99,7 +105,7 @@ configured.
 | `KAGGLE_KIT_PORT` | `8787` | Port of the backend |
 | `KAGGLE_KIT_ALLOWED_HOSTS` | *(empty)* | Comma separated list of reachable hosts, `*.example.com` is allowed |
 | `KAGGLE_KIT_BLOCK_PRIVATE_NETWORKS` | `0` | `1` refuses loopback, private and link local destinations |
-| `KAGGLE_KIT_ALLOWED_ORIGINS` | *(empty)* | Extra browser origins that may call `/api/*` |
+| `KAGGLE_KIT_ALLOWED_ORIGINS` | *(empty)* | Extra browser origins that may call `/api/*`. Required when the app is served through a non-loopback name (e.g. a LAN hostname), because only loopback origins are trusted automatically. |
 | `KAGGLE_KIT_MAX_BODY_BYTES` | `1000000` | Maximum size of a request body |
 | `KAGGLE_KIT_CLIENT_DIR` | `dist/client` | Directory with the built browser client |
 | `KAGGLE_KIT_DATA_DIR` | `.data` | Directory with the secret store |
@@ -143,14 +149,108 @@ list belongs to your environment, not to the source.
 
 | Data | Place | Sensitive |
 | --- | --- | --- |
-| Profiles, conversations, drafts, theme and send preference | `localStorage` of the origin | Conversations and drafts contain the text you typed |
+| Profiles, conversations, drafts, theme and send preference | `localStorage` of the origin | Conversations and drafts contain text you typed. Profiles may contain tool settings and secret references, never direct HTTP header credentials. |
+| Uploaded files | Proxy process memory; browser stores metadata only | File bytes/extracted text are not persisted. |
 | Session key | Memory of the tab | Yes, never written to disk |
 | Browser key (explicit opt-in) | `localStorage`, plain text | Yes |
-| Proxy key (server mode) | `.data/secrets.json`, mode `0600` | Yes, never sent to the browser |
+| Server-side secrets (model/API/provider keys) | `.data/secrets.json` `secrets` record, mode `0600` | Yes, never sent to the browser |
+| Tool profile settings | `.data/secrets.json` `toolProfiles` record, mode `0600` | Settings and secret references, not credential values. Clearing server secrets preserves these settings/references. |
 
-There is no analytics, no telemetry and no third-party script. An exported
-Markdown file is written by the browser to the download directory you chose;
-the application cannot see or delete it afterwards.
+There is no analytics, no telemetry and no third-party script. When a user
+enables a provider or configured HTTP/MCP tool, requests and tool arguments go
+to that explicitly configured service; an exported Markdown file is written
+by the browser to the download directory the user chose, and the application
+cannot see or delete it afterwards. Retention-restricted Brave-derived answers
+are excluded from the app's saved history and Markdown export unless the user
+has confirmed account rights for retention and opted in to tool-history persistence.
+
+## Tool integrations and approval boundaries (dev4)
+
+Tool use is off by default and must be enabled per profile. Ordinary chat is
+not gated by tool support. A model/endpoint/credential-specific probe must
+return a correctly correlated function call with `finish_reason: "tool_calls"`,
+then accept the same call in an assistant message, a synthetic `role: "tool"`
+result and a final `finish_reason: "stop"`. Neither probe turn executes a
+function. Every explicit verification action runs a fresh probe; its result is
+cached for up to ten minutes to gate tool chats for the exact model, endpoint
+and credential. Streamed tool-call fragments are then probed separately:
+partial argument JSON is only concatenated per call index, never parsed or
+executed, and streaming is reported supported only when the assembled call
+arrives with `finish_reason: "tool_calls"`. Tool loops use non-streaming
+requests so approvals can pause between rounds.
+
+The server enforces the policy; prompts are not an authorization boundary:
+
+* The model may request only names in a server-built catalog. It cannot create
+  a handler by placing a name or executable code in prose, a code block, or an
+  uploaded document. Tool arguments are size-bounded, parsed as JSON, checked
+  against the configured schema and rejected on prototype-pollution keys.
+  Untrusted schemas are size/depth/node-bounded; regex/pattern keywords,
+  quadratic uniqueness checks and deeply nested branching/conditional schema
+  constructs are rejected to bound validation work.
+* Calculator, conversation-scoped file operations, read-only diagnostics,
+  public web retrieval and tools explicitly classified as `read_only` are the
+  only candidates for automatic execution. A non-GET custom HTTP request, a
+  code run, or a selected tool with `write`/`unknown` permission pauses for a
+  specific user approval. Unselected or ungranted MCP tools are not exposed to
+  the model and are refused server-side. Approval is single-use, expires, is
+  tied to the exact prepared arguments and fails if settings changed. Exact
+  denied actions are not re-requested during the same turn.
+* The approval view is an accessible execution timeline: bounded/redacted
+  arguments, target, state and result; it does not rely on color. Live approval
+  IDs/job IDs are not restored after reload. Clear/delete abort requests, cancel
+  paused jobs and remove the conversation's in-memory file vault.
+* Tool output **and error text** are untrusted data before they are sent back to
+  the model. A returned instruction is not executed. Tool output is bounded and
+  secrets from the local SecretStore are redacted from displayed traces. Model
+  response bodies in tool chats are capped at 1 MiB (capability-probe bodies at
+  16 KiB), and upstream request timeouts/cancellation remain active while those
+  response bodies are read.
+
+### Network and data boundaries for tools
+
+The configured model endpoint follows the pre-existing upstream host policy
+(`KAGGLE_KIT_ALLOWED_HOSTS` and optional private-network blocking). This proxy
+still validates the model endpoint by hostname and does not pin DNS there; use
+an explicit host allowlist when the proxy can be reached by other local users.
+
+Public web, configured HTTP and MCP destinations have a stricter tool-specific
+policy: private, loopback, link-local, reserved and metadata addresses are
+rejected, DNS answers are checked and the selected public address is pinned for
+the socket. `web_open` rejects URL userinfo and credential-like query parameter
+names, and revalidates each redirect hop; configured HTTP and MCP redirects are
+refused. MCP additionally requires public HTTPS on port 443 and
+never launches local `stdio` processes. A hostname that resolves to a private
+address is not made safe by an allowlist entry in a tool profile.
+
+* Uploaded data is limited to 4 MiB per file and 100k extracted characters,
+  then kept only in the proxy's bounded, in-memory, conversation-scoped vault.
+  The proxy exposes no host path/file API. Clearing or deleting a conversation
+  aborts active work and deletes that vault; process restart and expiry also
+  remove it. Browser persistence contains file metadata only.
+* HTTP/MCP header credentials and Brave keys are accepted through references
+  resolved by the proxy. Profiles retain references; literal values are limited
+  to non-sensitive header allowlist entries. Unknown header names must use a
+  secret reference. Credential-like HTTP argument names are refused rather
+  than placed in URLs or request bodies. The secret store uses v2
+  `{ version, secrets, toolProfiles }`
+  records, migrates valid v1 stores, validates both maps as plain records and
+  retains secure file permissions.
+* Brave history persistence is off by default. Without an explicit retention
+  rights confirmation **and** an opt-in, Brave-derived assistant text and later
+  assistant replies are replaced with a visible placeholder in local storage
+  and Markdown exports; the search query/result data is not saved by the app.
+  Provider terms, account rights and fees are not verified by the local tests.
+* Python execution is disabled by default and the tool is offered only after a
+  digest-pinned Python image is configured. Every call still requires approval;
+  the container uses no network, constrained resources and no host fallback.
+  Docker availability is not proven by the native tool-call probe: if the CLI
+  or image is unavailable, the run fails closed. Docker was unavailable in
+  this development environment, so runtime isolation is unverified.
+
+External provider credentials, account retention terms, live MCP servers and
+the deployed Kaggle model's tool behavior must be verified by the operator.
+No capability is claimed from a model family, URL or template flag alone.
 
 ## The Kaggle deployment
 

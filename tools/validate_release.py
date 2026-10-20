@@ -6,8 +6,8 @@ corrupt asset. It checks the artifacts against the manifest, against the
 checksum file and against the source of the release commit, so that a release
 can only contain files that belong to it.
 
-    python3 tools/validate_release.py --stage release --version 0.1.0-dev2 \\
-        --tag v0.1.0-dev2 --source-sha <sha> [--downloaded downloaded]
+    python3 tools/validate_release.py --stage release --version 0.1.0-dev4 \\
+        --tag v0.1.0-dev4 --source-sha <sha> [--downloaded downloaded]
 """
 
 from __future__ import annotations
