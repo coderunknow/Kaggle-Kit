@@ -195,5 +195,11 @@ jobs:
               tail -n 120 e2e-output.txt
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Mirror the tail into annotations so it is readable via the API.
+            tail -n 80 e2e-output.txt | python3 -c '
+          import sys
+          text = sys.stdin.read().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=Browser e2e output tail::" + text)
+          '
           fi
           exit "$status"
