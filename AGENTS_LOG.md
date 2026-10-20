@@ -899,3 +899,20 @@ against published sources/digests and unit tests, not on Kaggle hardware.
 the branch is then pushed and a **new PR against `main`** is opened for
 v0.1.0-dev6. The PR is left open and unmerged; no `v0.1.0-dev6` tag is
 created and no release is published (explicitly out of scope for this task).
+
+## 2026-10-20 – v0.1.0-dev6 PR record
+
+* Pushed `arena/acff7542-kaggle-kit` and opened PR
+  [#13](https://github.com/coderunknow/Kaggle-Kit/pull/13) against `main`
+  (base `ad7995b`, head at the time `b0db270`); left open and unmerged as
+  instructed. No `v0.1.0-dev6` tag was created and no release was published.
+* CI on `b0db270` (run 39439485725): `typecheck, lint, test and build`,
+  `notebook tests`, `docker sandbox integration`, `Browser end-to-end`
+  (Playwright/Chromium — the locally blocked e2e path), `windows launcher`
+  and CodeRabbit all passed. `Kilo Code Review` reports
+  `fail`/`action_required` as on PRs #9–#11 (billing/quota gate); it
+  produced no code findings.
+* This docs-only commit follows `b0db270`; the release dry-run
+  (`tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6`) is re-executed on the
+  resulting commit and its exit status is reported in the PR conversation /
+  completion report. A successful dry run is not a published release.
