@@ -1235,3 +1235,131 @@ missing-credential paths are covered by tests.
 * `v0.1.0-dev4` remains unchanged at `0d3a742` (verified via API after the
   dev5 publication); PR #10 remains open and unmerged. This entry is a
   docs-only commit after the tag; the tag was not moved.
+
+## 2026-10-20 – Tool-calling reliability remediation and v0.1.0-dev6 preparation
+
+A full audit of the tool-calling lifecycle was executed on the current `main`
+(`ad7995b`, the merge of PR #11 on top of the merged PR #10 / published
+`v0.1.0-dev5` at `df699bd`). Every finding below was revalidated against the
+current files; the dev5 protections (workflow injection removal, DNS-pinned
+proxy fetches, origin policy, sandbox container cleanup, credential-bound
+approvals, symlink refusal, notebook checksums) were confirmed intact by
+re-running their existing tests, and none was reverted.
+
+### Audit method and evidence
+
+* Read `AGENTS.md`, both logs, the tool protocol modules
+  (`shared/tools/catalog.ts`, `shared/tools/types.ts`,
+  `shared/prompts/qwen.ts`, `shared/api/requests.ts`, `shared/api/stream.ts`,
+  `server/proxy.ts`, `server/tools/{chat,executor,policy}.ts`,
+  `src/state/useChat.ts`, `src/lib/gateway.ts`, `src/components/ChatView.tsx`),
+  the notebook start-up path and the release tooling.
+* Verified the GitHub state through the API: PR #10 merged 2026-10-20T13:04Z,
+  PR #11 merged 13:22Z, tags `v0.1.0-dev4`→`0d3a742`, `v0.1.0-dev5`→`df699bd`;
+  the working branch is based on `ad7995b`, the actual current `main`.
+* Measured the serialized tool catalog: the full nine-tool built-in catalog is
+  3,728 bytes (~1,036 estimated tokens at the repo's documented 3.6 chars/token
+  estimate) — acceptable for the 8192-token context — while a single configured
+  HTTP/MCP schema may reach the sanitizer's 24 KB bound, i.e. the *aggregate*
+  catalog could previously exceed the whole context silently.
+* Verified against the published llama.cpp sources (GitHub API, tags b11717,
+  b11718, b11719 — the exact pinned builds): `common/arg.cpp` defines
+  `--api-key-file` and gives `--api-key` the environment alias
+  `LLAMA_API_KEY`. The notebook's argv fallback was therefore both unnecessary
+  and unsafe (argv is world-readable via `/proc/<pid>/cmdline`).
+* Verified the cloudflared release digests through the GitHub releases API:
+  tag `2026.10.2`, `cloudflared-linux-amd64` =
+  `35fbdd2beb378436c7da377d7358cea8e33f9c94a6705d1d8036bf9b0d6d8005`.
+* Baseline before any edit: typecheck, lint and Vitest (43 files, 373 tests)
+  all green on the untouched tree.
+
+### Confirmed defects fixed (commit ff569f6)
+
+1. **No bounded recovery from protocol-invalid model turns.** A turn carrying
+   tool-call data with a wrong `finish_reason`, or only malformed calls,
+   ended the job immediately; invalid arguments were fed back but nothing
+   stopped the model from repeating the identical invalid call until the
+   round budget ran out. `server/tools/chat.ts` now implements a correction-
+   episode policy: at most one corrective attempt per episode (evidence +
+   valid tool list for protocol failures; the validation error as the tool
+   result for argument failures), an identical invalid call is never re-fed
+   silently, a second failure in the episode ends the loop with an honest
+   "what remains undone" report, a successful execution closes the episode,
+   and every corrective round counts against the round/time budgets. Recovery
+   cannot bypass approvals, denials or exhausted budgets — it triggers only on
+   failures where nothing executed. Results carry a secret-free `recovery`
+   record; the UI shows it as a message note.
+2. **No user-controllable answer for "model ignored the tools".** Opt-in
+   `selectionRecovery` (conversation setting + ChatView toggle, default off)
+   spends at most one extra round per job asking the model whether a listed
+   tool is needed when the first round answered with plain text and nothing
+   ran. The corrective text explicitly permits a direct answer: no keyword
+   heuristics, no forced tool use.
+3. **Unbounded aggregate tool catalog.** The 48-definition catalog had no
+   serialized-size guard. `measureToolCatalog` now measures exact bytes
+   (TextEncoder, browser-safe); >16,000 bytes is refused with an actionable
+   409 and >6,000 bytes produces a truthful `contextNotice` (estimates
+   labelled as estimates, never tokenizer counts).
+4. **Notebook API key on argv.** The `--api-key <key>` fallback was replaced:
+   `--api-key-file` when supported, otherwise `LLAMA_API_KEY` in the child
+   environment (proven supported by the pinned builds' sources), and a build
+   that supports neither is refused instead of starting unauthenticated.
+   `ServerLaunch` gained an `env` map; the key never reaches argv or the
+   persisted server state.
+5. **Moving `cloudflared` target.** `releases/latest/download` was replaced
+   with the pinned `2026.10.2` release URL and the published SHA-256 digest;
+   reuse of an existing binary now also requires the pinned digest
+   (`download_resumable` re-verifies), and the `--version` run check remains.
+6. **No real-model evidence path.** New `tools/model-benchmark.mjs` (+ pure
+   core `tools/model-benchmark-core.mjs`): model-mode cases for the handshake,
+   unambiguous selection with a distractor, schema+semantic argument checks
+   (deterministic no-eval expression parser), clearly-labelled synthetic
+   result acceptance, a negative no-tool case and optional streamed fragment
+   assembly; blocked (endpoint rejects the protocol) is distinguished from
+   failed (protocol works, behaviour wrong). Integration mode drives a running
+   proxy end to end (calculator loop; Python approval always denied, never
+   approved) and reports skipped preconditions as skipped. Credentials only
+   from env or a masked prompt; `--api-key` argv is rejected; reports carry a
+   sanitized endpoint identity and pass a final secret-leak check.
+
+### Reviewed and found sound (no change)
+
+Capability probing and its cache invalidation (keyed by base URL + SHA-256 of
+the credential + model, 10-minute TTL, explicit re-probe button, re-checked at
+every tool-chat start); assistant tool-call/tool-result correlation and ID
+validation; per-round call limit (8) with excess calls traced, never silently
+dropped; `parallel_tool_calls=false` with deterministic sequential execution;
+prompt duality (`qwen-selfhosted-v1` truthful for ordinary chat,
+`qwen-selfhosted-tools-v1` and server-side neutralization of the no-tools
+claim in the tool loop); untrusted-output wrapping and citation rules;
+approval lifetime/binding (settings fingerprint + credential fingerprint,
+single-use, TTL, denial replay refusal); job/approval pruning and file-vault
+cleanup; denied-operation fingerprints.
+
+### Residual risks (unchanged, documented)
+
+The Hugging Face model fetch still uses `resolve/main` — no authoritative
+digest was reachable from this environment, so pinning it would be a guess.
+Live Kaggle hardware, Docker, Brave, MCP and real-model behaviour remain
+unverified here; the benchmark is the operator's tool to close the real-model
+gap without disclosing credentials.
+
+### Verification (real output, on ff569f6 and this docs commit)
+
+* `npm run typecheck`, `npm run lint` — passed.
+* `npm test` — Vitest **44 files, 398 tests passed**.
+* `npm run build` — passed. `npm run check:integration` — **29/29** (new:
+  one bounded corrective round after a protocol-violating mock turn).
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` — **46 passed,
+  0 skipped** (`requests` installed via `--break-system-packages`).
+* `python3 -m unittest discover -s tools -p 'test_*.py'` — **25 passed**.
+* `npm audit --json` — 0 vulnerabilities. `git diff --check` — passed.
+* Benchmark smoke run against the local mock upstream: 6/6 model-mode cases,
+  clean leak check, exit 0; integration skip path: 3 skipped, exit 0. This
+  validates the script, not a real model.
+* `npm run test:e2e` — **blocked locally** (Playwright browser binaries
+  absent and the download host unreachable from this sandbox, as in dev5);
+  the CI `Browser end-to-end` job covers it on the PR branch.
+* `tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6` — exit 0 on `ff569f6`:
+  all checks, staging, "The release v0.1.0-dev6 is valid" in both staged and
+  simulated-download validation; notes rendered with the commit SHA.
