@@ -9,7 +9,7 @@ const MOCK_BASE_URL = 'http://127.0.0.1:18200';
 
 async function createProfile(page: Page) {
   await page.goto('/');
-  await page.getByRole('button', { name: /^settings$/i }).click();
+  await page.locator('header.topbar').getByRole('button', { name: /^settings$/i }).click();
   const dialog = page.getByRole('dialog', { name: /^settings$/i });
   await dialog.getByRole('button', { name: /add profile/i }).click();
   await dialog.getByLabel(/display name/i).fill('Mock upstream');
@@ -38,7 +38,7 @@ test('creates a profile and completes an ordinary chat round trip', async ({ pag
 
 test('settings dialog closes with Escape and move focus out of the dialog', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: /^settings$/i }).click();
+  await page.locator('header.topbar').getByRole('button', { name: /^settings$/i }).click();
   const dialog = page.getByRole('dialog', { name: /^settings$/i });
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
