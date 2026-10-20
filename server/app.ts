@@ -756,6 +756,18 @@ async function serveStatic(
     return;
   }
 
+  // Lexical containment is not enough if the client directory contains a
+  // symlink that points outside it; compare canonical paths before reading.
+  const [realBase, realFile] = await Promise.all([
+    fsp.realpath(clientDir).catch(() => undefined),
+    fsp.realpath(filePath).catch(() => undefined),
+  ]);
+  if (!realBase || !realFile || (realFile !== realBase && !realFile.startsWith(`${realBase}${path.sep}`))) {
+    sendError(response, 403, 'Forbidden path.');
+    return;
+  }
+  filePath = realFile;
+
   const extension = path.extname(filePath).toLowerCase();
   const contentType = CONTENT_TYPES[extension] ?? 'application/octet-stream';
   const cacheable = filePath.includes(`${path.sep}assets${path.sep}`);

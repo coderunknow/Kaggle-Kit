@@ -20,6 +20,7 @@ describe('the request policy of the local proxy backend', () => {
     await fs.writeFile(path.join(clientDir, 'index.html'), '<!doctype html><title>app</title>');
     await fs.writeFile(path.join(clientDir, 'assets', 'app.js'), 'console.log(1);');
     await fs.writeFile(path.join(dataDir, 'secret.txt'), 'top secret');
+    await fs.symlink(path.join(dataDir, 'secret.txt'), path.join(clientDir, 'leak.txt'));
 
     const config: ServerConfig = {
       ...loadServerConfig({}, process.cwd()),
@@ -96,6 +97,12 @@ describe('the request policy of the local proxy backend', () => {
   it('refuses a path with a backslash separator', async () => {
     const status = await rawStatus('/%2e%2e%5csecret.txt');
     expect(status).toBe(403);
+  });
+
+  it('refuses a symlink that points outside the client directory', async () => {
+    const response = await fetch(`${baseUrl}/leak.txt`);
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.not.toContain('top secret');
   });
 
   it('refuses a request from another origin', async () => {
