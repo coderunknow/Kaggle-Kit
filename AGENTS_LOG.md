@@ -696,3 +696,64 @@ loads with conservative defaults.
   isolation, live provider rights, external services and real-browser
   accessibility remain unverified. Vite/PDF.js and the integration host-list
   warnings are non-failing and were retained as limitations.
+
+## 2026-10-20 – v0.1.0-dev4 audit completion and release preparation
+
+**Branch and commits.** Work continued on `arena/bef31f06-kaggle-kit`,
+branched from `0fce9deb15e6e59550a594d725a14c4e1f411102` (the head of PR #9
+from the previous session; CI was green, no tag or release existed). The
+review-bot checks on PR #9 were billing/quota notices, not code findings.
+
+**Audit method.** Re-read the tool implementation module by module (shared
+catalog/types, server executor/policy/chat, web/files/http/mcp/code/
+calculator, proxy probe, SecretStore v2, frontend settings/timeline/
+persistence) and re-ran the full baseline before editing: `npm run check`
+(42 files, 344 tests) passed on the untouched tree.
+
+**Gaps fixed (commit `63c8c31c4bec0ceeeafa77656017bb06659ed322`).**
+
+* Qwen prompt: derived `qwen-selfhosted-tools-v1` tool-use variant, profile
+  editor insert button, and server-side neutralization of the base prompt's
+  no-tools sentence inside the tool loop, with tests.
+* Streaming protocol: `ToolCallAccumulator` fragment assembly in
+  `shared/api/stream.ts` plus an independent streamed stage in the harmless
+  capability probe (`streamingSupported`), with unit/integration tests.
+  Tool rounds remain non-streaming so approvals can pause; this is
+  documented instead of implied otherwise.
+* Settings: maximum tool input bytes and sandbox timeout/memory/CPU/
+  process/output controls with server-matching bounds.
+* Mock upstream gained deterministic native tool calls; the built-bundle
+  integration check grew from 19 to 28 checks and now covers the probe, an
+  automatic calculator loop and a denied single-use approval end to end.
+* Troubleshooting gained a Tools section; README, chat-interface and
+  security docs were aligned with the streaming/prompt behaviour; release
+  notes and `docs/release/environment.json` refreshed (356 tests, 28/28).
+
+**Checks executed on `63c8c31` (real output).**
+
+* `npm run typecheck` – passed. `npm run lint` – passed.
+* `npm test` – **42 files, 356 tests passed**.
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` – **39 passed,
+  7 skipped**. `python3 -m unittest discover -s tools -p 'test_*.py'` –
+  **18 passed**.
+* `npm run build` – passed (Vite chunk-size advisory only).
+* `npm run check:integration` – **28/28 passed**.
+* `git diff --check` – passed.
+* `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` – exit 0 on `63c8c31`;
+  staged notebook/app/source archives, manifest, checksums and the
+  verification report passed staged and simulated-download validation.
+
+**Not verified.** No live Kaggle endpoint, deployed-model tool round trip
+(streaming or not), model weights, tunnel, Docker runtime (CLI absent:
+`docker: command not found`), Brave account, live MCP/HTTP service, or
+real-browser/Windows run was available. These remain recorded as release
+limitations; nothing in this session executed them.
+
+**Release state at time of writing.** This log entry is committed on top of
+`63c8c31`; the resulting commit is re-verified (full checks + dry-run)
+before the branch is pushed, a PR is opened against `main` (superseding
+PR #9, which contains only the pre-audit commit), and tag `v0.1.0-dev4` is
+pushed so `.github/workflows/release.yml` builds and publishes the
+prerelease. The release workflow builds from the tagged commit and does
+not require a merge to `main` first. The PR is intentionally left open and
+unmerged.

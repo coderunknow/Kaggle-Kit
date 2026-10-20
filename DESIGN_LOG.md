@@ -1012,3 +1012,87 @@ checksums and the verification report passed both staged and simulated
 post-download validation. This is local evidence only; no GitHub workflow,
 tag or publication was executed. The report retains the unverified live model,
 Kaggle, Docker, provider, external endpoint and real-browser limits.
+
+## 2026-10-20 – v0.1.0-dev4 audit completion: streaming probe, tool prompt, E2E tool loop
+
+### Original intent and audit result
+
+The dev4 implementation from the earlier entry was re-audited requirement by
+requirement on branch `arena/bef31f06-kaggle-kit` (base commit `0fce9de`,
+which was already open as PR #9 with green CI). The audit confirmed the
+server-governed tool loop, seven tool categories, SecretStore v2, approvals,
+persistence rules and timeline were implemented and tested. Five gaps were
+found and fixed in commit `63c8c31`:
+
+1. **Prompt truthfulness.** The recommended Qwen prompt still said "You have
+   no tools here", contradicting a verified tool profile. The base prompt is
+   unchanged (it stays truthful for ordinary chat and keeps its research
+   mirror). A derived tool-use variant (`qwen-selfhosted-tools-v1`) replaces
+   that exact sentence and appends tool rules (schema arguments, untrusted
+   output, real-source citations, approvals, bounded loops, honest final
+   answers). The profile editor offers both; the server tool loop also
+   neutralizes the known sentence so a tool list is never sent with it.
+2. **Streamed tool calls.** Previously streaming tool deltas were only
+   documented as unverified, with no fragment handling at all.
+   `shared/api/stream.ts` now extracts `delta.tool_calls` fragments and
+   assembles them per index (`ToolCallAccumulator`): partial argument JSON
+   is concatenated, never parsed or executed, bounds are enforced, and a
+   call is only "announced" with `finish_reason=tool_calls`. The capability
+   probe runs a third, streamed stage with the same harmless no-op function
+   and reports `streamingSupported` independently; a streaming failure never
+   downgrades proven non-streaming support. Tool rounds stay non-streaming
+   by design so approvals can pause between rounds.
+3. **Settings completeness.** The bounded-execution card lacked the maximum
+   tool input size, and the sandbox card had no resource controls. Both are
+   now editable within the same bounds the server enforces (sandbox:
+   timeout 1–60 s, memory 64–2048 MiB, CPU 0.1–2 cores, processes 1–128,
+   output 256–32768 bytes). Isolation remains fixed to strict because that
+   is what the Docker backend enforces; weaker modes are not offered.
+4. **Integration depth.** The built-bundle check never exercised the tool
+   loop. The mock upstream now speaks deterministic native tool calls
+   (probe function, `calculate:`, `run code:`, streamed fragments), and
+   `tools/integration-check.mjs` drives profile storage, the unverified
+   409 refusal, the probe (both stages), an automatic calculator round
+   trip, a denied code approval and approval-replay refusal (28 checks).
+5. **Troubleshooting documentation.** `docs/troubleshooting.md` had no tool
+   coverage; a Tools section now documents probe states, approvals, limits,
+   Brave, Docker, MCP re-grants, HTTP policy refusals, uploads and
+   persistence.
+
+### Alternatives considered
+
+* Executing tool rounds over streaming once `streamingSupported` is true:
+  rejected for this release. The approval pause points make streamed rounds
+  substantially more complex, and no live endpoint was available to verify
+  real streamed tool behaviour. The protocol layer and probe now verify the
+  capability honestly without claiming the loop uses it.
+* Rewriting the base Qwen prompt to be tool-aware: rejected. It would make
+  the default prompt false for the majority (ordinary chat) case and break
+  the character-for-character research mirror. Derivation keeps one source.
+* A regex/prose fallback protocol for endpoints without native tool calls:
+  still rejected, unchanged from the earlier entry. No fallback can be made
+  deterministic enough to execute safely.
+
+### Validation on commit `63c8c31`
+
+* `npm run typecheck` and `npm run lint`: passed.
+* `npm test`: Vitest **42 files, 356 tests passed** (12 new: fragment
+  assembly, streaming probe success/failure, prompt variant, no-tools
+  neutralization in the tool loop).
+* Notebook tests: **39 passed, 7 skipped**; release-tool tests: **18
+  passed**.
+* `npm run build`: passed (existing >500 kB chunk advisory only).
+* `npm run check:integration`: **28/28 passed** against the built bundle.
+* `git diff --check`: passed.
+* `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4`: exit 0; archives,
+  manifest, checksums and verification report validated, including the
+  simulated downloaded-asset check.
+
+### Unresolved / unverified
+
+Unchanged and explicitly recorded in the release notes: no live Kaggle
+endpoint, model weights, tunnel, Docker runtime, Brave account, live MCP or
+HTTP service, or real-browser audit was available. Mock-based verification
+proves the local protocol, policy and orchestration; it does not prove the
+deployed model's tool behaviour. Capability therefore remains
+`not_verified` until the operator's probe succeeds on the live profile.
