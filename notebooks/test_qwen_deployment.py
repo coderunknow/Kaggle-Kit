@@ -317,6 +317,69 @@ class DownloadTests(unittest.TestCase):
             self.assertFalse(destination.exists())
 
 
+class ChecksumTests(unittest.TestCase):
+    def test_a_download_with_the_pinned_digest_is_accepted(self) -> None:
+        import hashlib
+
+        payload = b"pinned asset" * 64
+        session = FakeSession(payload)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "asset.bin"
+            result = nb.download_resumable(
+                session,
+                "https://example.invalid/asset.bin",
+                destination,
+                min_bytes=10,
+                expected_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+            self.assertEqual(result.read_bytes(), payload)
+
+    def test_a_download_with_a_wrong_digest_is_deleted_and_refused(self) -> None:
+        payload = b"tampered asset" * 64
+        session = FakeSession(payload)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "asset.bin"
+            with self.assertRaises(nb.ChecksumMismatch):
+                nb.download_resumable(
+                    session,
+                    "https://example.invalid/asset.bin",
+                    destination,
+                    min_bytes=10,
+                    attempts=3,
+                    expected_sha256="0" * 64,
+                )
+            self.assertFalse(destination.exists())
+            self.assertFalse((destination.parent / "asset.bin.part").exists())
+            # A mismatch is not retried as a transient download failure.
+            self.assertEqual(len(session.ranges), 1)
+
+    def test_a_cached_file_with_a_wrong_digest_is_redownloaded(self) -> None:
+        import hashlib
+
+        payload = b"fresh asset" * 64
+        session = FakeSession(payload)
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "asset.bin"
+            destination.write_bytes(b"stale bytes" * 64)
+            result = nb.download_resumable(
+                session,
+                "https://example.invalid/asset.bin",
+                destination,
+                min_bytes=10,
+                expected_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+            self.assertEqual(result.read_bytes(), payload)
+
+    def test_every_configured_build_has_pinned_digests(self) -> None:
+        config = nb.DeploymentConfig()
+        for tag in config.llama_cpp_tags:
+            for prefix in ("llama", "cudart-llama"):
+                name = f"{prefix}-{tag}-bin-ubuntu-cuda-{config.cuda_version}-x64.tar.gz"
+                digest = nb.LLAMA_CPP_SHA256.get(name, "")
+                self.assertEqual(len(digest), 64, name)
+                int(digest, 16)
+
+
 class ArchiveExtractionTests(unittest.TestCase):
     def _archive(self, members) -> bytes:
         buffer = io.BytesIO()
