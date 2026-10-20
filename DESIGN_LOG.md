@@ -1096,3 +1096,30 @@ HTTP service, or real-browser audit was available. Mock-based verification
 proves the local protocol, policy and orchestration; it does not prove the
 deployed model's tool behaviour. Capability therefore remains
 `not_verified` until the operator's probe succeeds on the live profile.
+
+## 2026-10-20 – v0.1.0-dev4 published
+
+* Final implementation/log commit `0d3a7424730b7454abfc234bd9bb192627da5795`
+  passed a second full `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4`
+  (exit 0; 28/28 integration checks; staged and simulated-download
+  validation valid) before being tagged.
+* PR [#10](https://github.com/coderunknow/Kaggle-Kit/pull/10) against `main`
+  is open and unmerged (mergeable; CI green). PR #9 was closed as superseded
+  because it contained only the pre-audit commit, which is an ancestor of
+  the #10 branch.
+* Tag `v0.1.0-dev4` (lightweight) points at `0d3a742`. Release workflow
+  [run 39414208382](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39414208382)
+  succeeded, including "Verify the published release" (download +
+  checksum/manifest validation of every asset).
+* Prerelease (published 2026-10-20T11:21:27Z):
+  <https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev4> with
+  six assets — `v0.1.0-dev4-notebook.ipynb` (83 561 B),
+  `v0.1.0-dev4-app.zip` (1 925 281 B), `v0.1.0-dev4-source.zip`
+  (767 600 B), `manifest.json`, `SHA256SUMS`, `verification-report.json`.
+  Sizes for the notebook and app bundle match the local dry-run staging.
+  The sandbox cannot download from `release-assets.githubusercontent.com`
+  (EOF), so asset digests were verified by the workflow step, not locally.
+* Publication does not change the unverified list: no live Kaggle endpoint,
+  model weights, Docker isolation, Brave account, external MCP/HTTP service
+  or real-browser test has run. Tool capability on any real endpoint stays
+  `not_verified` until the operator runs the probe.

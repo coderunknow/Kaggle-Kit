@@ -757,3 +757,28 @@ pushed so `.github/workflows/release.yml` builds and publishes the
 prerelease. The release workflow builds from the tagged commit and does
 not require a merge to `main` first. The PR is intentionally left open and
 unmerged.
+
+## 2026-10-20 – v0.1.0-dev4 publication record
+
+* Pushed `arena/bef31f06-kaggle-kit` and opened PR
+  [#10](https://github.com/coderunknow/Kaggle-Kit/pull/10) against `main`;
+  left open and unmerged as instructed. CI on the PR branch is green
+  (`typecheck, lint, test and build`, `notebook tests`). The Kilo check
+  reports "fail" for the same out-of-credits reason as on PR #9; it
+  produced no findings. PR #9 was closed as superseded with an explanatory
+  comment.
+* Re-ran `tools/release-dry-run.sh 0.1.0-dev4 v0.1.0-dev4` on the final
+  commit `0d3a7424730b7454abfc234bd9bb192627da5795` — exit 0, release valid
+  in both staged and simulated-download validation.
+* Created and pushed lightweight tag `v0.1.0-dev4` at `0d3a742`. Release
+  workflow [run 39414208382](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39414208382)
+  completed successfully: source validation, build, integration check,
+  staging, staged-artifact validation, prerelease publication and
+  published-release verification all passed.
+* Verified via the GitHub API: release `v0.1.0-dev4` is a non-draft
+  prerelease published 2026-10-20T11:21:27Z targeting `0d3a742`, with the
+  six expected assets. A local `gh release download` attempt failed with
+  EOF from `release-assets.githubusercontent.com` (the known sandbox
+  limitation also recorded for dev3); checksum evidence therefore comes
+  from the workflow's verification step and the matching asset sizes.
+* This entry is a docs-only commit after the tag; the tag was not moved.
