@@ -1363,3 +1363,69 @@ gap without disclosing credentials.
 * `tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6` — exit 0 on `ff569f6`:
   all checks, staging, "The release v0.1.0-dev6 is valid" in both staged and
   simulated-download validation; notes rendered with the commit SHA.
+
+## 2026-10-20 — v0.1.0-dev6 merged, tagged and published (release record)
+
+* **Merge**: PR #13 was merged with a merge commit after a fresh independent
+  audit of `ad7995b..6706f2c` (recovery bounds, selectionRecovery default-off,
+  catalog byte budget, tool-category regression coverage, notebook key and
+  cloudflared pinning, benchmark safety) found no blockers.
+  * Merge commit `c52d262d78580fa07ebb3299cb9ecfaa8a4b6979`,
+    parents `ad7995b` (previous main) + `6706f2c` (PR head), merged at
+    2026-10-20T15:01:42Z; `main^{tree}` = `6706f2c^{tree}` =
+    `d234fe6c8cc141b8a4929d9091877b68d0d1cc6d` (byte-identical content).
+  * Pre-merge re-verification on `6706f2c` (all local, real exit codes):
+    typecheck 0, lint 0, Vitest 0 (44 files / 398 tests), build 0,
+    check:integration 0 (29/29), notebooks unittest 0 (46 passed / 0
+    skipped), tools unittest 0 (25 passed), `npm audit --json` 0
+    vulnerabilities, `git diff --check` 0, release dry-run 0.
+  * CI on the head (run 39441134333): every check green except Kilo Code
+    Review, whose check-run output is "Insufficient credits to run review"
+    (`action_required`) — a billing gate, not a code finding. Rulesets are
+    empty, the protection API is unreadable with the integration token
+    (403), `mergeStateStatus` was `UNSTABLE` (not `BLOCKED`), and PRs
+    #10/#11 merged with the same Kilo state: Kilo is not required.
+* **Pre-tag dry-run on the actual release commit**: `git worktree add
+  --detach` of `c52d262` + `tools/release-dry-run.sh 0.1.0-dev6
+  v0.1.0-dev6` → exit 0, "The release v0.1.0-dev6 is valid" in both the
+  staged and the simulated-download validation; the rendered notes contain
+  `c52d262…`; `manifest.json` binds `sourceCommit` to `c52d262…`; a regex
+  scan of manifest/report/checksums found no key-like strings (the only
+  `api_key`-shaped hits are descriptive prose about the `LLAMA_API_KEY`
+  fallback). Version sources at the release commit agree:
+  `package.json` / `package-lock.json` (both spots) / `shared/version.ts`
+  = `0.1.0-dev6`; notes file present (11,422 bytes).
+* **Tag**: lightweight `v0.1.0-dev6` → `c52d262` (dev3–dev5 precedent),
+  created only after confirming 0 remote tags with that name and no
+  existing release; pushed to `origin`.
+* **Release workflow**: run 39445117110
+  (https://github.com/coderunknow/Kaggle-Kit/actions/runs/39445117110),
+  conclusion `success`; every step `completed/success`, including
+  "Publish the GitHub prerelease" and "Verify the published release" (the
+  workflow's own runner-side step that downloads all published assets and
+  re-validates them with `validate_release --downloaded` against the
+  release commit).
+* **Published release**: https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev6
+  (id 418535765) — `prerelease=true`, `draft=false`, `target_commitish`
+  = `c52d262…`, published 2026-10-20T15:06:06Z, body contains the full
+  release SHA. Assets (all `state=uploaded`): `manifest.json` 1,903 B,
+  `SHA256SUMS` 439 B, `v0.1.0-dev6-app.zip` 2,154,558 B,
+  `v0.1.0-dev6-notebook.ipynb` 89,165 B, `v0.1.0-dev6-source.zip`
+  842,187 B, `verification-report.json` 10,094 B.
+* **Sandbox limitation (evidence caveat)**: this environment cannot reach
+  `release-assets.githubusercontent.com` or the Azure blob log storage
+  (both answer `EOF`), so the published assets could not be re-downloaded
+  and the raw job log not fetched from the sandbox; the authoritative
+  published-asset checksum verification is the workflow's successful
+  "Verify the published release" step, and asset metadata was read
+  directly from the releases API.
+* **Residual risks (unchanged, still open)**: HuggingFace weight digests
+  remain unpinned (host unreachable from the sandbox; no digest was ever
+  guessed); the live-model tool-calling benchmark has **not** been run
+  against a real Qwen deployment — all benchmark evidence so far is
+  mock-upstream mechanics only; Kilo review content remains unperformed
+  (credits).
+* These log entries are committed on the session branch after the merge,
+  so they are not part of the released tree; landing them on `main`
+  requires a follow-up docs PR (PR #8 precedent) — the Arena session
+  binding forbids creating branches other than this one.

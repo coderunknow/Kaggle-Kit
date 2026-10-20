@@ -916,3 +916,33 @@ created and no release is published (explicitly out of scope for this task).
   (`tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6`) is re-executed on the
   resulting commit and its exit status is reported in the PR conversation /
   completion report. A successful dry run is not a published release.
+
+## 2026-10-20 — v0.1.0-dev6 final audit, merge of PR #13 and release publication
+
+* Task: final audit → merge PR #13 → tag and publish v0.1.0-dev6 (merge and
+  prerelease publication explicitly authorized). All state was re-read live
+  from GitHub; the provided snapshot was not trusted. `AGENT.md` does not
+  exist — the real file is `AGENTS.md` (unmodified by the PR).
+* Audit: independent re-review of the full diff `ad7995b..6706f2c` (28
+  files, +2290/−49) against the reliability, selection/catalog, tool-category
+  and notebook/release-security checklist; no blockers found. Mock-based
+  benchmark evidence is never presented as real-model evidence.
+* Merge: `gh pr merge 13 --merge` → exit 0; verified via API:
+  `state=MERGED`, `mergedAt=2026-10-20T15:01:42Z`, merge commit
+  `c52d262d78580fa07ebb3299cb9ecfaa8a4b6979`, `origin/main` = `c52d262`,
+  tree identical to the tested head `6706f2c`.
+* Tag + release: dry-run re-executed on a clean detached worktree of
+  `c52d262` (exit 0) before tagging; lightweight tag `v0.1.0-dev6` →
+  `c52d262` pushed; release workflow run 39445117110 succeeded with every
+  step green, including the runner-side verification of the published
+  assets; release is `prerelease=true`, `draft=false`, target `c52d262`,
+  with all six assets uploaded
+  (https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev6).
+* Not verified from the sandbox (network-blocked, recorded honestly):
+  direct re-download of published assets and the raw job log
+  (`release-assets.githubusercontent.com` / Azure blob answer EOF). The
+  live-model benchmark remains uncollected; HF weight digests remain
+  unpinned; Kilo review remains credit-blocked with no findings.
+* This entry is committed on the session branch `arena/acff7542-kaggle-kit`
+  after the merge (append-only logs); a follow-up docs PR is needed to
+  land it on `main`.
