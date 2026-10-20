@@ -131,7 +131,7 @@ This matters for the Kaggle setup: a Cloudflare Quick Tunnel does not support
 Server-Sent Events, so the probe fails and the interface keeps using ordinary
 (non streaming) requests, which the tunnel handles correctly.
 
-## Tool-using chat (v0.1.0-dev4)
+## Tool-using chat (v0.1.0-dev4, recovery & context budget in v0.1.0-dev6)
 
 Tool use is an explicit profile-level opt-in and is disabled for older profiles.
 It does not change ordinary chat. Before the tool loop can run, open **Tools &
@@ -199,6 +199,33 @@ catalog and conversation settings intersect: a conversation can narrow a
 profile's tools and execution budgets, never expand them. Default limits are
 three model rounds, eight calls, 8 KiB input per call, bounded output, and a
 120-second loop; profile and conversation settings are clamped server-side.
+
+**Bounded corrective recovery (v0.1.0-dev6).** When the model produces a
+protocol-invalid turn (tool-call data with a wrong `finish_reason`, malformed
+calls) or an invalid/unknown tool call, nothing from that turn is executed.
+The loop spends at most **one corrective attempt per correction episode**:
+the model receives the exact failure evidence plus the valid tool list, or —
+for invalid arguments — the validation error as the tool result. A repeated
+identical invalid call, or a second failure in the same episode, ends the
+loop with an honest report of what remains undone; partial results from
+earlier successful calls are preserved. A successful execution closes the
+episode, so a later failure gets its own single attempt. Corrective rounds
+count against the round/time budgets and can never bypass an approval, a
+denial or an exhausted budget. When a corrective round was used, the message
+carries a note saying so and whether it worked. For conversations where the
+model answers tool-dependent requests with plain text, the conversation's
+*Tools and privacy* panel offers an opt-in **"Allow one corrective round…"**
+(selection recovery): the first plain-text answer of a turn spends at most
+one extra round asking the model whether a listed tool is actually needed —
+it may still answer directly, so ordinary questions are never forced through
+a tool. The option is off by default.
+
+**Tool-catalog context budget (v0.1.0-dev6).** The exact serialized size of
+the tool catalog sent with every round is measured in bytes. Catalogs above
+16,000 bytes are refused (HTTP 409) with guidance, and catalogs above 6,000
+bytes produce a truthful in-chat notice, because the documented deployment
+context is 8192 tokens shared with the conversation. Token figures quoted in
+the notice are estimates derived from bytes (÷3.6), never tokenizer counts.
 
 Approval is for one exact prepared operation, not a standing permission. It
 expires, cannot be replayed, and is invalidated if tool settings change, the

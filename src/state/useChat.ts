@@ -129,6 +129,13 @@ export function useChat(): ChatController {
       id: conversationId,
       changes: { toolHistoryPersistence: result.persistToolHistory, updatedAt: new Date().toISOString() },
     });
+    // Surface the bounded-recovery diagnostics and any context-pressure hint
+    // so the UI never implies a smooth run when a corrective round happened.
+    const notes: string[] = [];
+    if (result.recovery && result.recovery.attempts > 0) {
+      notes.push(`Corrective recovery: ${result.recovery.attempts} corrective round(s) used; outcome: ${result.recovery.outcome === 'corrected' ? 'the retry produced a valid turn' : 'recovery failed; see the activity timeline for what remains undone'}.`);
+    }
+    if (result.contextNotice) notes.push(result.contextNotice);
     patchMessage(conversationId, messageId, {
       content: result.content,
       status: waiting ? 'pending' : 'complete',
@@ -142,7 +149,7 @@ export function useChat(): ChatController {
       sourceCitations: result.sourceCitations,
       transientToolContent: result.transientContent === true,
       toolJobId: waiting ? result.jobId : undefined,
-      toolNote: undefined,
+      toolNote: notes.length > 0 ? notes.join(' ') : undefined,
       errorKind: undefined,
       errorMessage: undefined,
       errorHint: undefined,

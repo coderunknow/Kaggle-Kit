@@ -209,6 +209,29 @@ The same checks run on every push and pull request in
 no GPU, no weights and no tunnel. The notebook tests need the `requests`
 package (`pip install requests`).
 
+### Live-model tool-calling benchmark
+
+`tools/model-benchmark.mjs` tests a **real** OpenAI-compatible endpoint —
+for example the deployed Kaggle model — without sharing its URL or key with
+anyone. The key is read from the environment or a masked prompt, never from
+the command line:
+
+```bash
+export OPENAI_BASE_URL="https://<your-tunnel>/v1"   # sanitized in reports
+export OPENAI_API_KEY="<your key>"                  # never printed
+node tools/model-benchmark.mjs --model "<model id>" --trials 3 --report bench.json
+```
+
+Model mode verifies the native tool-call handshake, tool selection on an
+unambiguous task, argument schema/semantics, honest handling of a synthetic
+tool result, and that ordinary questions do **not** trigger tools. It feeds
+the model synthetic results only — it never executes a real tool. A separate
+`--mode integration` exercises a running Kaggle-Kit proxy end to end
+(automatic calculator run, Python approval + denial) and reports skipped
+cases as skipped when the proxy or profile is not configured. See
+[docs/troubleshooting.md](docs/troubleshooting.md#live-model-tool-benchmark)
+for what each layer proves and what it cannot.
+
 ## Releases
 
 A release is built by [`.github/workflows/release.yml`](.github/workflows/release.yml)

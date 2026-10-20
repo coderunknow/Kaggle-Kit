@@ -122,7 +122,7 @@ class FlagSelectionTests(unittest.TestCase):
         launch = self._launch(
             "--ctx-size N --split-mode M --tensor-split T --cache-type-k T "
             "--cache-type-v T --flash-attn on --jinja --reasoning-effort <value> "
-            "--spec-type T --spec-draft-n-max N",
+            "--spec-type T --spec-draft-n-max N --api-key K",
             {"ctx": 8192, "mtp": True, "reasoning": True},
         )
 
@@ -163,6 +163,42 @@ class FlagSelectionTests(unittest.TestCase):
         self.assertNotIn("--api-key", launch.command)
         self.assertNotIn("secret", " ".join(launch.command))
         self.assertEqual(launch.applied["api_key_source"], "file")
+        self.assertEqual(launch.env, {})
+
+    def test_the_api_key_falls_back_to_the_environment_never_to_argv(self) -> None:
+        # The pinned llama.cpp builds read --api-key from LLAMA_API_KEY when
+        # the environment variable is set (common/arg.cpp, set_env). The key
+        # must never appear in the command line: argv is world-readable via
+        # /proc/<pid>/cmdline while the process runs.
+        launch = self._launch(
+            "--ctx-size N --n-gpu-layers N --host H --port P --api-key K",
+            {"ctx": 8192, "mtp": False, "reasoning": False},
+        )
+
+        self.assertNotIn("--api-key", launch.command)
+        self.assertNotIn("secret", " ".join(launch.command))
+        self.assertEqual(launch.env, {"LLAMA_API_KEY": "secret"})
+        self.assertEqual(launch.applied["api_key_source"], "environment")
+
+    def test_a_build_that_cannot_authenticate_is_refused(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self._launch(
+                "--ctx-size N --n-gpu-layers N --host H --port P",
+                {"ctx": 8192, "mtp": False, "reasoning": False},
+            )
+
+    def test_the_cloudflared_download_is_pinned_and_digest_verified(self) -> None:
+        import inspect
+
+        self.assertEqual(len(nb.CLOUDFLARED_SHA256), 64)
+        int(nb.CLOUDFLARED_SHA256, 16)  # raises when not hexadecimal
+        self.assertRegex(nb.CLOUDFLARED_VERSION, r"^\d{4}\.\d{1,2}\.\d{1,2}$")
+        source = inspect.getsource(nb.get_cloudflared)
+        # The pinned version tag and the moving-target ban.
+        self.assertIn("CLOUDFLARED_VERSION", source)
+        self.assertNotIn("releases/latest", source)
+        self.assertIn("CLOUDFLARED_SHA256", source)
+        self.assertIn("expected_sha256", source)
 
     def test_variants_start_with_the_verified_configuration(self) -> None:
         config = nb.DeploymentConfig()

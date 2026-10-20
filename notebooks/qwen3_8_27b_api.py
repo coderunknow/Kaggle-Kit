@@ -229,6 +229,16 @@ LLAMA_CPP_SHA256 = {
 }
 
 
+# The public tunnel binary is pinned the same way: one exact cloudflared
+# release and the SHA-256 digest Cloudflare published in its release notes
+# (verified through the GitHub releases API for tag 2026.10.2). The moving
+# ``releases/latest`` target is never used: it could silently swap the
+# binary that gets executed next to the model.
+CLOUDFLARED_VERSION = "2026.10.2"
+CLOUDFLARED_BINARY = "cloudflared-linux-amd64"
+CLOUDFLARED_SHA256 = "35fbdd2beb378436c7da377d7358cea8e33f9c94a6705d1d8036bf9b0d6d8005"
+
+
 def sha256_of(path: Path) -> str:
     """The SHA-256 digest of a file, read in chunks."""
     digest = hashlib.sha256()
@@ -631,12 +641,15 @@ class ServerLaunch:
     ``applied`` is the source of truth for the runtime bundle and for the
     summary: an option is only listed when the flag was really passed to the
     binary. ``dropped`` lists the requested options the build does not
-    understand.
+    understand. ``env`` carries environment variables the launcher must add
+    to the server process (used for the API key when the build cannot read
+    it from a file), so the key never appears in the process argument list.
     """
 
     command: List[str]
     applied: Dict[str, Any]
     dropped: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
 
 
 MTP_FLAGS = ("--spec-type", "--spec-draft-n-max")
@@ -687,13 +700,26 @@ def build_server_command(
     ]
 
     # The key is read from a file when the build supports it, so it does not
-    # show up in the process list of the machine.
+    # show up in the process list of the machine. The pinned llama.cpp builds
+    # (b11717-b11719) all support --api-key-file and, per common/arg.cpp in
+    # those tags, read --api-key from the LLAMA_API_KEY environment variable.
+    # The env fallback keeps the key out of argv (world-readable through
+    # /proc/<pid>/cmdline); an argv fallback is never used, and a build that
+    # cannot authenticate at all is refused instead of starting unprotected.
+    launch_env: Dict[str, str] = {}
     if "--api-key-file" in supported and api_key_file is not None:
         command += ["--api-key-file", str(api_key_file)]
         applied["api_key_source"] = "file"
+    elif "--api-key" in supported:
+        launch_env["LLAMA_API_KEY"] = api_key
+        applied["api_key_source"] = "environment"
     else:
-        command += ["--api-key", api_key]
-        applied["api_key_source"] = "argument"
+        raise RuntimeError(
+            "This llama-server build supports neither --api-key-file nor "
+            "--api-key, so it cannot authenticate requests. Refusing to "
+            "start an unauthenticated server that may become publicly "
+            "reachable through the tunnel."
+        )
 
     command += [
         "--n-gpu-layers",
@@ -771,7 +797,7 @@ def build_server_command(
                 "is missing); plain inference is used."
             )
 
-    return ServerLaunch(command=command, applied=applied, dropped=dropped)
+    return ServerLaunch(command=command, applied=applied, dropped=dropped, env=launch_env)
 
 
 def server_variants(config: DeploymentConfig) -> List[Dict[str, Any]]:
@@ -1208,7 +1234,9 @@ def start_server(
                 launch.command,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                env=env,
+                # launch.env carries the API key when the build reads it from
+                # LLAMA_API_KEY instead of a file; it never appears in argv.
+                env={**env, **launch.env},
                 start_new_session=True,
             )
 
@@ -1342,21 +1370,21 @@ def probe_local_streaming(
 
 
 def get_cloudflared(session: requests.Session, config: DeploymentConfig) -> Path:
-    """Download the cloudflared binary and check that it runs."""
+    """
+    Download the pinned cloudflared binary and check that it runs.
+
+    The download targets one exact release and is verified against the
+    SHA-256 digest Cloudflare published for that release, so the tunnel
+    binary is no longer a moving ``latest`` target. An existing file is
+    reused only when it matches the pinned digest (``download_resumable``
+    re-checks and replaces it otherwise).
+    """
     binary = config.bin_root / "cloudflared"
 
-    if binary.exists():
-        try:
-            test = subprocess.run(
-                [str(binary), "--version"], capture_output=True, text=True, timeout=20
-            )
-            if test.returncode == 0:
-                return binary
-        except Exception:  # noqa: BLE001
-            pass
-        binary.unlink(missing_ok=True)
-
-    url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+    url = (
+        "https://github.com/cloudflare/cloudflared/releases/download/"
+        f"{CLOUDFLARED_VERSION}/{CLOUDFLARED_BINARY}"
+    )
     binary = download_resumable(
         session,
         url,
@@ -1364,6 +1392,7 @@ def get_cloudflared(session: requests.Session, config: DeploymentConfig) -> Path
         min_bytes=5_000_000,
         verify_tar=False,
         attempts=8,
+        expected_sha256=CLOUDFLARED_SHA256,
     )
     binary.chmod(0o755)
 
