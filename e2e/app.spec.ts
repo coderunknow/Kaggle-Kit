@@ -58,7 +58,7 @@ test('runs a safe tool automatically and lets the user deny risky code', async (
   // Configure tools through the real settings UI: probe, enable the loop,
   // allow the calculator, and pin a (deliberately unavailable) sandbox image.
   const dialog = await openSettings(page);
-  await dialog.getByRole('button', { name: /tools & approvals/i }).click();
+  await dialog.getByRole('tab', { name: /tools & approvals/i }).click();
   await dialog.getByRole('button', { name: /verify native tool calling/i }).click();
   await expect(dialog.getByText('supported_verified')).toBeVisible();
   await dialog.getByLabel(/enable the server-side tool loop/i).check();
