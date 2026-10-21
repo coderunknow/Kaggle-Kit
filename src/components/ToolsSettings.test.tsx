@@ -88,3 +88,31 @@ describe('profile tool settings', () => {
     expect(JSON.parse(probe?.body ?? '{}')).toMatchObject({ model: 'mock-model', baseUrl: profile.baseUrl });
   });
 });
+
+describe('Basic built-in tools', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it('requires an explicit grant and save, without configuring providers, Python or MCP', async () => {
+    window.localStorage.clear();
+    const writes: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      if (body) writes.push(body);
+      return new Response(JSON.stringify({ settings: body?.settings ?? DEFAULT_TOOL_PROFILE_SETTINGS }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }));
+    const user = userEvent.setup();
+    render(<AppProvider initialAppState={{ ...initialState, profiles: [profile], preferences: { ...initialState.preferences, activeProfileId: profile.id } }}><ToolsSettings advanced={false} /></AppProvider>);
+    await waitFor(() => expect(screen.getByRole('button', { name: /allow reviewed keyless/i })).toBeEnabled());
+    expect(screen.queryByRole('textbox', { name: /digest-pinned/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /allow reviewed keyless/i }));
+    expect(writes).toEqual([]);
+    expect(screen.getByText(/7 tool\(s\) selected/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /save tool settings/i }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toMatchObject({ settings: { enabled: true, web: { provider: 'disabled' }, code: { provider: 'disabled' }, mcpServers: [], httpTools: [] } });
+    expect(JSON.stringify(writes)).not.toContain('web_search');
+    expect(JSON.stringify(writes)).not.toContain('code_execute');
+  });
+});

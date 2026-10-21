@@ -320,6 +320,48 @@ describe('the chat interface', () => {
     expect(payload.messages).toEqual([{ role: 'user', content: 'First question' }]);
   });
 
+  it('invalidates an editor test immediately when the typed credential changes', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    const panel = await openSettings(user);
+    await user.click(await panel.findByRole('button', { name: /add profile/i }));
+    await user.type(panel.getByLabelText(/api key/i), API_KEY);
+    await user.click(panel.getByRole('button', { name: /test connection/i }));
+    await panel.findByText(/^connected$/i);
+    await user.type(panel.getByLabelText(/api key/i), '-rotated');
+    expect(panel.queryByText(/^connected$/i)).toBeNull();
+    expect(panel.getByText(/form changed since the last test/i)).toBeTruthy();
+  });
+
+  it('preserves a matching inference test when saving a tested replacement credential', async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await createProfile(user);
+    const panel = await openSettings(user);
+    await user.click(panel.getByRole('button', { name: /^edit$/i }));
+    await user.type(panel.getByLabelText(/api key/i), 'rotated-test-key');
+    await user.click(panel.getByRole('button', { name: /test connection/i }));
+    await panel.findByText(/^connected$/i);
+    await user.click(panel.getByRole('button', { name: /save profile/i }));
+    await closeSettings(user);
+    await openSettings(user);
+    expect(within(drawer()).getByText(/^connected$/i)).toBeTruthy();
+  });
+
+  it('explains empty model discovery without inventing a model or a connected status', async () => {
+    const original = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => String(input) === '/api/proxy/models'
+      ? jsonResponse({ models: [] }) : original(input, init));
+    const user = userEvent.setup();
+    renderApp();
+    const panel = await openSettings(user);
+    await user.click(await panel.findByRole('button', { name: /add profile/i }));
+    await user.click(panel.getByRole('button', { name: /discover models/i }));
+    await panel.findByText(/endpoint returned no model IDs/i);
+    expect(panel.getByLabelText(/^model id$/i)).toHaveValue('');
+    expect(panel.queryByText(/^connected$/i)).toBeNull();
+  });
+
   it('keeps the key in the local proxy secret store in the server mode', async () => {
     const user = userEvent.setup();
     renderApp();
@@ -660,6 +702,7 @@ describe('the recommended system prompt', () => {
 
     const panel = await openSettings(user);
     await user.click(panel.getByRole('button', { name: /^edit$/i }));
+    await user.click(panel.getByRole('checkbox', { name: /advanced mode/i }));
     await user.click(panel.getByRole('button', { name: /insert the recommended qwen prompt/i }));
 
     const textarea = panel.getByLabelText(/system prompt/i) as HTMLTextAreaElement;

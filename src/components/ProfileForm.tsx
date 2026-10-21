@@ -40,6 +40,7 @@ export interface ProfileFormProps {
   onSaved: () => void;
   onCancel: () => void;
   onDeleted: () => void;
+  advanced?: boolean;
 }
 
 interface FormState {
@@ -61,7 +62,7 @@ const CREDENTIAL_LABELS: Record<CredentialStorage, string> = {
   browser: 'Browser storage (plain text)',
 };
 
-export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: ProfileFormProps) {
+export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, advanced = true }: ProfileFormProps) {
   const app = useApp();
   // The form is mounted with the key of the profile, so a new profile always
   // starts with a fresh form.
@@ -209,7 +210,8 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     form.credentialStorage === profile.credentialStorage &&
     draftConfig === savedConfig;
 
-  const testIsCurrent = testResult !== undefined && testedConfig === draftConfig;
+  const testIsCurrent = testResult !== undefined && testedConfig === draftConfig &&
+    (testSnapshot ? testSnapshot.typedKey === typedKey : !typedKey);
 
   const handleSave = async () => {
     if (!validation.ok) {
@@ -421,6 +423,9 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
         setDraftModels(models);
       }
 
+      if (models.length === 0) {
+        setFormError('The endpoint returned no model IDs. Enter the exact model ID manually, then test inference. Discovery alone does not verify a connection.');
+      }
       if (models.length > 0 && !form.modelId) {
         update('modelId', models[0] as string);
         setManualModel(false);
@@ -454,6 +459,31 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           <Icon name="close" size={15} />
         </button>
       </div>
+
+      {isNew ? <section className="notice notice--info" aria-label="Guided connection setup">
+        <strong>Connect your model, then start chatting</strong>
+        <ol>
+          <li>Choose an endpoint type and enter its model API address below — not this page’s address.</li>
+          <li>Enter a model-server key only if that server requires one. Built-in local tools need no provider account.</li>
+          <li>Discover models, or enter the exact model ID manually.</li>
+          <li>Test connection to verify actual inference, then save the profile.</li>
+          <li>Start a conversation. Tools are an optional, separately verified opt-in.</li>
+        </ol>
+        <label className="field">
+          <span className="field__label">Endpoint type (guidance only)</span>
+          <select defaultValue="compatible" onChange={(event) => setNotes([
+            event.target.value === 'kaggle'
+              ? 'Kaggle: paste the current model API URL and key printed by your notebook. Tunnel addresses can change.'
+              : event.target.value === 'local'
+                ? 'Local server: use the address and port printed by your OpenAI-compatible server. Authentication depends on its configuration.'
+                : 'OpenAI-compatible: use your provider’s API base URL and exact model ID; a model credential may be required.',
+          ])}>
+            <option value="compatible">OpenAI-compatible endpoint</option>
+            <option value="kaggle">Kaggle notebook / tunnel</option>
+            <option value="local">Local model server</option>
+          </select>
+        </label>
+      </section> : null}
 
       <div className="field">
         <label className="field__label" htmlFor={ids.name}>
@@ -646,7 +676,7 @@ npm start`}
         </span>
       </div>
 
-      <div className="field">
+      <div className="field" hidden={!advanced}>
         <label className="field__label" htmlFor={ids.system}>
           System prompt
         </label>
@@ -689,7 +719,7 @@ npm start`}
         </span>
       </div>
 
-      <div className="field">
+      <div className="field" hidden={!advanced}>
         <label className="field__label" htmlFor={ids.timeout}>
           Request timeout (ms)
         </label>
@@ -797,7 +827,7 @@ npm start`}
           <button type="button" className="button" onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit" className="button button--primary" disabled={saving}>
+          <button type="submit" className="button button--primary" disabled={saving || testing || discovering}>
             {saving ? 'Saving…' : 'Save profile'}
           </button>
         </div>

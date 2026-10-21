@@ -2936,3 +2936,9 @@ textarea[aria-invalid="true"] {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Author layout rules (for example .field { display: flex }) must not
+   override the native hidden attribute when switching settings modes. */
+[hidden] {
+  display: none !important;
+}

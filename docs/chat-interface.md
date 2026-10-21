@@ -6,6 +6,31 @@ server directly: every request goes through the local proxy backend in
 problem completely and keeps the API key out of the browser when the profile
 uses the "local proxy secret store".
 
+## Guided setup and Basic/Advanced modes (dev7 candidate)
+
+Open Settings → Add profile. The form guides you through endpoint type, model
+API address, optional model credential, model discovery/manual entry, a real
+inference test, and saving. This page’s proxy address is not the upstream model
+address. Discovery and proxy health alone never mean Connected. A connected
+active profile offers **Start chatting**.
+
+Basic mode hides advanced prompt, timeout and integration controls without
+resetting their values. **Advanced mode** restores them; inference, preferences
+and data tabs remain accessible. Mode is a view choice, not permission.
+
+In Tools & approvals, **Allow reviewed keyless built-ins**, then **Save tool
+settings**, explicitly grants calculator/conversion, conversation files,
+endpoint diagnostics and public-page opening. These need no tool-provider
+account. The model endpoint may require its own key. Verify native tool calling
+for the exact endpoint/model before use; ordinary chat works without it.
+
+The preset menu **only narrows current permissions**. It does not add tools,
+grant MCP/HTTP, enable Python or change budgets. Web research currently means
+page retrieval only: **keyless public-web search is not implemented** in this
+candidate. Brave remains optional in Advanced and requires its provider key.
+Browser Python is unavailable; Docker remains optional Advanced functionality.
+See [the audit and concrete blockers](dev7-audit.md).
+
 ## Connection profiles
 
 A profile describes one OpenAI-compatible endpoint.

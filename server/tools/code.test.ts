@@ -28,6 +28,12 @@ describe('fail-closed Python sandbox configuration', () => {
     await expect(runPythonInDocker('x'.repeat(8_193), pinned)).rejects.toThrow(/8,192 bytes/i);
   });
 
+  it('does not start Docker for a request cancelled before dispatch', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(runPythonInDocker('print(1)', pinned, controller.signal)).rejects.toThrow(/cancelled before Docker started/);
+  });
+
   it('builds the exact isolation argv with a removable container name', () => {
     const name = sandboxContainerName();
     expect(name).toMatch(/^kaggle-kit-sandbox-[0-9a-f-]{36}$/);
