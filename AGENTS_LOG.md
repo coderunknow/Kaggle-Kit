@@ -985,3 +985,45 @@ created and no release is published (explicitly out of scope for this task).
   committed here; it is then closed with a comment referencing this record,
   without deleting its branch. This entry is that record; the close comment
   outcome is reported in the task completion report.
+
+## 2026-10-21 — dev7 partial implementation and verification
+
+- Baseline: complete repository-memory documents read before edits; live main
+  `3b5cec8ebeda2f985f27f65249d43c34f19d59a9`, package dev6, no dev7 tag/release.
+  Work stays on `arena/4327fa8e-kaggle-kit`; PR #15 inspected and untouched.
+- Implementation: `d80a2e3829b8f17e1e37e5cfe71a464fa2d55fec` — guided setup,
+  Basic/Advanced without value loss, reviewed keyless grant and narrowing-only
+  presets, empty discovery guidance, connected-profile chat action, typed-key
+  editor test invalidation, total web deadline/cancellation including DNS,
+  malformed Brave payload validation, pre-cancelled Docker dispatch refusal,
+  browser/component/unit regressions, dev7 version/docs/verification metadata.
+- Reproduced old credential-edit and Docker-cancellation failures by temporarily
+  restoring their old expressions/guard, running focused tests (exit 1), then
+  restoring fixes. Rejected the suspected old-key fingerprint-order defect
+  (presence-only fingerprint); did not retain that speculative change.
+- Search is **not implemented**: SearXNG API/limiter documentation does not prove
+  public-instance permission or availability, and outbound search hosts are
+  unavailable (DuckDuckGo curl TLS exit 35). No placeholder or guessed citations.
+- Browser Python is **not implemented**: inspected Pyodide 314.0.7 docs/license,
+  actual downloaded npm archive 6,488,647 bytes. Same-origin worker privileges
+  and missing lifecycle bridge remain undemonstrated safety requirements, not
+  reasons to ship an insecure demo. Optional strict Docker retained.
+- Verification against implementation SHA: typecheck 0, lint 0, Vitest 45 files /
+  431 tests 0, build 0, built integration 31/31 0, notebook 58/no-skips 0, tools
+  25 0, npm audit 0 vulnerabilities, diff-check 0. Exact required scripts also
+  repeated by the release dry run. Initial notebook run skipped 7 until requests
+  was installed; final run has no skips.
+- Provisioned Chromium 153 via @sparticuz/chromium@153.0.0 outside repo, plus its
+  NSS/NSPR libs via LD_LIBRARY_PATH. `npm run test:e2e`: 5 passed on built app /
+  local mock, exit 0. Initial missing-binary/dependency failures resolved locally;
+  no browser/runtime dependency added to application or workflow. New 360px test
+  caught/fixed CSS overriding hidden; new Basic grant/probe/calculator/continuation
+  E2E passes. This is real browser integration but **not** a live-model test.
+- `tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7`: exit 0 at `d80a2e3`; both
+  validators valid, source SHA rendered into notes. App 2,166,718 bytes, notebook
+  91,914, source 875,918. No tag or publication; generated assets remain ignored.
+- Residual: keyless search outstanding; safe browser Python deferred; no live
+  model/Kaggle/provider/MCP/HTTP or local Docker/Windows run. Existing CI jobs
+  retained; PR/CI confirmation appended separately. Detailed evidence and
+  concrete follow-up: `docs/dev7-audit.md`. Candidate must remain draft/open,
+  not represented as acceptance-complete or bug-free.
