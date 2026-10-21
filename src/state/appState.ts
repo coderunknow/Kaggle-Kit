@@ -308,11 +308,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case 'keys/clearAll':
       return { ...state, sessionKeys: {}, browserKeys: {}, connectionTests: {}, capabilities: {} };
 
-    case 'capabilities/set':
+    case 'capabilities/set': {
+      // A streaming/props re-detection carries no tool-calling probe result of
+      // its own; overwriting the whole record would silently drop a separately
+      // verified tool capability. The existing toolCalling is preserved only
+      // when the incoming payload has none — a newer explicit probe result
+      // always wins, and nothing is inferred here.
+      const existing = state.capabilities[action.profileId];
+      const merged: ServerCapabilities = {
+        ...action.capabilities,
+        ...(action.capabilities.toolCalling === undefined && existing?.toolCalling
+          ? { toolCalling: existing.toolCalling }
+          : {}),
+      };
       return {
         ...state,
-        capabilities: { ...state.capabilities, [action.profileId]: action.capabilities },
+        capabilities: { ...state.capabilities, [action.profileId]: merged },
       };
+    }
 
     case 'capabilities/clear':
       return {

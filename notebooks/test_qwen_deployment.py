@@ -1032,5 +1032,257 @@ class RangeServerTests(unittest.TestCase):
             server.shutdown()
 
 
+class FakeTunnelProcess:
+    """A stand-in for the cloudflared child process."""
+
+    def __init__(self, exited: bool = False, fail_stop: bool = False) -> None:
+        self._exited = exited
+        self._fail_stop = fail_stop
+        self.terminate_called = False
+        self.kill_called = False
+
+    def poll(self):
+        return 0 if self._exited else None
+
+    def terminate(self) -> None:
+        if self._fail_stop:
+            raise OSError("terminate refused")
+        self.terminate_called = True
+
+    def kill(self) -> None:
+        self.kill_called = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class TunnelLifecycleTests(unittest.TestCase):
+    """A tunnel that never reports its URL must not stay alive."""
+
+    def _run(self, process, announce_url: str | None = None):
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.DeploymentConfig()
+            config.root = Path(directory)
+
+            def fake_popen(cmd, stdout=None, stderr=None, start_new_session=False):
+                if announce_url and stdout is not None:
+                    stdout.write(f"INF | Your quick Tunnel has been created! Visit it at:\nINF | {announce_url}\n")
+                    stdout.flush()
+                return process
+
+            with unittest.mock.patch.object(nb, "get_cloudflared", lambda session, cfg: Path("/tmp/fake-cloudflared")), \
+                 unittest.mock.patch.object(nb.subprocess, "Popen", fake_popen), \
+                 unittest.mock.patch.object(nb.time, "sleep", lambda seconds: None):
+                return nb.start_public_tunnel(object(), config)
+
+    def test_a_timed_out_tunnel_process_is_stopped(self) -> None:
+        process = FakeTunnelProcess()
+        result = self._run(process)
+        self.assertIsNone(result)
+        self.assertTrue(process.terminate_called)
+
+    def test_an_exited_tunnel_process_is_left_alone(self) -> None:
+        process = FakeTunnelProcess(exited=True)
+        result = self._run(process)
+        self.assertIsNone(result)
+        self.assertFalse(process.terminate_called)
+
+    def test_a_failed_stop_never_reports_a_url(self) -> None:
+        process = FakeTunnelProcess(fail_stop=True)
+        result = self._run(process)
+        # The cleanup failure is warned about but never turns the timeout
+        # into a success: no URL is reported.
+        self.assertIsNone(result)
+
+    def test_a_reported_url_keeps_the_tunnel_running(self) -> None:
+        process = FakeTunnelProcess()
+        result = self._run(process, announce_url="https://abc-123.trycloudflare.com")
+        self.assertEqual(result, "https://abc-123.trycloudflare.com")
+        self.assertFalse(process.terminate_called)
+
+
+class UnsupportedOptionsFreshnessTests(unittest.TestCase):
+    """The reported unsupported options must come from the server this run started."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.config = nb.DeploymentConfig()
+        self.config.root = Path(self.directory.name)
+        self.config.enable_tunnel = False
+        self.config.model_dir.mkdir(parents=True, exist_ok=True)
+        self.model = self.config.model_dir / self.config.model_file
+        self.model.write_bytes(b"GGUF" + b"0" * 2048)
+
+        patches = [
+            ("build_session", lambda: object()),
+            ("check_gpus", lambda config: ["GPU 0: T4", "GPU 1: T4"]),
+            ("get_server_binary", lambda session, config: Path("/tmp/llama-server")),
+            ("find_saved_model", lambda config: self.model),
+            ("probe_local_streaming", lambda *args, **kwargs: True),
+            ("start_public_tunnel", lambda *args, **kwargs: None),
+            ("owns_process", lambda state: True),
+            ("stop_owned_server", lambda config, state: True),
+            ("port_in_use", lambda host, port: False),
+            ("server_healthy", lambda *args, **kwargs: False),
+            ("start_server", self._start),
+        ]
+        self._patchers = [unittest.mock.patch.object(nb, name, replacement) for name, replacement in patches]
+        for patcher in self._patchers:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
+        self.directory.cleanup()
+
+    def _start(self, session, config, binary, model_path, api_key, **kwargs):
+        # The real start_server writes the state of the server it started;
+        # this stand-in does the same with a different dropped list than the
+        # stale state of the previous run.
+        nb.write_server_state(config, {
+            "fingerprint": "fresh",
+            "dropped": ["fresh-flag"],
+            "pid": 4321,
+            "model_id": "model-a",
+            "applied": {},
+        })
+        return "model-a", {"ctx": 8192, "mtp": False, "reasoning": False, "n_gpu_layers": 99}
+
+    def test_a_restart_reports_the_dropped_options_of_the_new_server(self) -> None:
+        import contextlib
+
+        # A stale state of a previous run with a different fingerprint.
+        nb.write_server_state(self.config, {
+            "fingerprint": "stale",
+            "dropped": ["stale-flag"],
+            "pid": 1234,
+            "model_id": "old-model",
+            "applied": {},
+        })
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = nb.main(self.config)
+
+        # The stale snapshot said "stale-flag"; the server started by this run
+        # says "fresh-flag". Only the fresh value may be reported.
+        self.assertEqual(result["applied"]["unsupported_options"], ["fresh-flag"])
+        self.assertFalse(result["server_reused"])
+
+
+class ModelChecksumTests(unittest.TestCase):
+    """Optional, operator-supplied pinning of the model weights."""
+
+    GGUF_PAYLOAD = b"GGUF" + b"7" * 4092
+
+    def _config(self, directory: str) -> nb.DeploymentConfig:
+        config = nb.DeploymentConfig()
+        config.root = Path(directory)
+        config.input_root = Path(directory) / "input"
+        config.min_model_bytes = 1024
+        return config
+
+    def _write_gguf(self, path: Path, size: int) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            handle.write(b"GGUF")
+            handle.write(b"\0" * max(0, size - 4))
+        return path
+
+    def test_a_saved_model_with_a_mismatched_digest_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            config.model_sha256 = "0" * 64
+            path = self._write_gguf(config.model_dir / config.model_file, 2048)
+            self.assertIsNone(nb.find_saved_model(config))
+
+            config.model_sha256 = nb.sha256_of(path)
+            self.assertEqual(nb.find_saved_model(config), path)
+
+    def test_a_saved_model_without_a_configured_digest_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            path = self._write_gguf(config.model_dir / config.model_file, 2048)
+            self.assertEqual(nb.find_saved_model(config), path)
+
+    def test_the_direct_download_resolves_the_configured_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            config.model_revision = "rev-42"
+            session = FakeSession(self.GGUF_PAYLOAD)
+            with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": None}):
+                path = nb.download_model(session, config)
+            self.assertTrue(path.exists())
+            self.assertIn("/resolve/rev-42/", session.ranges[0][0])
+
+    def test_the_direct_download_fails_closed_on_a_wrong_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            config.model_revision = "rev-42"
+            config.model_sha256 = "0" * 64
+            session = FakeSession(self.GGUF_PAYLOAD)
+            with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": None}):
+                with self.assertRaises(nb.ChecksumMismatch):
+                    nb.download_model(session, config)
+            self.assertFalse((config.model_dir / config.model_file).exists())
+
+    def test_the_direct_download_accepts_a_matching_digest(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            config.model_sha256 = hashlib.sha256(self.GGUF_PAYLOAD).hexdigest()
+            session = FakeSession(self.GGUF_PAYLOAD)
+            with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": None}):
+                path = nb.download_model(session, config)
+            self.assertTrue(path.exists())
+
+    def test_the_hub_download_receives_the_configured_revision(self) -> None:
+        import types
+
+        calls: dict = {}
+
+        def fake_hf_hub_download(repo_id, filename, local_dir, revision=None):
+            calls["revision"] = revision
+            destination = Path(local_dir) / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(self.GGUF_PAYLOAD)
+            return str(destination)
+
+        fake_module = types.ModuleType("huggingface_hub")
+        fake_module.hf_hub_download = fake_hf_hub_download
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            config.model_revision = "rev-42"
+            with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": fake_module}):
+                path = nb.download_model(FakeSession(b""), config)
+            self.assertEqual(calls["revision"], "rev-42")
+            self.assertTrue(path.exists())
+
+    def test_a_tampered_file_never_passes_either_download_path(self) -> None:
+        import types
+
+        tampered = b"GGUF" + b"9" * 4092
+
+        def fake_hf_hub_download(repo_id, filename, local_dir, revision=None):
+            destination = Path(local_dir) / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(tampered)
+            return str(destination)
+
+        fake_module = types.ModuleType("huggingface_hub")
+        fake_module.hf_hub_download = fake_hf_hub_download
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = self._config(directory)
+            config.model_sha256 = "0" * 64  # a digest the tampered file cannot match
+            session = FakeSession(tampered)
+            with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": fake_module}):
+                with self.assertRaises(nb.ChecksumMismatch):
+                    nb.download_model(session, config)
+            self.assertFalse((config.model_dir / config.model_file).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

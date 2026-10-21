@@ -98,16 +98,52 @@ export function qwenToolSystemPrompt(): string {
 }
 
 /**
- * Replace the known no-tools claim in an arbitrary system prompt.
+ * Known shapes of a "this session has no tools" claim in an arbitrary
+ * (possibly user-customised) system prompt. Used only on tool-enabled turns,
+ * where such a claim contradicts the tool list the same request carries.
+ */
+const NO_TOOLS_PATTERNS: readonly RegExp[] = [
+  /\[No-tools module[^\]]*\]\s*You have no tools in this session:[^\n]*/gi,
+  /You (?:have no|do not have(?: any)?|don't have(?: any)?) tools(?:\s+(?:here|in this (?:session|conversation|chat)|available))?\s*[:.][^\n]*/gi,
+];
+
+/**
+ * Replace known no-tools claims in an arbitrary system prompt.
  *
  * Used by the server-side tool loop: a profile may still carry the base
- * recommended prompt while verified tools are enabled, and sending both
- * "you have no tools" and a tool list would contradict itself.
+ * recommended prompt (or a custom no-tools notice) while verified tools are
+ * enabled, and sending both "you have no tools" and a tool list would
+ * contradict itself. The exact base claim is replaced with the truthful
+ * tool-environment paragraph; other known claim shapes are removed. A prompt
+ * that is left empty by the removal stays empty — never a fabricated claim.
  */
 export function neutralizeNoToolsClaim(systemPrompt: string): string {
-  return systemPrompt.includes(QWEN_NO_TOOLS_CLAIM)
-    ? systemPrompt.replace(QWEN_NO_TOOLS_CLAIM, QWEN_TOOL_ENVIRONMENT)
-    : systemPrompt;
+  let result = systemPrompt;
+  if (result.includes(QWEN_NO_TOOLS_CLAIM)) {
+    result = result.replaceAll(QWEN_NO_TOOLS_CLAIM, QWEN_TOOL_ENVIRONMENT);
+  }
+  for (const pattern of NO_TOOLS_PATTERNS) {
+    result = result.replace(pattern, '');
+  }
+  return result !== systemPrompt && result.trim() === '' ? '' : result;
+}
+
+/**
+ * Restore the truthful no-tools boundary on an ordinary (no tools) chat turn.
+ *
+ * A profile may have saved the tool-use prompt variant while the current turn
+ * runs without tools; claiming tool access that the request does not grant is
+ * a false capability claim. Only the known tool-environment paragraph is
+ * replaced and only the known tool rules block is removed; every other prompt
+ * is returned unchanged, so a legitimate tool-enabled turn is never affected.
+ */
+export function neutralizeToolClaimsForOrdinaryChat(systemPrompt: string): string {
+  if (!systemPrompt.includes(QWEN_TOOL_ENVIRONMENT)) return systemPrompt;
+  return systemPrompt
+    .replace(`\n\n${QWEN_TOOL_RULES}`, '')
+    .replace(QWEN_TOOL_RULES, '')
+    .replaceAll(QWEN_TOOL_ENVIRONMENT, QWEN_NO_TOOLS_CLAIM)
+    .trim();
 }
 
 /**

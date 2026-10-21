@@ -285,6 +285,18 @@ No capability is claimed from a model family, URL or template flag alone.
 * The `cloudflared` tunnel binary is downloaded from one pinned release
   (`2026.10.2`) and verified against its published SHA-256 digest before it
   is executed; the moving `releases/latest` URL is no longer used.
+* A tunnel that does not report its URL within 90 seconds is **stopped**
+  before the cell gives up. An orphaned `cloudflared` could otherwise finish
+  the handshake later and expose the server publicly after the run reported
+  "no public URL"; a failure to stop the process is warned about, never
+  turned into a reported success.
+* The model weights can be pinned by the operator: `model_revision` fixes the
+  exact Hugging Face revision every download resolves against, and
+  `model_sha256`, when supplied, is verified against every reused or
+  downloaded weight file — a mismatch fails closed (the file is skipped or
+  the download is refused). No digest is baked into the script, because a
+  guessed digest would be worse than none; without a configured digest the
+  fetch stays digest-unpinned, as before.
 
 ## What is never stored
 

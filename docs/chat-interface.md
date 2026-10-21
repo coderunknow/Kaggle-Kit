@@ -152,6 +152,21 @@ streaming failure never downgrades the proven non-streaming result. Tool
 loops themselves use non-streaming rounds so approvals can pause between
 rounds.
 
+The probe leaves a model room for a brief reasoning header before the
+function call (raised output budget), and a truncation
+(`finish_reason: "length"`) is named explicitly in the result instead of
+being lumped into a generic protocol failure. The verified result also
+reports which legs succeeded: `protocolVerified` (the native `tool_calls`
+turn) and `roundTripVerified` (the synthetic-result follow-up). When a
+profile's **Model ID is empty**, the capability probe, the streaming probe
+and the tool chat resolve the first model the endpoint reports — the same
+contract ordinary chat uses; a failing discovery or an empty model list is
+reported as a meaningful error, never simulated, and the discovered model
+still needs its own verified capability before any tool runs. A
+streaming/props re-detection does not wipe a separately verified
+tool-calling state: a still-fresh probe result for the exact endpoint,
+credential and model survives it, server-side and in the interface.
+
 The seven categories are:
 
 1. **Calculator and unit conversion** – deterministic local arithmetic; no
@@ -237,6 +252,14 @@ a stopped program cannot keep running invisibly. The activity timeline shows the
 target, approval state and outcome; pending approval IDs and live job IDs are
 never restored as active after reload. **Clear** and **Delete** abort in-flight
 requests, cancel paused jobs and remove that conversation's in-memory files.
+A **retry, edit or resend** cancels the server-side tool jobs of the messages
+it drops, and deleting a **profile** or a conversation's **uploaded-file set**
+cancels that profile's or conversation's paused jobs server-side, so no
+approval stays open for a branch of the conversation the user abandoned. A
+failed approve/deny request is never reported as an approval: the timeline
+marks the entry **expired** on the server's HTTP 410 evidence, keeps a
+**denial** when the deny request itself failed, and otherwise reports a
+stale, undecided entry next to the error message.
 
 Tool traces/citations are not saved by default. They can be saved only when the
 conversation opts in; old histories without an explicit persistence setting

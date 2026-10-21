@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildToolDefinitions, findToolDefinition, httpModelName, mcpModelName, measureToolCatalog, toOpenAITools, toolCatalogNotice, TOOL_CATALOG_MAX_BYTES, TOOL_CATALOG_NOTICE_BYTES } from './catalog';
+import { buildToolDefinitions, findToolDefinition, httpModelName, mcpModelName, measureToolCatalog, summarizeToolSchema, toOpenAITools, toolCatalogNotice, TOOL_CATALOG_MAX_BYTES, TOOL_CATALOG_NOTICE_BYTES } from './catalog';
 import { DEFAULT_TOOL_PROFILE_SETTINGS, type ToolProfileSettings } from './types';
 
 function profile(overrides: Partial<ToolProfileSettings> = {}): ToolProfileSettings {
@@ -92,5 +92,39 @@ describe('server-built tool catalog', () => {
     expect(notice).toMatch(/estimate, not a tokenizer count/);
     expect(notice).toMatch(/8192-token/);
     expect(TOOL_CATALOG_MAX_BYTES).toBeGreaterThan(TOOL_CATALOG_NOTICE_BYTES);
+  });
+
+  it('summarizes a published schema by names, types and enums only', () => {
+    const settings = profile({ enabled: true, allowedTools: ['calculator_calculate'] });
+    const definition = findToolDefinition(settings, 'calculator_calculate');
+    expect(definition).toBeDefined();
+    const summary = summarizeToolSchema(definition!);
+    expect(summary.startsWith('calculator_calculate(')).toBe(true);
+    expect(summary).toMatch(/expression: [^,)]*\(required\)/);
+    expect(summary).toMatch(/required: expression/);
+    expect(summary).toMatch(/additionalProperties: false/);
+    // Descriptions and example values are guidance, not part of the
+    // signature, and must not leak into error feedback.
+    expect(summary).not.toMatch(/Evaluate|arithmetic/i);
+  });
+
+  it('bounds the schema signature for oversized configured tools', () => {
+    const properties: Record<string, unknown> = {};
+    for (let index = 0; index < 50; index += 1) {
+      properties[`prop_${index}`] = { type: 'string', description: 'x'.repeat(200) };
+    }
+    const summary = summarizeToolSchema({
+      type: 'function',
+      requiresApproval: false,
+      permission: 'read_only',
+      function: {
+        name: 'http_request_custom',
+        description: 'configured tool',
+        parameters: { type: 'object', properties, required: ['prop_0'] },
+      },
+    });
+    expect(summary.length).toBeLessThanOrEqual(600);
+    expect(summary).toMatch(/… \d+ more\)/);
+    expect(summary).not.toMatch(/x{50}/);
   });
 });

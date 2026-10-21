@@ -22,6 +22,7 @@ import { CONNECTION_STAGE_ORDER } from '../shared/connection';
 import { extractDelta, parseSseStream, ToolCallAccumulator } from '../shared/api/stream';
 import { buildChatCompletionBody } from '../shared/api/requests';
 import type { InferenceParams, ServerCapabilities } from '../shared/api/requests';
+import { neutralizeToolClaimsForOrdinaryChat } from '../shared/prompts/qwen';
 import type { ToolCallingCapability } from '../shared/tools/types';
 import { joinApiPath, normalizeBaseUrlDetailed, UrlValidationError } from '../shared/api/url';
 import { assertDestinationAllowed } from './destinations';
@@ -393,7 +394,7 @@ export class ProxyService {
       });
     }
 
-    const capabilities = await this.detectCapabilities(baseUrl, apiKey, options.timeoutMs);
+    const capabilities = await this.detectCapabilities(baseUrl, apiKey, options.timeoutMs, modelId);
     stages.push({
       stage: 'streaming',
       status: capabilities.streamingVerified ? 'ok' : 'not_run',
@@ -413,8 +414,28 @@ export class ProxyService {
     target: UpstreamTarget,
     options: { model?: string; timeoutMs: number; force?: boolean },
   ): Promise<ToolCallingCapability> {
-    const model = options.model?.trim() ?? '';
-    if (!model || model.length > 256) {
+    let model = options.model?.trim() ?? '';
+    if (!model) {
+      // The same "first model the server reports" contract ordinary chat
+      // uses. Discovery failures and empty lists are reported honestly;
+      // a model is never invented and success is never simulated.
+      try {
+        const discovered = await this.listModels(target, options.timeoutMs);
+        model = discovered[0]?.trim() ?? '';
+      } catch (error) {
+        return {
+          status: 'not_verified',
+          detail: `No model ID is configured and the automatic discovery at /v1/models failed: ${toApiError(error).message}`,
+        };
+      }
+      if (!model) {
+        return {
+          status: 'not_verified',
+          detail: 'No model ID is configured and the endpoint reported no models to discover. Enter the model ID of the server in the profile, then run the probe again.',
+        };
+      }
+    }
+    if (model.length > 256) {
       return { status: 'not_verified', detail: 'A valid model ID is required for the isolated tool-calling probe.' };
     }
     const { baseUrl, apiKey } = await this.resolveTarget(target);
@@ -426,6 +447,8 @@ export class ProxyService {
     const capability: ToolCallingCapability = {
       status: 'failed_verification',
       model,
+      protocolVerified: false,
+      roundTripVerified: false,
       configurationFingerprint: fingerprint,
       checkedAt: new Date().toISOString(),
       detail: 'The endpoint did not return the expected harmless tool-call response. Tools remain disabled.',
@@ -459,7 +482,10 @@ export class ProxyService {
         tools: probeTools,
         tool_choice: 'auto',
         parallel_tool_calls: false,
-        max_tokens: 64,
+        // 192 instead of 64: models that emit a brief reasoning header before
+        // the function call were truncated with finish_reason="length" and
+        // failed the probe although they support native tool calling.
+        max_tokens: 192,
         temperature: 0,
         stream: false,
       }, { timeoutMs: Math.max(1, deadline - Date.now()) });
@@ -477,8 +503,11 @@ export class ProxyService {
         typeof call.id === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(call.id) && validArguments;
       if (!validCall || !call) {
         capability.status = 'failed_verification';
-        capability.detail = 'The initial probe did not return exactly one valid function call with finish_reason=tool_calls. Tool use remains disabled; ordinary chat is unchanged.';
+        capability.detail = firstChoice?.finish_reason === 'length'
+          ? 'The initial probe hit max_tokens (finish_reason=length) before emitting a valid function call with finish_reason=tool_calls. Tool use remains disabled; ordinary chat is unchanged.'
+          : 'The initial probe did not return exactly one valid function call with finish_reason=tool_calls. Tool use remains disabled; ordinary chat is unchanged.';
       } else {
+        capability.protocolVerified = true;
         probeStage = 'synthetic tool-result follow-up';
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw new ApiError('timeout', 'The capability probe timed out before its synthetic follow-up.');
@@ -497,7 +526,7 @@ export class ProxyService {
           tools: probeTools,
           tool_choice: 'auto',
           parallel_tool_calls: false,
-          max_tokens: 64,
+          max_tokens: 192,
           temperature: 0,
           stream: false,
         }, { timeoutMs: Math.max(1, remaining) });
@@ -505,9 +534,15 @@ export class ProxyService {
         const finalMessage = finalChoice?.message;
         const noAdditionalCalls = finalMessage?.tool_calls === undefined ||
           (Array.isArray(finalMessage.tool_calls) && finalMessage.tool_calls.length === 0);
+        const finalText = typeof finalMessage?.content === 'string' ? finalMessage.content.trim() : '';
+        // The acknowledgement token must appear verbatim with word
+        // boundaries; a longer word containing it (e.g.
+        // "KAGGLE_KIT_TOOL_PROBE_OKAY") does not pass. The structural
+        // conditions (final stop, no further calls) are unchanged.
         if (finalChoice?.finish_reason === 'stop' && noAdditionalCalls &&
-          typeof finalMessage?.content === 'string' && finalMessage.content.trim() === 'KAGGLE_KIT_TOOL_PROBE_OK') {
+          /\bKAGGLE_KIT_TOOL_PROBE_OK\b/.test(finalText)) {
           capability.status = 'supported_verified';
+          capability.roundTripVerified = true;
           // Non-streaming support is proven. Streaming tool-call deltas are a
           // separate wire behaviour: verify them independently and report the
           // outcome without downgrading the proven non-streaming result.
@@ -520,7 +555,9 @@ export class ProxyService {
             : 'The endpoint completed an isolated two-step native tool round trip: one valid function call (finish_reason=tool_calls), then an accepted synthetic tool result and a final stop response. The function was never executed. Streamed tool-call fragments were not verified; tool rounds use non-streaming requests.';
         } else {
           capability.status = 'failed_verification';
-          capability.detail = 'The endpoint did not accept and complete the synthetic tool-result follow-up with a final stop response. Tool use remains disabled; ordinary chat is unchanged.';
+          capability.detail = finalChoice?.finish_reason === 'length'
+            ? 'The endpoint did not accept and complete the synthetic tool-result follow-up before hitting max_tokens (finish_reason=length). Tool use remains disabled; ordinary chat is unchanged.'
+            : 'The endpoint did not accept and complete the synthetic tool-result follow-up with a final stop response. Tool use remains disabled; ordinary chat is unchanged.';
         }
       }
     } catch (error) {
@@ -574,7 +611,8 @@ export class ProxyService {
           tools,
           tool_choice: 'auto',
           parallel_tool_calls: false,
-          max_tokens: 64,
+          // Same truncation guard as the non-streaming probe turns.
+          max_tokens: 192,
           temperature: 0,
           stream: true,
         }),
@@ -630,16 +668,28 @@ export class ProxyService {
     baseUrl: string,
     apiKey: string | undefined,
     timeoutMs: number,
+    model?: string,
   ): Promise<ServerCapabilities> {
     const key = this.capabilityKey(baseUrl, apiKey);
     const cached = this.capabilities.get(key);
     const now = Date.now();
+    // A still-fresh, explicit tool-probe result for exactly this endpoint,
+    // credential and model survives a streaming/props re-detection. Only a
+    // fresh exact-key result is attached — never a stale one and never an
+    // inferred one, so re-detection neither wipes nor fabricates verification.
+    const cachedTool = model?.trim()
+      ? this.toolCallingCapabilities.get(`${key}\u0000${model.trim()}`)
+      : undefined;
+    const validToolCapability = cachedTool && cachedTool.expiresAt > now
+      ? { ...cachedTool.capability }
+      : undefined;
 
     if (cached && now - cached.propsCheckedAt < STREAM_PROBE_TTL_MS) {
       return {
         streamingVerified: cached.streamingVerified,
         reasoningEffortSupported: cached.reasoningEffortSupported,
         notes: [],
+        ...(validToolCapability ? { toolCalling: validToolCapability } : {}),
       };
     }
 
@@ -670,7 +720,12 @@ export class ProxyService {
       propsCheckedAt: now,
     });
 
-    return { streamingVerified: cached?.streamingVerified ?? false, reasoningEffortSupported, notes };
+    return {
+      streamingVerified: cached?.streamingVerified ?? false,
+      reasoningEffortSupported,
+      notes,
+      ...(validToolCapability ? { toolCalling: validToolCapability } : {}),
+    };
   }
 
   /**
@@ -689,9 +744,19 @@ export class ProxyService {
       return { supported: true, detail: 'Streaming was verified for this endpoint earlier.' };
     }
 
-    const model = options.model?.trim() || '';
+    let model = options.model?.trim() || '';
     if (!model) {
-      return { supported: false, detail: 'A model ID is required to probe streaming.' };
+      // Same "first model the server reports" contract as ordinary chat and
+      // the tool-calling probe; failures are reported, never simulated.
+      try {
+        const discovered = await this.listModels(target, options.timeoutMs);
+        model = discovered[0]?.trim() || '';
+      } catch {
+        model = '';
+      }
+    }
+    if (!model) {
+      return { supported: false, detail: 'A model ID is required to probe streaming, and the automatic discovery at /v1/models returned no usable model.' };
     }
 
     const controller = new AbortController();
@@ -841,7 +906,17 @@ export class ProxyService {
     params: InferenceParams,
     capabilities: ServerCapabilities,
   ): ChatCompletionRequestBody {
-    const { body } = buildChatCompletionBody({ model, messages, params, capabilities });
+    // Ordinary chat never grants tools, so a stored tool-use prompt variant
+    // must not claim tool access on this request. Only the known
+    // tool-environment paragraph and tool-rules block are touched; every
+    // other prompt passes through unchanged. The tool loop builds its own
+    // request body and is not affected.
+    const truthfulMessages = messages.map((message) =>
+      message.role === 'system'
+        ? { ...message, content: neutralizeToolClaimsForOrdinaryChat(message.content ?? '') }
+        : message,
+    );
+    const { body } = buildChatCompletionBody({ model, messages: truthfulMessages, params, capabilities });
     return body;
   }
 }

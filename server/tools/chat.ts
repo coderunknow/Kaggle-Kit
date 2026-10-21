@@ -4,7 +4,7 @@ import { redactSecrets } from '../../shared/api/errors';
 import { buildChatCompletionBody, type InferenceParams, type ServerCapabilities } from '../../shared/api/requests';
 import type { ChatCompletionResponse, ChatMessageInput, OpenAIToolCall } from '../../shared/api/types';
 import { parseInferenceParams } from '../../shared/api/validation';
-import type { ConversationToolSettings, SourceCitation, ToolExecutionLimits, ToolProfileSettings, ToolRecoveryRecord, ToolTraceRecord } from '../../shared/tools/types';
+import type { ConversationToolSettings, SourceCitation, ToolExecutionLimits, ToolFailureKind, ToolProfileSettings, ToolRecoveryRecord, ToolTraceRecord } from '../../shared/tools/types';
 import { mergeConversationLimits, shouldPersistToolHistory } from '../../shared/tools/types';
 import { buildToolDefinitions, httpModelName, mcpModelName, measureToolCatalog, toOpenAITools, toolCatalogNotice, TOOL_CATALOG_MAX_BYTES } from '../../shared/tools/catalog';
 import { neutralizeNoToolsClaim } from '../../shared/prompts/qwen';
@@ -130,8 +130,24 @@ export class ToolChatService {
 
   async start(input: ToolChatInput, signal?: AbortSignal): Promise<ToolChatResult> {
     if (!validId(input.profileId) || !validId(input.conversationId)) throw new HttpError(400, 'A valid profile and conversation are required.');
-    const model = input.model.trim();
-    if (!model || model.length > 256) throw new HttpError(400, 'A valid model ID is required.');
+    // An empty model ID means "the first model the server reports", the same
+    // contract ordinary chat resolves in the app routes: discovery failures
+    // surface honestly and an empty model list is a meaningful 400, never a
+    // fabricated model or an empty model sent upstream.
+    let model = input.model.trim();
+    if (!model) {
+      const models = await this.proxy.listModels(input.target, boundedTimeout(input.timeoutMs));
+      model = models[0]?.trim() ?? '';
+      if (!model) {
+        throw new HttpError(
+          400,
+          'The endpoint reports no models. Enter the model ID of the server in the profile.',
+          'not_found',
+          'Run "Discover models" in the connection settings, or type the model ID by hand.',
+        );
+      }
+    }
+    if (model.length > 256) throw new HttpError(400, 'A valid model ID is required.');
     const settings = await this.store.getToolProfile(input.profileId);
     if (!settings || !settings.enabled) throw new HttpError(409, 'Tools are disabled for this profile. Ordinary chat remains available.');
 
@@ -297,6 +313,39 @@ export class ToolChatService {
   }
 
   /**
+   * Cancel every pending job of one conversation and report how many were
+   * discarded. Used when conversation-scoped resources go away (its uploaded
+   * files are deleted) so a stale job cannot keep an approval open for tools
+   * whose input no longer exists. Jobs of other conversations are never
+   * touched; cancelling after completion is a counted no-op.
+   */
+  cancelConversation(conversationId: string): number {
+    return this.cancelMatching((session) => session.conversationId === conversationId);
+  }
+
+  /**
+   * Cancel every pending job of one profile, called when the profile is
+   * deleted. Same guarantees as `cancelConversation`.
+   */
+  cancelProfile(profileId: string): number {
+    return this.cancelMatching((session) => session.profileId === profileId);
+  }
+
+  private cancelMatching(matches: (session: ToolChatSession) => boolean): number {
+    // Snapshot first: discarding mutates the job map while iterating.
+    const jobIds = [...this.jobs.entries()]
+      .filter(([, session]) => matches(session))
+      .map(([jobId]) => jobId);
+    let cancelled = 0;
+    for (const jobId of jobIds) {
+      const session = this.jobs.get(jobId);
+      session?.activeController?.abort();
+      if (this.discard(jobId)) cancelled += 1;
+    }
+    return cancelled;
+  }
+
+  /**
    * Spend the single corrective attempt of the current episode, if it is
    * still available and the loop budget allows another model round.
    *
@@ -355,9 +404,12 @@ export class ToolChatService {
           const traceId = randomUUID();
           session.callCount += 1;
           if (!callId || session.callCount > session.limits.maxCalls) {
-            const message = !callId ? 'The model returned a tool call without a valid correlation ID; it was not run.' : 'The tool-call budget was reached; this call was not run.';
-            session.trace.push(makeFailureTrace(traceId, call, message));
-            if (callId) session.messages.push(toolResultMessage(call, JSON.stringify({ error: message })));
+            const message = !callId
+              ? 'The model returned a tool call without a valid correlation ID; it was not run.'
+              : 'The tool-call budget was reached; this call was not run.';
+            const failureKind: ToolFailureKind = !callId ? 'invalid_arguments' : 'budget_exceeded';
+            session.trace.push(makeFailureTrace(traceId, call, message, { failureKind }));
+            if (callId) session.messages.push(toolResultMessage(call, JSON.stringify({ error: message, failureKind })));
             continue;
           }
 
@@ -366,8 +418,21 @@ export class ToolChatService {
             prepared = this.executor.parseAndPrepare(call.function.name, call.function.arguments, this.context(session, signal));
           } catch (error) {
             const message = safeError(error);
-            session.trace.push(makeFailureTrace(traceId, call, message));
-            session.messages.push(toolResultMessage(call, JSON.stringify({ error: message })));
+            const failureKind: ToolFailureKind = error instanceof ToolExecutionError ? error.failureKind : 'invalid_arguments';
+            const expectedSchema = error instanceof ToolExecutionError ? error.expectedSchema : undefined;
+            session.trace.push(makeFailureTrace(traceId, call, message, { failureKind }));
+            // The tool result carries the structured failure and the bounded
+            // published-schema signature so the single corrective opportunity
+            // of the recovery policy below can be aimed at the real schema.
+            // Schema signatures come from the published definitions only:
+            // never argument values, never credentials.
+            session.messages.push(toolResultMessage(call, JSON.stringify({
+              error: message,
+              failureKind,
+              ...(expectedSchema ? { expectedSchema } : {}),
+              availableTools: session.definitions.map((definition) => definition.function.name),
+              guidance: 'Correct this at most once: re-issue the call as a structured tool_calls entry matching the published schema, choose another listed tool, or answer directly. Never claim an action ran without its tool result.',
+            })));
             // Bounded recovery: the first invalid call in a correction episode
             // is fed back to the model as its single corrective opportunity.
             // A second failure in the same episode — or the same invalid call
@@ -765,13 +830,23 @@ function wrapUntrustedOutput(content: string, maximumBytes: number): string {
   return `${prefix}${excerpt}`;
 }
 
-function makeFailureTrace(id: string, rawCall: unknown, error: string): ToolTraceRecord {
+function makeFailureTrace(
+  id: string,
+  rawCall: unknown,
+  error: string,
+  options: { failureKind?: ToolFailureKind } = {},
+): ToolTraceRecord {
   const call = rawCall && typeof rawCall === 'object' ? rawCall as Record<string, unknown> : {};
   const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : {};
+  // The model-issued correlation ID is preserved for protocol diagnostics;
+  // the trace `id` stays a server-generated UUID. The two are never conflated.
+  const rawCallId = validCallId(call.id) ? call.id : undefined;
   return {
     id,
+    ...(rawCallId ? { callId: rawCallId } : {}),
     toolName: safeText(typeof fn.name === 'string' ? fn.name : 'unknown', 64),
     status: 'failed',
+    ...(options.failureKind ? { failureKind: options.failureKind } : {}),
     approvalRequired: false,
     approvalState: 'not_required',
     safeArguments: {},

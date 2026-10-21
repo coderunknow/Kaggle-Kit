@@ -1,8 +1,9 @@
-"""Integration example — adapt ONLY after verifying your real deployment.
+"""Integration example for the Qwen system prompt artifacts in this directory.
 
-Prereqs to confirm first (none existed in this repo at research time):
-exact model id/revision, engine (Transformers/vLLM/SGLang/Ollama/llama.cpp),
-its chat template, tool schemas, context limits. Do not copy limits from here.
+In the shipped Kaggle-Kit application, `shared/prompts/qwen.ts` is the canonical
+TypeScript source (verified against `SYSTEM_PROMPT.md` by `shared/prompts/qwen.test.ts`),
+and `server/tools/chat.ts` neutralizes the no-tools claim and injects the active
+per-turn tool policy when verified native tool calling is enabled.
 """
 import pathlib
 

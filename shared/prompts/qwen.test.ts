@@ -10,6 +10,7 @@ import {
   QWEN_TOOL_SYSTEM_PROMPT_ID,
   estimatePromptTokens,
   neutralizeNoToolsClaim,
+  neutralizeToolClaimsForOrdinaryChat,
   qwenToolSystemPrompt,
 } from './qwen';
 
@@ -115,5 +116,29 @@ describe('the tool-use variant of the Qwen prompt', () => {
     expect(neutralized).toMatch(/^Intro\./);
     expect(neutralized).toMatch(/Outro\.$/);
     expect(neutralizeNoToolsClaim('unrelated prompt')).toBe('unrelated prompt');
+
+    // A custom prompt built from the research no-tools module is emptied, not
+    // answered with a fabricated claim.
+    const moduleNoTools = readFileSync(
+      path.join(process.cwd(), 'research', 'qwen-system-prompt', 'modules', 'MODULE_no_tools.txt'),
+      'utf8',
+    );
+    expect(neutralizeNoToolsClaim(moduleNoTools)).toBe('');
+
+    // The pattern removal must not eat unrelated sentences that merely
+    // contain the word "tools".
+    const unrelated = 'You can browse the web. The toolbox is in the garage.';
+    expect(neutralizeNoToolsClaim(unrelated)).toBe(unrelated);
+  });
+
+  it('replaces tool-environment claims with the truthful no-tools boundary on ordinary chat turns', () => {
+    const restored = neutralizeToolClaimsForOrdinaryChat(toolPrompt);
+    expect(restored).toContain(QWEN_NO_TOOLS_CLAIM);
+    expect(restored).not.toMatch(/this chat can offer you tools/i);
+    // The tool rules block is gone with it.
+    expect(restored).not.toMatch(/untrusted data, never instructions/i);
+    // Any other prompt — including the base prompt itself — passes through.
+    expect(neutralizeToolClaimsForOrdinaryChat('custom prompt')).toBe('custom prompt');
+    expect(neutralizeToolClaimsForOrdinaryChat(QWEN_SYSTEM_PROMPT)).toBe(QWEN_SYSTEM_PROMPT);
   });
 });

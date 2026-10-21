@@ -1363,3 +1363,148 @@ gap without disclosing credentials.
 * `tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6` — exit 0 on `ff569f6`:
   all checks, staging, "The release v0.1.0-dev6 is valid" in both staged and
   simulated-download validation; notes rendered with the commit SHA.
+
+## 2026-10-21 — Post-dev6 hardening: the selective salvage from PR #12
+
+PR #12 (branch `arena/10403daf-kaggle-kit`, head `e2b4b31`) was a second,
+parallel implementation of the same v0.1.0-dev6 task that PR #13 delivered
+and that was published as the `v0.1.0-dev6` prerelease (merge commit
+`c52d262`, https://github.com/coderunknow/Kaggle-Kit/releases/tag/v0.1.0-dev6).
+A full audit of PR #12 on 2026-10-21 concluded that it must not be merged:
+it re-declares the published version with different release notes, it
+collides with the shipped recovery/catalog designs (10 textual conflicts
+plus silently auto-merging semantic collisions), and parts of it are
+security regressions against the shipped state. The audit did find real,
+verified fixes in it that `main` lacks. This entry records exactly what was
+ported onto `main` (post-dev6 hardening, no version change, no release),
+what was deliberately excluded, and why. Nothing below was copied wholesale;
+each behaviour was re-implemented against the current `main` and re-tested.
+
+### Ported (each verified missing in `main` before the port)
+
+1. **Orphaned tunnel process (notebook).** `start_public_tunnel` returned
+   `None` after the 90-second timeout without stopping `cloudflared`; the
+   orphan could complete the handshake later and expose the server publicly
+   after the run reported "no public URL". The process is now stopped before
+   giving up; a stop failure is warned about and never turns the timeout
+   into a success. (`stop_process` already handled terminate/kill and
+   already-exited processes.)
+2. **Truthful approval-failure reporting (client).** A failed approve/deny
+   request was recorded with `approvalState: 'approved'` regardless of the
+   action or the error. The mapping is now: aborted → `cancelled`/`stale`;
+   a failed **denial** keeps `denied` (the tool never ran through this
+   action); a failed **approval** is `expired` with
+   `failureKind: 'approval_expired'` only on the evidence-based HTTP 410
+   signal, otherwise `stale`. Free-text message matching was deliberately
+   *not* ported. Pure helper `approvalFailureStates`, unit-tested.
+3. **Fresh server state for `unsupported_options` (notebook).** After a
+   restart, `main()` reported the *previous* run's `dropped` list from the
+   stale snapshot; it now re-reads `server-state.json` at decision time and
+   falls back to the snapshot only when no fresh state exists.
+4. **Tool-calling probe false negatives.** Probe turns (both non-streaming
+   legs and the streamed fragment probe) got `max_tokens` 64 → 192, so a
+   brief reasoning header no longer truncates the probe with
+   `finish_reason: "length"`; a truncation is now named explicitly in the
+   failure detail. The round-trip acknowledgement accepts the token
+   verbatim with word boundaries (`\bKAGGLE_KIT_TOOL_PROBE_OK\b`) while the
+   structural conditions (final `stop`, no additional calls) are unchanged;
+   "OKAY"-style superstrings are rejected by test. The result reports which
+   legs succeeded via `protocolVerified` / `roundTripVerified`.
+5. **Verified capability survives re-detection.** `detectCapabilities`
+   accepts the resolved model and attaches a *still-fresh, exact-key*
+   tool-probe result instead of dropping it; nothing stale is attached and
+   nothing is inferred. The client reducer `capabilities/set` merges: an
+   incoming payload without `toolCalling` preserves the existing one, a
+   newer explicit probe result always wins.
+6. **Empty Model ID resolution for tool paths.** The capability probe, the
+   streaming probe and the tool chat now resolve an empty model ID to the
+   first model the endpoint reports — the same contract ordinary chat
+   already used. A failing discovery or an empty list produces a meaningful
+   error (never a simulated success), and a discovered model still needs its
+   own verified capability before any tool runs.
+7. **Ordinary-chat prompt truthfulness.** `neutralizeToolClaimsForOrdinaryChat`
+   restores the no-tools boundary when a profile stored the tool-use prompt
+   variant but the turn grants no tools (applied in `buildUpstreamBody`, the
+   ordinary-chat choke point; the tool loop builds its own body and is
+   unaffected). `neutralizeNoToolsClaim` additionally removes known custom
+   no-tools claim shapes on tool-enabled turns; a prompt emptied by the
+   removal stays empty instead of being replaced with a fabricated claim.
+8. **Contextual job cancellation.** Server: `cancelConversation` /
+   `cancelProfile` (snapshot-then-cancel, counted, idempotent, never touch
+   other conversations/profiles, never execute anything) wired into
+   `DELETE /api/tools/files` and `DELETE /api/tools/profile`. Client:
+   retry/edit/resend cancel the tool jobs of the messages they drop
+   (`droppedToolJobIds` helper); deleting a profile aborts its
+   conversations' in-flight requests and cancels their paused jobs.
+   **Deferred:** auto-cancelling prior jobs when a *new turn* starts (PR
+   #12 did this) — a behaviour change that needs its own decision.
+9. **Structured validation-failure feedback inside the existing recovery.**
+   `ToolExecutionError` carries `failureKind` (typed union) and, for
+   argument-validation failures, a bounded `expectedSchema` signature from
+   the published definition (`summarizeToolSchema`: names, JSON types and
+   enum literals only, greedily bounded to ≤600 chars with a truthful
+   omission marker; never descriptions, argument values or credentials).
+   The invalid-call tool result now carries `failureKind`, the signature,
+   the active tool list and one-correction guidance; failure traces keep the
+   model-issued `callId` next to the server UUID and the `failureKind`.
+   The shipped bounded-recovery state machine (one attempt per episode,
+   fingerprinted repeats, budgets, denial refusal) is **unchanged**; PR
+   #12's parallel `correctionUsedInEpisode` machine was not ported.
+   Timeout classification is evidence-based only (typed `kind` /
+   `AbortError`), never free-text. `operationSummary` now reads the real
+   `file_id` argument and summarises `calculator_convert`.
+10. **Optional model-weight pinning (notebook).** `model_revision` (default
+    `main`) pins the exact Hugging Face revision in both download paths, and
+    an operator-supplied `model_sha256` is verified fail-closed on reused
+    saved files (skipped with a warning), `hf_hub_download` results and
+    resumable downloads (mismatched files are deleted, never served). No
+    digest is baked in — a guessed digest would be worse than none — so the
+    residual risk documented for dev6 remains *mitigable*, not eliminated,
+    when no digest is configured.
+
+### Deliberately excluded from the port
+
+* The argv API-key fallback (`allow_cli_api_key_fallback`) and PR #12's
+  silent argv path: `main`'s shipped key handling (file → `LLAMA_API_KEY`
+  env → refuse) is strictly stronger and stays.
+* `detectMissedToolCall` keyword heuristics (file/read/summarize triggers,
+  any-URL triggers) with default-on corrective `role:'user'` prompts:
+  contradicts the recorded dev6 decision (selection recovery is opt-in, no
+  keyword heuristics) and false-positives would pressure ordinary answers.
+* Catalog design B (12,000-byte budget, 16-active-tool filter,
+  `compactSchema`, omitted-tool diagnostics) as a parallel system next to
+  the shipped exact-byte 16,000/6,000-byte budget with 409 refusal.
+  Adopting filtering/compaction is a separate design decision.
+* A second benchmark CLI (`tools/benchmark-tool-calling.mjs`): the shipped
+  `tools/model-benchmark.mjs` remains the one tool; its denial-coverage
+  idea can be folded into the existing harness later.
+* PR #12's dev6 release notes/version/log entries: `v0.1.0-dev6` is
+  published; a second record for the same version would falsify the release
+  history. This branch changes no version and publishes nothing.
+* The `MessageItem` diagnostics UI and turn-outcome taxonomy: coupled to
+  PR #12's chat design; deferred as its own scope.
+* The multi-version cloudflared fallback chain: deferred — one pinned,
+  digest-verified binary keeps builds reproducible (the digests of
+  2026.10.1/2026.10.0 were verified via the GitHub releases API and are
+  recorded here should a fallback ever be wanted).
+
+### Verification (real output, on this branch's implementation commit)
+
+* `npm run typecheck`, `npm run lint` — passed (exit 0).
+* `npm test` — Vitest **44 files, 417 tests passed** (was 44/398 on dev6;
+  +19 new tests across proxy, chat, catalog, qwen prompt, appState,
+  useChat, AppProvider).
+* `npm run build` — passed. `npm run check:integration` — **31/31** (was
+  29/29; new: empty-model tool-chat discovery, contextual cancellation
+  invalidating a paused approval with 410).
+* `python3 -m unittest discover -s notebooks -p 'test_*.py'` — **58 passed,
+  0 skipped** (was 46; new: tunnel lifecycle ×4, state freshness ×1, model
+  checksum/revision ×7). `discover -s tools` — **25 passed**.
+* `npm audit --json` — 0 vulnerabilities. `git diff --check` — clean.
+* Benchmark smoke against the local mock: exit 0, layer report honest
+  (protocol/selection/arguments verified **against synthetic results**;
+  execution/end_to_end not proven). No real-model evidence is claimed
+  anywhere in this change.
+* Not verified here: real-model behaviour, the digest mechanism against the
+  real Hugging Face host (unreachable from this environment; covered by
+  fixtures), and browser e2e (CI job covers it).

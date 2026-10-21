@@ -212,6 +212,9 @@ export function createApp(options: AppOptions = {}): App {
 
         case 'DELETE /api/tools/profile': {
           const profileId = readQueryId(url, 'profileId');
+          // Pending tool jobs of the deleted profile are cancelled first, so
+          // no approval stays open for a profile that no longer exists.
+          toolChat.cancelProfile(profileId);
           const deleted = await store.deleteToolProfile(profileId);
           sendJson(response, deleted ? 200 : 404, { ok: deleted });
           return;
@@ -279,6 +282,10 @@ export function createApp(options: AppOptions = {}): App {
 
         case 'DELETE /api/tools/files': {
           const conversationId = readQueryId(url, 'conversationId');
+          // Pending tool jobs of this conversation are cancelled before its
+          // files are removed, so no approval stays open for file tools whose
+          // input is about to disappear.
+          toolChat.cancelConversation(conversationId);
           files.removeConversation(conversationId);
           sendJson(response, 200, { ok: true });
           return;
@@ -294,7 +301,10 @@ export function createApp(options: AppOptions = {}): App {
               profileId: readId(body, 'profileId'),
               conversationId: readId(body, 'conversationId'),
               target: readTarget(body),
-              model: readString(body, 'model'),
+              // An empty model ID is allowed and resolved by the tool chat
+              // service with the same "first model the server reports"
+              // contract ordinary chat uses.
+              model: readOptionalString(body, 'model') ?? '',
               messages: validateToolChatMessages(body.messages),
               params: parsed.params,
               timeoutMs: readTimeout(body),
@@ -417,7 +427,9 @@ export function createApp(options: AppOptions = {}): App {
       }
     }
 
-    const capabilities = await proxy.detectCapabilities(resolved.baseUrl, resolved.apiKey, timeoutMs);
+    // The resolved model ID lets capability detection preserve a still-fresh,
+    // verified tool-calling probe result for exactly this configuration.
+    const capabilities = await proxy.detectCapabilities(resolved.baseUrl, resolved.apiKey, timeoutMs, model);
 
     const wantsStream = params.stream === true;
 

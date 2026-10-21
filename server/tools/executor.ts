@@ -1,7 +1,7 @@
 import { ApiError, redactSecrets } from '../../shared/api/errors';
 import type { UpstreamTarget, ProxyService } from '../proxy';
-import type { ToolProfileSettings, ToolExecutionLimits, ToolExecutionResult } from '../../shared/tools/types';
-import { findToolDefinition, httpModelName, mcpModelName } from '../../shared/tools/catalog';
+import type { ToolProfileSettings, ToolExecutionLimits, ToolExecutionResult, ToolFailureKind } from '../../shared/tools/types';
+import { findToolDefinition, httpModelName, mcpModelName, summarizeToolSchema } from '../../shared/tools/catalog';
 import { calculate, convert, CalculatorInputError } from './calculator';
 import { runPythonInDocker, CodeSandboxError } from './code';
 import { FileVault, FileProcessingError } from './files';
@@ -34,9 +34,19 @@ export interface PreparedToolCall {
 }
 
 export class ToolExecutionError extends Error {
-  constructor(message: string) {
+  /** Structured failure reason for trace diagnostics; never gates an approval. */
+  readonly failureKind: ToolFailureKind;
+  /** Bounded schema signature of the attempted tool, when the failure is a validation failure. */
+  readonly expectedSchema?: string;
+
+  constructor(
+    message: string,
+    options: { failureKind?: ToolFailureKind; expectedSchema?: string } = {},
+  ) {
     super(message);
     this.name = 'ToolExecutionError';
+    this.failureKind = options.failureKind ?? 'execution_error';
+    if (options.expectedSchema) this.expectedSchema = options.expectedSchema;
   }
 }
 
@@ -49,12 +59,32 @@ export class ToolExecutor {
   ) {}
 
   parseAndPrepare(name: string, rawArguments: string, context: ToolExecutionContext): PreparedToolCall {
-    if (!context.settings.enabled) throw new ToolExecutionError('Tools are disabled for this profile.');
+    if (!context.settings.enabled) {
+      throw new ToolExecutionError('Tools are disabled for this profile.', { failureKind: 'invalid_tool_name' });
+    }
     const definition = findToolDefinition(context.settings, name);
-    if (!definition || !context.settings.allowedTools.includes(name)) throw new ToolExecutionError('The requested tool is not allowed for this profile.');
-    const args = parseToolArguments(rawArguments, context.limits.maxInputBytes);
-    try { validateToolArguments(definition.function.parameters, args); } catch (error) {
-      throw new ToolExecutionError(error instanceof Error ? error.message : 'Tool arguments are invalid.');
+    if (!definition || !context.settings.allowedTools.includes(name)) {
+      throw new ToolExecutionError('The requested tool is not allowed for this profile.', { failureKind: 'invalid_tool_name' });
+    }
+    // Bounded schema signature from the published definition: names, JSON
+    // types and enum literals only, never argument values or credentials.
+    const expectedSchema = summarizeToolSchema(definition);
+    let args: Record<string, unknown>;
+    try {
+      args = parseToolArguments(rawArguments, context.limits.maxInputBytes);
+    } catch (error) {
+      throw new ToolExecutionError(
+        error instanceof Error ? error.message : 'Tool arguments must be a valid JSON object.',
+        { failureKind: 'invalid_arguments', expectedSchema },
+      );
+    }
+    try {
+      validateToolArguments(definition.function.parameters, args);
+    } catch (error) {
+      throw new ToolExecutionError(
+        error instanceof Error ? error.message : 'Tool arguments are invalid.',
+        { failureKind: 'invalid_arguments', expectedSchema },
+      );
     }
     const httpTool = context.settings.httpTools.find((tool) => httpModelName(tool.id) === name);
     const mcpEntry = findMcp(context.settings, name);
@@ -84,8 +114,12 @@ export class ToolExecutor {
     context: ToolExecutionContext,
     options: { approved?: boolean } = {},
   ): Promise<ToolExecutionResult> {
-    if (prepared.approvalRequired && options.approved !== true) throw new ToolExecutionError('This operation requires an explicit approval before it can run.');
-    if (context.signal?.aborted) throw new ToolExecutionError('The tool call was cancelled.');
+    if (prepared.approvalRequired && options.approved !== true) {
+      throw new ToolExecutionError('This operation requires an explicit approval before it can run.', { failureKind: 'approval_required' });
+    }
+    if (context.signal?.aborted) {
+      throw new ToolExecutionError('The tool call was cancelled.', { failureKind: 'cancelled' });
+    }
     try {
       const value = await this.dispatch(prepared.name, prepared.args, context);
       const content = await this.redactAndBound(value.content, context.limits.maxOutputBytes);
@@ -103,7 +137,16 @@ export class ToolExecutor {
       };
     } catch (error) {
       const message = error instanceof ToolExecutionError ? error.message : safeError(error);
-      throw new ToolExecutionError(await this.redactAndBound(message, 1_000));
+      // Preserve a structured failureKind: an already-classified tool error
+      // keeps its kind, an evidence-based timeout is recognised by its typed
+      // `kind`/name (never by free-text matching), everything else stays a
+      // generic execution error.
+      const failureKind: ToolFailureKind = error instanceof ToolExecutionError
+        ? error.failureKind
+        : isTimeoutError(error)
+          ? 'timeout'
+          : 'execution_error';
+      throw new ToolExecutionError(await this.redactAndBound(message, 1_000), { failureKind });
     }
   }
 
@@ -278,9 +321,11 @@ export function operationSummary(
       return `Fetch and read: ${text(args.url, 200)}`;
     case 'files_read':
     case 'files_analyze':
-      return `Read the uploaded file ${text(args.fileId ?? args.filename ?? args.id, 80)}`;
+      return `Read the uploaded file ${text(args.file_id ?? args.fileId ?? args.filename ?? args.id, 80)}`;
     case 'calculator_calculate':
       return `Calculate: ${text(args.expression)}`;
+    case 'calculator_convert':
+      return `Convert ${String(args.value ?? '')} ${text(args.from, 32)} to ${text(args.to, 32)}`.trim();
     default:
       return context.description;
   }
@@ -304,6 +349,18 @@ function safeError(error: unknown): string {
     return error.message;
   }
   return 'The tool operation failed. No host fallback was attempted.';
+}
+
+/**
+ * Evidence-based timeout classification only: the typed `kind` of the API and
+ * web errors, or an aborted request. Free-text message matching is not used,
+ * so a tool result that merely mentions a timeout can never reclassify a
+ * failure.
+ */
+function isTimeoutError(error: unknown): boolean {
+  if (error instanceof ApiError && error.kind === 'timeout') return true;
+  if (error instanceof WebToolError && error.kind === 'timeout') return true;
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function safeBaseUrl(value: string): string {

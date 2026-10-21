@@ -227,6 +227,63 @@ export function findToolDefinition(
   return buildToolDefinitions(settings).find((definition) => definition.function.name === name);
 }
 
+/**
+ * A bounded, human- and model-readable signature of a tool's published
+ * parameter schema: `name(prop: type (required), …) [required: …]`.
+ *
+ * Used in validation-error feedback so a corrective retry can be aimed at the
+ * real schema. Only names, JSON types and enum literals from the *published*
+ * definition appear here — never argument values, never credentials. The
+ * result is hard-bounded so a large configured HTTP/MCP schema cannot inflate
+ * the tool-result message.
+ */
+export function summarizeToolSchema(definition: ToolDefinition, maxEntries = 24, maxLength = 600): string {
+  const schema = definition.function.parameters as Record<string, unknown> | undefined;
+  const rawProps = schema && typeof schema.properties === 'object' && schema.properties !== null && !Array.isArray(schema.properties)
+    ? (schema.properties as Record<string, Record<string, unknown>>)
+    : {};
+  const requiredList = Array.isArray(schema?.required)
+    ? schema.required.filter((item): item is string => typeof item === 'string')
+    : [];
+  const required = new Set(requiredList);
+  const keys = Object.keys(rawProps);
+  const reqSummary = requiredList.length > 8
+    ? `required: ${requiredList.slice(0, 8).join(', ')}, … ${requiredList.length - 8} more`
+    : requiredList.length > 0
+      ? `required: ${requiredList.join(', ')}`
+      : 'required: none';
+  const extraSummary = schema?.additionalProperties === false ? '; additionalProperties: false' : '';
+  const entryText = (key: string): string => {
+    const prop = rawProps[key];
+    const enumValues = Array.isArray(prop?.enum) ? prop.enum : undefined;
+    const typeLabel = enumValues && enumValues.length > 0
+      ? enumValues.slice(0, 8).map((item: unknown) => JSON.stringify(item)).join('|')
+      : typeof prop?.type === 'string'
+        ? prop.type
+        : 'value';
+    return `${key}: ${typeLabel}${required.has(key) ? ' (required)' : ' (optional)'}`;
+  };
+  // Entries are included greedily while the whole signature stays within the
+  // bound, so the omission marker and the required-list always survive; a
+  // final hard cut guarantees the bound even for pathological names.
+  const tail = `) [${reqSummary}${extraSummary}]`;
+  const name = definition.function.name;
+  const included: string[] = [];
+  let used = name.length + 1 + tail.length + 16;
+  for (const key of keys) {
+    if (included.length >= maxEntries) break;
+    const text = entryText(key);
+    const extra = text.length + (included.length > 0 ? 2 : 0);
+    if (used + extra > maxLength) break;
+    included.push(text);
+    used += extra;
+  }
+  const omitted = keys.length - included.length;
+  const marker = omitted > 0 ? `${included.length > 0 ? ', ' : ''}… ${omitted} more` : '';
+  const summary = `${name}(${included.join(', ')}${marker}${tail}`;
+  return summary.length > maxLength ? `${summary.slice(0, maxLength - 1)}…` : summary;
+}
+
 function safeTarget(value: string): string {
   try {
     const url = new URL(value);
