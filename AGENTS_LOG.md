@@ -985,3 +985,38 @@ created and no release is published (explicitly out of scope for this task).
   committed here; it is then closed with a comment referencing this record,
   without deleting its branch. This entry is that record; the close comment
   outcome is reported in the task completion report.
+
+## 2026-10-21 — Post-dev6 hardening merge record (PR #14)
+
+* PR **#14** was **merged into `main`** at `2026-10-21T11:46:05Z` by
+  `coderunknow` with explicit user approval given in-session, using a merge
+  commit: `3b5cec8ebeda2f985f27f65249d43c34f19d59a9` (parents: `c52d262`
+  = previous `main`, `979b6fa` = PR head). Verified via the GitHub API
+  after the fact: `merged_at` set, `merge_commit_sha` = `3b5cec8…`, and
+  `main`'s HEAD is the merge commit.
+* Pre-merge gates re-verified live on head `979b6fa` (not from old
+  reports): `mergeable=true`, no conflicts; all GitHub Actions checks
+  (`typecheck, lint, test and build`, `notebook tests`, `docker sandbox
+  integration`, `Browser end-to-end`, `windows launcher`) plus the
+  `CodeRabbit` commit status **success**; `reviewDecision=null`, **0**
+  unresolved review threads; repository rulesets empty.
+  `mergeStateStatus=UNSTABLE` traced to the single non-required
+  `Kilo Code Review` check — output: "Insufficient credits to run
+  review" — the same billing gate as on PRs #9–#13; it produced no code
+  findings and is not evidence of quality either way.
+* Post-merge CI on `main` (push run `39594402934`, head `3b5cec8`): all
+  **5 jobs success**, completed `2026-10-21T11:47:14Z`, no failed steps,
+  nothing skipped or pending. Review bots do not run on push events.
+* Nothing was published: no tag, no release, no version change.
+  `v0.1.0-dev6` re-verified untouched (release id `418535765`, tag →
+  `c52d262`, prerelease, 6 assets); the repository still has exactly
+  6 releases and 6 tags.
+* PR #12 remains **closed unmerged** (`closed_at 2026-10-21T11:26:39Z`,
+  `merged_at=null`); its branch `arena/10403daf-kaggle-kit` @ `e2b4b31`
+  is preserved on the remote.
+* This record follows the dev6 precedent (`7f15fa3`): a docs-only commit
+  on the arena branch, **not** committed directly to `main`; carrying it
+  into `main` requires a future docs-only PR.
+* Unchanged non-claims: no real-model benchmark was collected (mock /
+  synthetic evidence only, labelled as such) and no review bot endorsed
+  the code (all were quota/billing-blocked).
