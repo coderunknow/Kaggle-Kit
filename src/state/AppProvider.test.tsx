@@ -26,6 +26,14 @@ function DeleteProfileHarness() {
   return <button onClick={() => deleteProfile('profile-1')}>Delete profile</button>;
 }
 
+function DeleteProfileWithRequestHarness({ controller }: { controller: AbortController }) {
+  const { deleteProfile, registerRequest } = useApp();
+  useEffect(() => {
+    registerRequest('conversation-1', controller);
+  }, [controller, registerRequest]);
+  return <button onClick={() => deleteProfile('profile-1')}>Delete profile</button>;
+}
+
 const testProfile = {
   id: 'profile-1',
   name: 'Local model',
@@ -76,6 +84,44 @@ describe('AppProvider request lifecycle', () => {
     await user.click(screen.getByRole('button', { name: 'Delete profile' }));
     await waitFor(() => expect(deleteToolProfile).toHaveBeenCalledWith('profile-1'));
     expect(deleteToolProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts in-flight requests and cancels paused tool jobs of the deleted profile only', async () => {
+    const deleteToolProfile = vi.spyOn(gateway, 'deleteToolProfile').mockResolvedValue();
+    const cancelJob = vi.spyOn(gateway, 'cancelToolJob').mockResolvedValue(true);
+    const controller = new AbortController();
+    const user = userEvent.setup();
+    const message = (id: string, jobId: string) => ({
+      id, role: 'assistant' as const, content: '', status: 'pending' as const,
+      createdAt: '2026-01-01T00:00:00.000Z', toolJobId: jobId,
+    });
+    render(
+      <AppProvider initialAppState={{
+        ...initialState,
+        profiles: [testProfile],
+        conversations: [
+          {
+            id: 'conversation-1', title: 'Uses the profile', profileId: 'profile-1',
+            messages: [message('assistant-1', 'job-1')],
+            createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+          {
+            id: 'conversation-2', title: 'Uses another profile', profileId: 'other-profile',
+            messages: [message('assistant-2', 'job-2')],
+            createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      }}>
+        <DeleteProfileWithRequestHarness controller={controller} />
+      </AppProvider>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Delete profile' }));
+    await waitFor(() => expect(deleteToolProfile).toHaveBeenCalledWith('profile-1'));
+    expect(controller.signal.aborted).toBe(true);
+    expect(cancelJob).toHaveBeenCalledWith('job-1');
+    // A job of another profile's conversation is never cancelled here.
+    expect(cancelJob).not.toHaveBeenCalledWith('job-2');
   });
 
   it('cancels paused tools and removes conversation files when browser data is erased', async () => {

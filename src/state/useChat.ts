@@ -90,6 +90,41 @@ export function markToolTraceCancelled(
   return { trace: updated, operationMayHaveStarted };
 }
 
+/**
+ * Truthful trace state when the approve/deny request itself fails.
+ *
+ * A failed request is never recorded as an approval: an aborted action stays
+ * `stale`, a failed denial keeps the user's denial (the tool never ran
+ * through this client action), and a failed approval is `expired` only on the
+ * evidence-based HTTP 410 signal from the server — free-text message matching
+ * is deliberately not used. Every other failure is `stale`: the server-side
+ * decision is unknown, and the message-level error state says so.
+ */
+export function approvalFailureStates(
+  error: unknown,
+  approved: boolean,
+  aborted: boolean,
+): { status: 'cancelled' | 'denied' | 'failed'; approvalState: 'stale' | 'denied' | 'expired'; failureKind?: 'approval_expired' } {
+  if (aborted) return { status: 'cancelled', approvalState: 'stale' };
+  if (!approved) return { status: 'denied', approvalState: 'denied' };
+  const expired = error instanceof ApiError && error.httpStatus === 410;
+  return expired
+    ? { status: 'failed', approvalState: 'expired', failureKind: 'approval_expired' }
+    : { status: 'failed', approvalState: 'stale' };
+}
+
+/**
+ * The tool job IDs of the messages a retry/edit/resend is about to drop.
+ * Those jobs no longer belong to the conversation flow; they are cancelled
+ * server-side so no approval stays open for a branch the user abandoned.
+ */
+export function droppedToolJobIds(messages: readonly ChatMessage[], fromIndex: number): string[] {
+  return messages
+    .slice(fromIndex)
+    .map((message) => message.toolJobId)
+    .filter((jobId): jobId is string => Boolean(jobId));
+}
+
 export interface ChatController {
   sendMessage: (conversationId: string, content: string) => Promise<void>;
   resendMessage: (conversationId: string, userMessageId: string) => Promise<void>;
@@ -437,6 +472,11 @@ export function useChat(): ChatController {
       const profile = resolveProfile(conversation);
       if (!profile) return;
 
+      // The dropped branch may still hold server-side tool jobs; cancel them
+      // so no approval stays open for messages the user just discarded.
+      for (const jobId of droppedToolJobIds(conversation.messages, index + 1)) {
+        void gateway.cancelToolJob(jobId).catch(() => undefined);
+      }
       const truncated: Conversation = {
         ...conversation,
         messages: conversation.messages.slice(0, index + 1),
@@ -466,6 +506,11 @@ export function useChat(): ChatController {
       const profile = resolveProfile(conversation);
       if (!profile) return;
 
+      // The retried assistant message and everything after it are dropped;
+      // cancel any server-side tool jobs they still hold.
+      for (const jobId of droppedToolJobIds(conversation.messages, index)) {
+        void gateway.cancelToolJob(jobId).catch(() => undefined);
+      }
       const truncated: Conversation = {
         ...conversation,
         messages: conversation.messages.slice(0, index),
@@ -498,7 +543,11 @@ export function useChat(): ChatController {
       if (!profile) return;
 
       // Keep the edited message itself: the slice has to include its index.
-      // Everything after it is dropped because it belongs to the old branch.
+      // Everything after it is dropped because it belongs to the old branch;
+      // cancel any server-side tool jobs the dropped messages still hold.
+      for (const jobId of droppedToolJobIds(conversation.messages, index + 1)) {
+        void gateway.cancelToolJob(jobId).catch(() => undefined);
+      }
       const messages = conversation.messages
         .slice(0, index + 1)
         .map((message) =>
@@ -542,11 +591,21 @@ export function useChat(): ChatController {
     } catch (error) {
       const apiError = error instanceof ApiError ? error : undefined;
       const aborted = apiError?.kind === 'aborted';
+      // A failed approve/deny request is never recorded as an approval; the
+      // helper maps the outcome truthfully (410 is the only expiry evidence).
+      const failure = approvalFailureStates(error, approved, aborted);
       patchMessage(conversationId, messageId, {
         status: aborted ? 'cancelled' : 'error',
         toolJobId: undefined,
         toolTrace: (message.toolTrace ?? []).map((entry) => entry.approvalId === approvalId
-          ? { ...entry, status: aborted ? 'cancelled' : 'failed', approvalState: aborted ? 'stale' : 'approved', approvalId: undefined, error: apiError?.message ?? 'The approval request could not be completed.' }
+          ? {
+            ...entry,
+            status: failure.status,
+            approvalState: failure.approvalState,
+            ...(failure.failureKind ? { failureKind: failure.failureKind } : {}),
+            approvalId: undefined,
+            error: apiError?.message ?? 'The approval request could not be completed.',
+          }
           : entry),
         toolNote: undefined,
         errorKind: apiError?.kind ?? 'unknown',

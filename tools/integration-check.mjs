@@ -449,6 +449,60 @@ async function main() {
       replayed.status === 410,
       `HTTP ${replayed.status}`,
     );
+
+    // An empty model ID resolves through the endpoint model list, the same
+    // contract ordinary chat uses; the verified capability of the discovered
+    // model is still required and enforced.
+    const emptyModelChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-empty-model-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: '',
+      messages: [{ role: 'user', content: 'calculate: 21 * 2' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const emptyModelBody = await emptyModelChat.json();
+    assert(
+      'tool chat auto-discovers an empty model ID and completes the calculator loop',
+      emptyModelChat.status === 200
+        && emptyModelBody.status === 'complete'
+        && emptyModelBody.toolTrace?.some((entry) => entry.toolName === 'calculator_calculate' && entry.status === 'succeeded')
+        && String(emptyModelBody.content).includes('"value":42'),
+      `HTTP ${emptyModelChat.status}: ${JSON.stringify(emptyModelBody).slice(0, 300)}`,
+    );
+
+    // Deleting the conversation's files cancels its pending tool jobs, so no
+    // approval stays open for file-dependent tools whose input is gone.
+    const cancelChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-cancel-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'run code: print(1)' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const cancelBody = await cancelChat.json();
+    const removedFiles = await fetch(
+      `${base}/api/tools/files?conversationId=${encodeURIComponent('integration-cancel-conversation')}`,
+      { method: 'DELETE' },
+    );
+    const approveAfterCancel = await post(base, '/api/tools/approve', {
+      jobId: cancelBody.jobId,
+      approvalId: cancelBody.pendingApproval?.approvalId,
+      approved: true,
+    });
+    assert(
+      'removing a conversation files set cancels its paused tool job and its approval',
+      cancelChat.status === 200
+        && cancelBody.status === 'awaiting_approval'
+        && removedFiles.status === 200
+        && approveAfterCancel.status === 410,
+      `chat HTTP ${cancelChat.status}; delete HTTP ${removedFiles.status}; approve HTTP ${approveAfterCancel.status}`,
+    );
   } finally {
     stop();
     process.off('exit', stop);

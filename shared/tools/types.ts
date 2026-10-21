@@ -16,9 +16,28 @@ export interface ToolCallingCapability {
   model?: string;
   /** Native streaming tool-call deltas were independently probed. */
   streamingSupported?: boolean;
+  /** Turn 1 of the probe returned a native `tool_calls` response. */
+  protocolVerified?: boolean;
+  /** Turn 2 accepted the synthetic tool result and answered with a final stop. */
+  roundTripVerified?: boolean;
   /** Hash-like identity of the endpoint/model/credential configuration; never a secret. */
   configurationFingerprint?: string;
 }
+
+/**
+ * Why a tool call failed, for truthful trace diagnostics. The kind never
+ * re-enables a denied or unapproved operation; it only describes the failure.
+ */
+export type ToolFailureKind =
+  | 'invalid_tool_name'
+  | 'invalid_arguments'
+  | 'approval_required'
+  | 'approval_denied'
+  | 'approval_expired'
+  | 'timeout'
+  | 'execution_error'
+  | 'budget_exceeded'
+  | 'cancelled';
 
 export type ToolPermission = 'read_only' | 'write' | 'unknown';
 
@@ -164,10 +183,18 @@ export interface SourceCitation {
 
 export interface ToolTraceRecord {
   id: string;
+  /**
+   * The correlation ID the model issued for this call, when it was valid.
+   * The trace `id` above is always a server-generated UUID; the two are
+   * distinct and must never be conflated.
+   */
+  callId?: string;
   toolName: string;
   status: ToolCallStatus;
   approvalRequired: boolean;
-  approvalState?: 'not_required' | 'pending' | 'approved' | 'denied' | 'stale';
+  approvalState?: 'not_required' | 'pending' | 'approved' | 'denied' | 'expired' | 'stale';
+  /** Structured failure reason; never contains secrets. */
+  failureKind?: ToolFailureKind;
   /** Redacted/bounded copy of the validated arguments; never contains secrets. */
   safeArguments: Record<string, unknown>;
   /** User-facing operation target when known; credentials are never included. */

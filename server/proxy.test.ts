@@ -269,4 +269,158 @@ describe('the capability cache of the proxy', () => {
     expect(compound.split('\u0000')).toHaveLength(3);
     expect(compound.endsWith('\u0000mock-model')).toBe(true);
   });
+
+  it('auto-discovers the first model when probeToolCalling or probeStreaming is called with an empty model ID', async () => {
+    const proxy = createProxy();
+    const stub = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/models')) {
+        return new Response(JSON.stringify({ data: [{ id: 'discovered-model' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      if (body.stream === true) {
+        return new Response('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      }
+      const messages = (body.messages as Array<Record<string, unknown>> | undefined) ?? [];
+      if (messages.some((m) => m.role === 'tool')) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OK' }, finish_reason: 'stop' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{ id: 'probe-call-auto', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const toolCap = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: '', timeoutMs: 5_000 });
+    expect(toolCap.status).toBe('supported_verified');
+    expect(toolCap.model).toBe('discovered-model');
+    expect(toolCap.protocolVerified).toBe(true);
+    expect(toolCap.roundTripVerified).toBe(true);
+
+    // A streaming/props re-detection for the same model preserves the fresh,
+    // explicit tool-probe result instead of silently dropping it.
+    const detected = await proxy.detectCapabilities(BASE_URL, undefined, 5_000, 'discovered-model');
+    expect(detected.toolCalling?.status).toBe('supported_verified');
+    // Without a model, nothing is attached and nothing is inferred.
+    const anonymous = await proxy.detectCapabilities(BASE_URL, undefined, 5_000);
+    expect(anonymous.toolCalling).toBeUndefined();
+
+    const streamCap = await proxy.probeStreaming({ baseUrl: BASE_URL }, { model: '', timeoutMs: 5_000 });
+    expect(streamCap.supported).toBe(true);
+  });
+
+  it('reports a discovery failure or an empty model list honestly instead of probing a invented model', async () => {
+    const proxy = createProxy();
+    const failing = vi.fn(async () => new Response('{"error":"boom"}', { status: 500 }));
+    vi.stubGlobal('fetch', failing);
+    const failedCap = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: '', timeoutMs: 5_000 });
+    expect(failedCap.status).toBe('not_verified');
+    expect(failedCap.detail).toMatch(/discovery at \/v1\/models failed/i);
+
+    const empty = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', empty);
+    const emptyCap = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: '', timeoutMs: 5_000 });
+    expect(emptyCap.status).toBe('not_verified');
+    expect(emptyCap.detail).toMatch(/reported no models/i);
+    // Only the two discovery requests happened: no probe turn was simulated.
+    expect(empty).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes a max_tokens truncation from a genuine protocol failure', async () => {
+    const proxy = createProxy();
+    const bodies: Array<Record<string, unknown>> = [];
+    const stub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (typeof init?.body === 'string') bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: '<think>Let me think…' }, finish_reason: 'length' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const result = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000 });
+    expect(result.status).toBe('failed_verification');
+    expect(result.protocolVerified).toBe(false);
+    expect(result.roundTripVerified).toBe(false);
+    expect(result.detail).toMatch(/hit max_tokens \(finish_reason=length\)/i);
+    // The probe gives a reasoning header room before the function call.
+    expect(bodies[0]!.max_tokens).toBe(192);
+  });
+
+  it('accepts the acknowledgement token only verbatim with word boundaries and a clean stop', async () => {
+    const proxy = createProxy();
+    const turnOne = {
+      choices: [{
+        message: { role: 'assistant', content: null, tool_calls: [{ id: 'probe-call-9', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }] },
+        finish_reason: 'tool_calls',
+      }],
+    };
+
+    // Negative: a longer word containing the token does not pass.
+    const okayStub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const messages = (body.messages as Array<Record<string, unknown>> | undefined) ?? [];
+      const response = messages.some((m) => m.role === 'tool')
+        ? { choices: [{ message: { role: 'assistant', content: 'KAGGLE_KIT_TOOL_PROBE_OKAY' }, finish_reason: 'stop' }] }
+        : turnOne;
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', okayStub);
+    const okayResult = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000, force: true });
+    expect(okayResult.status).toBe('failed_verification');
+    expect(okayResult.roundTripVerified).toBe(false);
+
+    // Negative: the token plus an additional tool call does not pass.
+    const extraCallStub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const messages = (body.messages as Array<Record<string, unknown>> | undefined) ?? [];
+      const response = messages.some((m) => m.role === 'tool')
+        ? {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: 'KAGGLE_KIT_TOOL_PROBE_OK',
+              tool_calls: [{ id: 'probe-call-x', type: 'function', function: { name: 'kaggle_kit_capability_probe', arguments: '{}' } }],
+            },
+            finish_reason: 'stop',
+          }],
+        }
+        : turnOne;
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', extraCallStub);
+    const extraResult = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000, force: true });
+    expect(extraResult.status).toBe('failed_verification');
+
+    // Positive: the token embedded in a sentence with a clean stop passes.
+    const embeddedStub = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      const messages = (body.messages as Array<Record<string, unknown>> | undefined) ?? [];
+      const response = messages.some((m) => m.role === 'tool')
+        ? { choices: [{ message: { role: 'assistant', content: 'Done. KAGGLE_KIT_TOOL_PROBE_OK.' }, finish_reason: 'stop' }] }
+        : turnOne;
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', embeddedStub);
+    const embeddedResult = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000, force: true });
+    expect(embeddedResult.status).toBe('supported_verified');
+    expect(embeddedResult.roundTripVerified).toBe(true);
+  });
 });

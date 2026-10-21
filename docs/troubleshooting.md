@@ -80,7 +80,9 @@ the same. The summary then says `Local server: reused from a previous run`.
 
 * `No public URL was returned` – cloudflared did not report a URL. The local
   API stays available; use `http://127.0.0.1:8000/v1` from a notebook cell or
-  from a port forward.
+  from a port forward. The timed-out tunnel process is stopped before the
+  cell gives up, so it cannot open a public route later behind the back of
+  the reported result.
 * `The public endpoint is not usable yet` – the tunnel exists but the request
   through it failed. The public URL of a Quick Tunnel needs a moment before it
   routes; the cell reports the exact reason: `auth` (the key was rejected),

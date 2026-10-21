@@ -21,7 +21,7 @@ cell exposes.
 | --- | --- |
 | GPU check | Lists the GPUs and aborts with an actionable message when fewer than two (or no T4) are present. |
 | `llama.cpp` | Reuses a working `llama-server` from the working directory, otherwise downloads the pinned CUDA build from **direct release asset URLs** and verifies it with `--version`. |
-| Model | Reuses a complete GGUF file from `/kaggle/input` (Kaggle Dataset), from the working directory (Notebook Output) or from an earlier run. Otherwise it downloads the pinned file with resume support. |
+| Model | Reuses a complete GGUF file from `/kaggle/input` (Kaggle Dataset), from the working directory (Notebook Output) or from an earlier run. Otherwise it downloads the pinned file with resume support. Two optional `DeploymentConfig` fields harden the fetch: `model_revision` (the exact Hugging Face revision every download resolves against, default `main`) and `model_sha256` (an operator-supplied digest; when set, every reused or downloaded weight file is verified against it and a mismatch fails closed — no digest is baked into the script). |
 | Server | Reuses a healthy server of a previous run when its configuration still fits, restarts a server of this cell that no longer fits, and starts a new one otherwise. A process that the cell did not start is never touched. |
 | Smoke test | Sends a **real** chat completion (`Reply with exactly: OK`) before success is announced. The test proves that the model answers; it does **not** prove that speculative decoding is active. |
 | Tunnel | Downloads `cloudflared` from one pinned release (SHA-256-verified, no `latest` target), starts a Cloudflare Quick Tunnel and verifies the public URL with an authenticated **chat completion**. |

@@ -163,9 +163,26 @@ export function AppProvider({ children, initialAppState }: AppProviderProps) {
   }, []);
 
   const deleteProfile = useCallback((profileId: string) => {
+    // Deleting a profile must stop the in-flight requests of the conversations
+    // that use it and cancel their paused tool jobs, so no approval stays open
+    // for a profile that no longer exists. The server independently cancels
+    // every job of the profile in DELETE /api/tools/profile; this client-side
+    // pass covers the UI lifecycle and jobs the server has not seen dismissed.
+    for (const conversation of state.conversations) {
+      const usesProfile = (conversation.profileId ?? state.preferences.activeProfileId) === profileId;
+      if (!usesProfile) continue;
+      const controller = abortControllers.current.get(conversation.id);
+      if (controller) {
+        controller.abort();
+        abortControllers.current.delete(conversation.id);
+      }
+      for (const entry of conversation.messages) {
+        if (entry.toolJobId) void gateway.cancelToolJob(entry.toolJobId).catch(() => undefined);
+      }
+    }
     void gateway.deleteToolProfile(profileId).catch(() => undefined);
     dispatch({ type: 'profiles/delete', id: profileId });
-  }, []);
+  }, [state.conversations, state.preferences.activeProfileId]);
 
   const selectProfile = useCallback((profileId: string | null) => {
     dispatch({ type: 'profiles/select', id: profileId });

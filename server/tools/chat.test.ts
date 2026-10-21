@@ -71,6 +71,8 @@ async function harness(
       status: capabilityStatus,
       detail: capabilityStatus === 'supported_verified' ? 'test capability' : 'Native tool calling has not been verified.',
     })),
+    // Only consulted when a tool chat is started with an empty model ID.
+    listModels: vi.fn(async () => ['discovered-model']),
   } as unknown as ProxyService;
   const executor = new ToolExecutor(store, proxy, new FileVault(), createLogger({ sink: () => undefined }));
   const service = new ToolChatService(store, proxy, executor);
@@ -757,5 +759,170 @@ describe('bounded server-side tool chat', () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).kind).toBe('aborted');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('feeds a validation failure back with a structured, bounded schema signature', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      functionCall('calculator_calculate', { expression: 42 as unknown as string }),
+      answer('Corrected answer.'),
+    ]);
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('Corrected answer.');
+    expect(result.recovery?.outcome).toBe('corrected');
+    // The failed trace keeps the model-issued correlation ID and the kind;
+    // the trace id itself stays a server-generated UUID.
+    const failed = result.toolTrace.find((entry) => entry.status === 'failed');
+    expect(failed?.callId).toBe('call-1');
+    expect(failed?.id).not.toBe('call-1');
+    expect(failed?.failureKind).toBe('invalid_arguments');
+    // The tool result the model sees carries the structured failure.
+    const fedBack = (test.bodies[1]?.messages as Array<Record<string, unknown>> | undefined)
+      ?.filter((message) => message.role === 'tool') ?? [];
+    expect(fedBack).toHaveLength(1);
+    const payload = JSON.parse(String(fedBack[0]?.content)) as Record<string, unknown>;
+    expect(payload.failureKind).toBe('invalid_arguments');
+    expect(String(payload.expectedSchema).startsWith('calculator_calculate(')).toBe(true);
+    expect(payload.availableTools).toEqual(['calculator_calculate']);
+    expect(String(payload.guidance)).toMatch(/at most once/i);
+    // No secret material in the corrective payload.
+    expect(JSON.stringify(payload)).not.toMatch(/super-secret|api[-_ ]?key/i);
+  });
+
+  it('marks an over-budget call with the budget_exceeded failure kind', async () => {
+    const twoCalls: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'call-a', type: 'function', function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: '1 + 1' }) } },
+            { id: 'call-b', type: 'function', function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: '2 + 2' }) } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({
+      allowedTools: ['calculator_calculate'],
+      limits: { ...DEFAULT_TOOL_PROFILE_SETTINGS.limits, maxCalls: 1 },
+    }), [twoCalls, answer('Done.')]);
+
+    const result = await test.start();
+
+    const over = result.toolTrace.find((entry) => entry.callId === 'call-b');
+    expect(over?.status).toBe('failed');
+    expect(over?.failureKind).toBe('budget_exceeded');
+    const ran = result.toolTrace.find((entry) => entry.callId === 'call-a' && entry.status === 'succeeded');
+    expect(ran).toBeUndefined(); // the successful trace keeps its own UUID id
+    expect(result.toolTrace.some((entry) => entry.status === 'succeeded')).toBe(true);
+  });
+
+  it('cancels the pending jobs of one conversation or profile without touching others', async () => {
+    const profileSettings = profile({
+      allowedTools: ['code_execute'],
+      code: {
+        ...DEFAULT_TOOL_PROFILE_SETTINGS.code,
+        provider: 'docker',
+        image: `python:3.12-alpine@sha256:${'a'.repeat(64)}`,
+      },
+    });
+    const test = await harness(profileSettings, [
+      functionCall('code_execute', { language: 'python', code: 'print(1)' }),
+      functionCall('code_execute', { language: 'python', code: 'print(2)' }),
+    ]);
+
+    const first = await test.start();
+    expect(first.status).toBe('awaiting_approval');
+    const second = await test.service.start({
+      profileId: 'profile-1',
+      conversationId: 'conversation-2',
+      target: { baseUrl: 'https://model.example.invalid/v1' },
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'Run something.' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1, stream: false },
+      timeoutMs: 5_000,
+    });
+    expect(second.status).toBe('awaiting_approval');
+
+    // An unknown conversation changes nothing.
+    expect(test.service.cancelConversation('conversation-unknown')).toBe(0);
+    // Only conversation-2's job is cancelled; cancelling twice is a counted no-op.
+    expect(test.service.cancelConversation('conversation-2')).toBe(1);
+    expect(test.service.cancelConversation('conversation-2')).toBe(0);
+    await expect(test.service.approve({
+      jobId: second.jobId!,
+      approvalId: second.pendingApproval!.approvalId,
+      approved: true,
+    })).rejects.toThrow(/no longer active/i);
+
+    // The first conversation's job was untouched until the profile goes away.
+    expect(test.service.cancelProfile('profile-unknown')).toBe(0);
+    expect(test.service.cancelProfile('profile-1')).toBe(1);
+    expect(test.service.cancelProfile('profile-1')).toBe(0);
+    await expect(test.service.approve({
+      jobId: first.jobId!,
+      approvalId: first.pendingApproval!.approvalId,
+      approved: true,
+    })).rejects.toThrow(/no longer active/i);
+    // Cancellation never executes anything: still only the two model rounds.
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves an empty model ID through the endpoint model list', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
+      functionCall('calculator_calculate', { expression: '6 * 7' }),
+      answer('42.'),
+    ]);
+
+    const result = await test.service.start({
+      profileId: 'profile-1',
+      conversationId: 'conversation-1',
+      target: { baseUrl: 'https://model.example.invalid/v1' },
+      model: '',
+      messages: [{ role: 'user', content: 'Calculate.' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1, stream: false },
+      timeoutMs: 5_000,
+    });
+
+    expect(result.status).toBe('complete');
+    expect(vi.mocked(test.proxy.listModels)).toHaveBeenCalledTimes(1);
+    expect((test.bodies[0] as Record<string, unknown>).model).toBe('discovered-model');
+  });
+
+  it('refuses an empty model list with a meaningful error instead of inventing a model', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), []);
+    vi.mocked(test.proxy.listModels).mockResolvedValueOnce([]);
+
+    await expect(test.service.start({
+      profileId: 'profile-1',
+      conversationId: 'conversation-1',
+      target: { baseUrl: 'https://model.example.invalid/v1' },
+      model: '',
+      messages: [{ role: 'user', content: 'Calculate.' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1, stream: false },
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/reports no models/i);
+    // No model round was simulated.
+    expect(test.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a model discovery failure instead of simulating success', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), []);
+    vi.mocked(test.proxy.listModels).mockRejectedValueOnce(new ApiError('network', 'The endpoint is unreachable.'));
+
+    await expect(test.service.start({
+      profileId: 'profile-1',
+      conversationId: 'conversation-1',
+      target: { baseUrl: 'https://model.example.invalid/v1' },
+      model: '',
+      messages: [{ role: 'user', content: 'Calculate.' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1, stream: false },
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/unreachable/i);
+    expect(test.fetchMock).not.toHaveBeenCalled();
   });
 });

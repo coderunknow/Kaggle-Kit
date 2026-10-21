@@ -91,6 +91,15 @@ class DeploymentConfig:
     repo: str = "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
     model_file: str = "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
     min_model_bytes: int = 11_000_000_000
+    # Optional supply-chain pinning of the model weights. ``model_revision``
+    # is the exact Hugging Face revision (branch, tag or commit hash) every
+    # download resolves against. ``model_sha256``, when set, is verified
+    # against every reused and downloaded weight file and a mismatch fails
+    # closed. No digest is baked into this script: a guessed digest would be
+    # worse than none, so the operator supplies one only from a source they
+    # trust.
+    model_revision: str = "main"
+    model_sha256: Optional[str] = None
 
     # llama.cpp
     llama_cpp_tags: Tuple[str, ...] = ("b11719", "b11718", "b11717")
@@ -885,6 +894,14 @@ def find_saved_model(config: DeploymentConfig) -> Optional[Path]:
             if not _looks_like_gguf(candidate):
                 log(f"Ignoring {candidate}: it is not a GGUF file")
                 continue
+            # When the operator pinned a digest, a saved file that does not
+            # match is never served: it is skipped and the pinned download
+            # path runs instead.
+            if config.model_sha256:
+                verify_sha256(candidate, config.model_sha256)
+        except ChecksumMismatch as exc:
+            warn(f"Ignoring {candidate}: {exc}")
+            continue
         except OSError:
             continue
         return candidate
@@ -906,9 +923,15 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
                 repo_id=config.repo,
                 filename=config.model_file,
                 local_dir=str(config.model_dir),
+                revision=config.model_revision,
             )
         )
         if path.exists() and path.stat().st_size >= config.min_model_bytes:
+            # A pinned digest is verified before the file is declared ready.
+            # A mismatch raises ChecksumMismatch, is reported below, and the
+            # direct download re-verifies it, so a wrong file never passes.
+            if config.model_sha256:
+                verify_sha256(path, config.model_sha256)
             log(f"The model is ready: {path} ({path.stat().st_size / 1e9:.2f} GB)")
             return path
         raise IOError("The model file appears to be incomplete.")
@@ -918,7 +941,9 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
         warn(f"The Hugging Face download failed: {type(exc).__name__}: {exc}")
         log("Falling back to the direct download with resume support.")
 
-    url = f"https://huggingface.co/{config.repo}/resolve/main/{config.model_file}"
+    # The configured revision, never a moving default: the same digest (when
+    # pinned) has to describe the same bytes on every rerun.
+    url = f"https://huggingface.co/{config.repo}/resolve/{config.model_revision}/{config.model_file}"
     path = download_resumable(
         session,
         url,
@@ -926,6 +951,7 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
         min_bytes=config.min_model_bytes,
         verify_tar=False,
         attempts=config.download_attempts,
+        expected_sha256=config.model_sha256,
     )
     if not _looks_like_gguf(path):
         raise RuntimeError(f"The downloaded file {path} is not a GGUF file.")
@@ -1437,6 +1463,15 @@ def start_public_tunnel(session: requests.Session, config: DeploymentConfig) -> 
             return match.group(0)
         time.sleep(1)
 
+    # The tunnel never reported its URL: stop the process before giving up.
+    # An orphaned cloudflared could otherwise finish the handshake later and
+    # expose the server publicly after this function reported "no public
+    # URL". A failure to stop is reported honestly; it never masks the
+    # timeout and never turns it into a success.
+    try:
+        stop_process(process)
+    except Exception as exc:  # noqa: BLE001
+        warn(f"The timed-out tunnel process could not be stopped: {type(exc).__name__}: {exc}")
     warn("The tunnel did not report a URL within 90 seconds:")
     warn(tail_log(log_path))
     return None
@@ -1818,7 +1853,12 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
             warn("No public URL was returned. The local API stays available.")
 
     applied = dict(applied)
-    applied["unsupported_options"] = (state or {}).get("dropped") or []
+    # Read the server state fresh: after a restart, the snapshot taken before
+    # the start belongs to the previous run, and its "dropped" list would
+    # misreport this run's unsupported options. A missing fresh state falls
+    # back to the snapshot, never to a fabricated list.
+    latest_state = read_server_state(config) or state or {}
+    applied["unsupported_options"] = list(latest_state.get("dropped") or [])
 
     paths = write_runtime_bundle(
         config,
