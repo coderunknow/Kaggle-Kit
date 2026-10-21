@@ -957,3 +957,31 @@ created and no release is published (explicitly out of scope for this task).
   real-model evidence.
 * The PR record (number, URL, CI state) is appended in a follow-up
   docs-only commit, as in the dev6 cycle.
+
+## 2026-10-21 — Post-dev6 hardening PR record
+
+* Follow-up PR: **#14** — https://github.com/coderunknow/Kaggle-Kit/pull/14
+  (base `main` @ `c52d262`, head `arena/5860d26a-kaggle-kit` @ `41837b9`:
+  implementation commit `699a821` + this log cycle).
+* CI on the implementation head (run 39589875835): `typecheck, lint, test
+  and build`, `notebook tests`, `docker sandbox integration`, `Browser
+  end-to-end`, `windows launcher` and CodeRabbit all **passed**.
+  `Kilo Code Review` reports `action_required` — "Insufficient credits to
+  run review" — the same billing/quota gate as on PRs #9–#13; it produced
+  no code findings. `mergeable=MERGEABLE`, `mergeStateStatus=UNSTABLE`
+  (the Kilo gate only), matching the state in which PR #13 was merged.
+* Local verification repeated on this head before the push: typecheck 0,
+  lint 0, Vitest 44 files / 417 tests 0, build 0, integration 31/31 0,
+  notebooks 58 / 0 skipped 0, tools 25 0, npm audit 0 vulnerabilities,
+  `git diff --check` clean, `tools/release-dry-run.sh 0.1.0-dev6
+  v0.1.0-dev6` exit 0 ("The release v0.1.0-dev6 is valid", notes rendered
+  with `41837b9`) — the dry run proves the tree stays release-valid; no tag
+  was created and no release was published, as the task requires.
+* Not verified (unchanged): real-model tool calling (no live benchmark
+  collected; all benchmark evidence is mock/synthetic and labelled as
+  such), the HF digest mechanism against the real host (fixtures only),
+  local browser e2e (the CI job covers it).
+* PR #12 stays open until this PR exists with its preserved changes safely
+  committed here; it is then closed with a comment referencing this record,
+  without deleting its branch. This entry is that record; the close comment
+  outcome is reported in the task completion report.
