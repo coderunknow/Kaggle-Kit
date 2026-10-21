@@ -10,14 +10,16 @@
     "npm run test:e2e: exit 0; 5 tests against built app and mock model; Chromium 153 provisioned from @sparticuz/chromium@153.0.0 outside repository, bundled NSS/NSPR via LD_LIBRARY_PATH; standard Playwright 1.56.1 CDN browser initially missing; no application dependency added",
     "npm audit --json: exit 0; 0 vulnerabilities; git diff --check clean",
     "Regression evidence: restoring old editor test expression fails the credential-edit test; removing the Docker pre-cancellation guard fails its focused regression",
-    "Pyodide 314.0.7 npm archive downloaded for feasibility inspection only: 6488647 bytes; not executed or shipped"
+    "Pyodide 314.0.7 npm archive downloaded for feasibility inspection only: 6488647 bytes; not executed or shipped",
+    "tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7: exit 0 on implementation d80a2e3829b8f17e1e37e5cfe71a464fa2d55fec; staged and simulated-download validations passed; no tag or publication",
+    "GitHub CI run 39623227478 on 3abb618d6663cb891c8e01767e00a085ae853575: all five repository jobs passed, including official Playwright Chromium, real Docker sandbox integration and Windows launcher; https://github.com/coderunknow/Kaggle-Kit/actions/runs/39623227478"
   ],
   "notTested": [
     "Keyless public-web search is NOT implemented. Public hosts are inaccessible from this environment; no suitable public provider policy and live search responses were verified. Page retrieval is not search.",
     "Browser/WebAssembly Python is NOT implemented. Safe origin/network/storage isolation, memory behavior and server/browser execution bridge remain undemonstrated. Docker is the only optional implemented execution mode.",
     "No live deployed model, Kaggle GPU, model download, llama.cpp runtime or public tunnel was tested; deterministic mock evidence is not live-model reliability evidence.",
-    "Docker runtime unavailable locally (docker CLI absent); existing CI Docker job remains unchanged and must pass on the PR.",
-    "Windows launcher runtime unavailable locally; existing windows-latest CI job remains unchanged and must pass on the PR.",
+    "Docker runtime unavailable locally (docker CLI absent); existing real-Docker CI job passed on the PR (run 39623227478), not a local Docker run.",
+    "Windows launcher runtime unavailable locally; existing windows-latest CI job passed on the PR (run 39623227478), not a local Windows run.",
     "No live Brave account/retention rights, configured HTTP provider or MCP server was validated.",
     "No assistive-technology audit, other browser engines or comprehensive visual audit; Chromium E2E covers selected desktop/narrow-screen flows only.",
     "Model weights remain digest-unpinned unless the operator supplies the existing optional revision/digest configuration."

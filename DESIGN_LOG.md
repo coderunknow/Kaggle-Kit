@@ -1613,3 +1613,25 @@ results against a real model are claimed. No finite tests guarantee correctness.
 A draft/open PR is appropriate because genuine keyless search remains missing;
 this is partial dev7 work, not acceptance-complete. PR/CI state will be appended
 when confirmed. No tag, release publication, merge or other branch write.
+
+## 2026-10-21 — dev7 draft PR and CI confirmation
+
+Pushed only `arena/4327fa8e-kaggle-kit`; opened
+[PR #16](https://github.com/coderunknow/Kaggle-Kit/pull/16) against main.
+GitHub confirms `OPEN`, `isDraft: true`, `mergedAt: null`, head `3abb618` at
+creation. No tag/release or unrelated PR/branch write.
+
+[CI run 39623227478](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39623227478)
+on `3abb618d6663cb891c8e01767e00a085ae853575` completed successfully; `gh run watch
+39623227478 --exit-status` exited 0. All five repository jobs passed: checks/
+build/integration, notebook/release tools, real Docker sandbox integration,
+Windows launcher, and browser E2E using the normal Playwright Chromium install.
+This adds CI runtime evidence for the preserved Docker and Windows paths; neither
+was run locally. Runner migration and action Node-runtime deprecation annotations
+are non-failing and were not used to justify unrelated workflow edits.
+
+Release environment metadata now distinguishes this confirmed CI evidence from
+local testing and explicitly records the successful dry run at implementation
+`d80a2e3`. This docs-only follow-up does not complete keyless search or browser
+Python; draft status is intentional. No live provider/model or Kaggle evidence
+was obtained by passing CI.

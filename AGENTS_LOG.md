@@ -1027,3 +1027,17 @@ created and no release is published (explicitly out of scope for this task).
   retained; PR/CI confirmation appended separately. Detailed evidence and
   concrete follow-up: `docs/dev7-audit.md`. Candidate must remain draft/open,
   not represented as acceptance-complete or bug-free.
+
+## 2026-10-21 — dev7 delivery confirmation
+
+- PR #16: https://github.com/coderunknow/Kaggle-Kit/pull/16 — GitHub-confirmed
+  OPEN / draft / unmerged, head `3abb618` when created, base main. Only the bound
+  `arena/4327fa8e-kaggle-kit` branch was pushed. No tag, merge or release.
+- CI https://github.com/coderunknow/Kaggle-Kit/actions/runs/39623227478 on
+  `3abb618d6663cb891c8e01767e00a085ae853575`: all five repository jobs passed,
+  including actual Docker sandbox integration, Windows launcher and standard
+  Playwright browser E2E. `gh run watch 39623227478 --exit-status` exit 0.
+- Updated environment metadata with confirmed CI/runtime and release-dry-run
+  evidence. Docs-only follow-up; implementation remains `d80a2e3`. Keyless
+  search and browser Python remain explicitly incomplete/deferred. Draft PR
+  status does not claim acceptance-complete delivery.
