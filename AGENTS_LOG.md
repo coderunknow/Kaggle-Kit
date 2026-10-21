@@ -916,3 +916,44 @@ created and no release is published (explicitly out of scope for this task).
   (`tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6`) is re-executed on the
   resulting commit and its exit status is reported in the PR conversation /
   completion report. A successful dry run is not a published release.
+
+## 2026-10-21 — Selective salvage of PR #12 into a post-dev6 hardening branch
+
+* Task: audit PR #12 (done earlier the same day; recommendation: do not
+  merge), then selectively port its verified, still-missing fixes onto the
+  current `main` (`c52d262`, the published `v0.1.0-dev6` merge commit) as a
+  follow-up PR. No version change, no release, no merge in this task.
+* Branch: `arena/5860d26a-kaggle-kit`, created from `origin/main` at
+  `c52d262` with no other commits (the Arena session binding requires all
+  work to stay on this branch, so it *is* the follow-up branch).
+* Scope ported (details and reasons in the DESIGN_LOG entry of the same
+  date): notebook tunnel-orphan stop, truthful approval-failure states,
+  fresh server-state read, probe `max_tokens` 192 + length diagnostics +
+  word-boundary token + `protocolVerified`/`roundTripVerified`, capability
+  retention (server + reducer), empty-model-ID resolution for tool paths,
+  ordinary-chat prompt neutralization, contextual job cancellation
+  (server endpoints + client drop paths), structured validation-failure
+  feedback (`failureKind`, bounded `expectedSchema`, `callId`) inside the
+  unchanged bounded recovery, optional `model_revision`/`model_sha256`
+  weight pinning, two `operationSummary` corrections, research-docs
+  consistency fixes.
+* Scope excluded on purpose: argv API-key fallback, default-on keyword
+  heuristics, catalog design B, a second benchmark CLI, duplicate dev6
+  release records, diagnostics UI, multi-version cloudflared fallback
+  (deferred with reasons), and auto-cancelling jobs when a new turn starts
+  (deferred, behaviour change).
+* Verification on the implementation commit (real output): typecheck 0,
+  lint 0, Vitest **44 files / 417 tests** 0, build 0, integration
+  **31/31** 0, notebooks **58 / 0 skipped** 0, tools **25** 0,
+  `npm audit` 0 vulnerabilities, `git diff --check` clean, benchmark smoke
+  vs the mock exit 0 (synthetic-results-only, labelled). Diff at commit
+  time: 26 files, +1425/−60 before the log entries.
+* A forbidden-content scan of the diff (`allow_cli_api_key_fallback`,
+  `detectMissedToolCall`, `benchmark-tool-calling`, `MAX_ACTIVE_TOOLS`)
+  found 0 matches.
+* Not verified: real-model tool calling (no live benchmark collected), the
+  digest mechanism against the real Hugging Face host (fixtures only), and
+  browser e2e locally (CI covers it). Mock evidence is never presented as
+  real-model evidence.
+* The PR record (number, URL, CI state) is appended in a follow-up
+  docs-only commit, as in the dev6 cycle.
