@@ -1722,3 +1722,82 @@ Same correction as in `AGENTS_LOG.md`: after restoring PR #15's
 nightly-workflow tests (dropped by the merge's `--theirs` resolution),
 the tools suite is **27 passed**, not 25. Appended rather than edited,
 per the append-only rule.
+
+
+## 2026-10-22 - Final audit decisions before the dev7 development merge
+
+**Starting state (live GitHub, re-fetched).** PR #17 open/draft, head
+`7502508a11454074507101153e02075fd52fa198`, base `main` @
+`2b739831cb8b5a990129918362d5027815c3a7b0` (PR #15's merge), mergeable /
+clean; PR #16 (`3abb618`) open/draft and an ancestor of the PR #17 head;
+PR #15 already merged and untouched. `main` is reported unprotected with
+no rulesets (the detailed branch-protection API returns 403 to this
+integration, so reviews/required checks were read from the PR state: no
+required reviewers, no review requests). Prior CI on `7502508` was green.
+
+**Defects found by the audit and fixed in `0de64185530fc31ca903c74710fa8077b1907dac`
+(each reproduced by a failing test first):**
+
+1. Security - the TPU tunnel exposed vLLM directly, but vLLM's key guards
+   only `/v1`, `/v2`, `/inference`, `/cohere` (read in vllm `v0.28.0`
+   source: `entrypoints/serve/utils/server_utils.py` `GUARDED_PREFIX`;
+   `entrypoints/serve/sagemaker/api_router.py` serves `/invocations` with
+   the same inference handlers). The old `/v1/models` auth probe could not
+   detect this. Fixed with an in-process allowlisting, bearer-checking,
+   body-bounded gateway as the only tunnel target; tunnel start gated on
+   the gateway refusing `/invocations`; tunnel stopped if the public URL
+   answers it. llama.cpp (GPU) checked at both pinned revisions: only
+   health/static frontend paths bypass its key - not affected.
+2. Catalog selection of Raon overwrote a typed model ID; now only fills an
+   empty field, replacement is explicit.
+3. Qwen/T4 was labelled "Verified" without live evidence of this script;
+   now "Pre-existing - not re-verified live", with a test forbidding any
+   `verified` row.
+
+**Primary-source re-verification.** Qwen TPU revision `1d4bf0f2...` is the
+current HF sha; KRAFTON llama.cpp branch head is `fb895662...`; the pinned
+Raon GGUF revision `fe24f24e...` still lists the pinned files, sizes and
+LFS SHA-256 (repo `main` moved to `3afcfcdb...`, README-only change);
+`vllm-tpu==0.28.0` exists (latest 0.32.0, pin kept until live parity);
+kaggle-cli documents `TpuV5E8`; `VLLM_API_KEY` is the documented alias.
+
+**Local verification on `0de6418` (real output).** `npm ci` (0
+vulnerabilities); `npm run typecheck` 0; `npm run lint` 0; `npm test`
+**47 files / 449 tests**; `npm run build` 0 (entry 310.00 kB / 94.61 kB
+gzip); `npm run check:integration` **33/33**; notebooks **93 passed, 0
+skipped**; tools **27 passed** (PR #15 nightly tests included);
+`npm audit` 0; `git diff --check` clean; no conflict markers;
+`tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7` exit 0, "The release
+v0.1.0-dev7 is valid" (staged + simulated download), notes rendered with
+`0de6418` - not a publication. `npm run test:e2e` locally: **blocked**
+(Chromium executable absent, download fails; 5 launch failures, no
+assertion ran) - the CI Browser job is the evidence path.
+
+**Unchanged limitations.** Raon/T4 x2, Qwen/TPU v5e-8 and hosted Raon:
+implemented, **not live-verified** (no Kaggle GPU/TPU, gated access or
+provider credential here). Raon/TPU: **blocked**, refused without
+fallback. Qwen/T4: pre-existing, not re-run live. No live-model tool
+calls, Docker locally, Windows, keyless search or browser Python. No
+speed/memory/startup figures exist for the new paths.
+
+**Merge plan.** The user authorized a development merge with unverified
+paths kept explicitly unverified. After CI passes on the final head:
+mark PR #17 ready, merge it with a merge commit, then close PR #16 as
+superseded. No tag, no release, no auto-merge, PR #15 untouched. The
+merge commit and post-merge CI are recorded in PR #17's comments and a
+follow-up log entry.
+
+**Decision - gateway instead of relying on the vLLM key.** Options were (a)
+document the limitation, (b) drop the TPU tunnel, (c) put a reverse proxy
+in front. (a) leaves a known unauthenticated inference route on a public
+URL; (b) removes a requested capability. (c) keeps the feature with a
+narrow surface: stdlib-only (no new dependency), exact-path allowlist of
+the three routes the chat interface uses, its own key check, HTTP/1.0
+connection-delimited streaming so SSE passes through unchanged, and a
+fail-closed probe on both the gateway and the public URL. The gateway is
+in-process (a kernel thread), so script mode keeps serving until Ctrl+C.
+
+**Decision - status vocabulary.** "Verified" is reserved for executed
+live evidence of this repository's code. The preserved Qwen/T4 path gets
+its own status rather than inheriting the operator-verified origin cell's
+evidence.
