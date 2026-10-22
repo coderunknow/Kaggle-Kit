@@ -1027,3 +1027,88 @@ created and no release is published (explicitly out of scope for this task).
   retained; PR/CI confirmation appended separately. Detailed evidence and
   concrete follow-up: `docs/dev7-audit.md`. Candidate must remain draft/open,
   not represented as acceptance-complete or bug-free.
+
+
+## 2026-10-22 - v0.1.0-dev7 continuation: deployment matrix, catalog, tool audit
+
+**Branch and starting point.** Continued the dev7 candidate on
+`arena/948908bc-kaggle-kit`. Live GitHub showed PR #16 open/draft at
+`3abb618` (`arena/4327fa8e-kaggle-kit`) and `main` at `2b73983` (merge of
+PR #15, untouched including `nightly-release.yml`). The histories are
+unrelated, so the candidate was merged with `--allow-unrelated-histories`
+(commit `3a09178`), taking the PR branch versions of conflicting dev7
+files; PR #15's files were verified preserved. The merge initially staged
+add/add conflict *markers* in six documentation files as if resolved;
+they were removed (commit `a300560`) by restoring the PR-branch versions
+after proving both append-only logs were exact byte-prefix extensions of
+`main`, then re-applying the new documentation on the clean base. This
+session's branch binding prevents pushing to PR #16's own branch, so the
+work is proposed from this branch as its continuation; PR #16 itself was
+not modified from here.
+
+**What was implemented (commits `81dcd84`, `55d32ec`, `aa74926`, `2a546c9`).**
+
+* Model catalog `shared/model-catalog/catalog.ts` (renamed from
+  `shared/models/` - the weights rule `models/` in .gitignore swallowed
+  the source until the rename) with Qwen/Raon/custom entries, gated-access
+  notes, per-combination statuses + evidence, discovery matching and
+  honest availability states; ProfileForm catalog browser + deployment
+  badges; InferenceSettings catalog apply (general vs coding/math) and
+  opt-in `top_k`/`min_p`/`repetition_penalty` end to end (wire type,
+  request builder omitted-reporting, shared browser/proxy validation).
+  Unset stays unsent; old profiles load unchanged; Qwen defaults clear
+  Raon extensions (no cross-profile leak).
+* Raon on T4 x2 inside the existing cell (`KAGGLE_KIT_MODEL=raon`): pinned
+  GGUF revision/digests from official HF metadata, quantization selection
+  by per-device headroom (Q4_K_M on T4), KRAFTON llama.cpp branch built
+  from pinned commit `fb895662...`, served alias, flag-filtered model-card
+  startup sampling, HF token only in the huggingface.co request header
+  with fail-before-download when gated access is missing, separate
+  root/state/key. The default Qwen deployment is unchanged - including a
+  byte-identical reuse fingerprint, proven by test.
+* `notebooks/tpu_deployment.py`: Qwen bf16 (`Qwen/Qwen3.8-27B` @
+  `1d4bf0f2...`) via `vllm-tpu==0.28.0`, TP=8, eight-TPU requirement with
+  no CPU fallback, MTP refused (documented output corruption), key via
+  `VLLM_API_KEY` env + verified auth enforcement, real-inference smoke
+  test, pinned tunnel, runtime bundle. Raon x TPU raises
+  `UnsupportedDeploymentError` with the kernel evidence before installing
+  anything.
+* Tool/stream defects, each reproduced failing first: streamed
+  `delta.reasoning` (vLLM/Raon) was dropped; conflicting streamed
+  tool-call id/name on one index merged two calls; abort could not wake a
+  silent SSE read (and a cancelled stream yielded a trailing event).
+  Mock upstream + gateway + built-bundle integration now cover
+  reasoning separation.
+* Docs: deployment matrix + operator live-verification procedure,
+  catalog/inference docs, security boundaries, troubleshooting entries,
+  rewritten dev7 release notes and environment metadata, audit
+  continuation with the fresh keyless-search reassessment.
+
+**Search decision.** Reassessed 2026-10-22 from primary sources (SearXNG
+search-API docs, DuckDuckGo API text, Marginalia API/license pages;
+sandbox `curl` to candidate hosts re-confirmed `SSL_ERROR_SYSCALL`).
+No credential-free provider met the authorization/reliability bar, so
+keyless search ships nothing and, per the user's reassessment mandate,
+does not block review readiness; it stays honestly absent in UI/docs.
+Browser Python remains deferred (no proven isolation/bridge).
+
+**Checks executed on the candidate (real output).**
+
+* `npm run typecheck`, `npm run lint` - exit 0.
+* `npm test` - **47 files, 448 tests passed** (merge baseline 45/431).
+* `npm run build` - passed (entry 310.00 kB / 94.61 kB gzip).
+* `npm run check:integration` - **33/33** against the built bundle.
+* `python3 -m unittest discover -s notebooks` - **86 passed, 0 skipped**
+  (requests installed); `-s tools` - **25 passed**.
+* Benchmark smoke vs the local mock - 6/6, synthetic results labelled.
+* `npm audit --json` - 0 vulnerabilities; `git diff --check` clean.
+* `npm run test:e2e` - **blocked**: Chromium binary absent and the
+  Playwright download host unreachable (recorded download failure). The
+  CI Browser job is the verification path; not reported as passed.
+
+**Not verified.** Everything live: Raon T4 inference (no GPU, no gated
+access), Qwen TPU execution (no TPU), Raon hosted API (no credential; no
+endpoint is hardcoded), real-model tool behaviour, Docker runtime,
+public tunnels, Windows launcher, real browser. No token, speed, memory
+or startup figure for any new path is claimed. The PR stays draft for
+those reasons; no merge, tag, release or auto-merge was performed.

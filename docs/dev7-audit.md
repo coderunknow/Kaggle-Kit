@@ -151,3 +151,170 @@ release environment metadata and PR for exact final command results.
 **This candidate is partial dev7 work, not acceptance-complete:** keyless search
 is missing and browser Python is deferred. Keep the PR draft/open for review;
 do not tag, publish or represent this as a completed search-enabled release.
+
+---
+
+## dev7 continuation - 2026-10-22 (deployment matrix, catalog, tool audit)
+
+Everything above this section is the 2026-10-21 record and is unchanged.
+This continuation was implemented on the merged candidate (the merge
+initially left conflict markers in six documentation files; they were
+removed by restoring the PR-branch versions after verifying the
+append-only logs were exact byte-prefix extensions - see the fix commit).
+
+### Starting point re-verified live
+
+PR #16 was still open/draft at `3abb618` on `arena/4327fa8e-kaggle-kit`;
+`main` was `2b73983` (merge of PR #15, which is untouched - its
+`nightly-release.yml` and workflow-security files are preserved). The two
+histories are unrelated, so the candidate was merged with
+`--allow-unrelated-histories`, taking the PR branch's versions of the
+conflicting dev7 files. Baseline before implementation: 431 Vitest tests
+green on the merged tree.
+
+### Deployment matrix evidence
+
+Primary sources checked 2026-10-22 (not summaries): KRAFTON model card
+(`krafton-ai/Raon-1-mini-preview` README), Hugging Face API metadata for
+`KRAFTON/Raon-1-mini-preview-gguf` (revision `fe24f24e...`, per-file
+sizes and LFS SHA-256 ids), GitHub API branch head of
+`krafton-ai/llama.cpp@raon-1-mini-preview` (`fb895662...`), Hugging Face
+API for `Qwen/Qwen3.8-27B` (safetensors, `Qwen3_5ForConditionalGeneration`,
+revision `1d4bf0f2...`, Apache-2.0, ungated), PyPI `vllm-tpu` metadata,
+and kaggle-cli `kernels.md` confirming accelerator id `TpuV5E8`.
+
+| Combination | Status | What the evidence actually proves |
+| --- | --- | --- |
+| Qwen / T4 x2 | Verified (pre-existing) | Shipped cell + 86 notebook tests; dev7 changes are additive and the default fingerprint is byte-identical to before (tested), so rerun/reuse semantics are preserved. No new live GPU run in this environment. |
+| Raon / T4 x2 | Implemented - not live-verified | Pinned revision/digests, sizing rule (per-device share <=70% -> Q4_K_M 19,686,434,304 B on T4; Q8_0/Q6_K/Q5_K_M/IQ4_XS figures in code), KRAFTON-branch source build, gated-token failure before any request, alias + flag-filtered startup sampling - all unit-tested. Needs gated access + a real T4 session (procedure in the deployment guide, section 12). |
+| Qwen / TPU v5e-8 | Implemented - not live-verified | bf16 checkpoint lineage is the official `Qwen/Qwen3.8-27B` (not the GGUF), vllm-tpu 0.28.0 carries the gated-DeltaNet Pallas kernels this hybrid needs, MTP corruptions on that stack are documented in public Kaggle runs and therefore refused in code. Needs a real `TpuV5E8` session. |
+| Raon / TPU v5e-8 | Blocked | GGUF is not TPU-consumable; vendor runtimes are CUDA-only; no `raon1` kernels in documented vllm-tpu/tpu-inference or SGLang-TPU support; no upstream execution proof. The cell refuses before installing anything. This is a research result, not a claim of support. |
+| Raon hosted API | Implemented - not live-verified | Ordinary separate profile; no hardcoded base URL/model/token; discovery + staged real-inference test decide Connected. Weights are Apache-2.0 but hosted terms are separate (vendor docs); no provider credential existed here, so the official service itself was not called. |
+
+No tok/s, memory, or startup figure for any new path is reported anywhere:
+none was measured. Community Kaggle numbers for Qwen on v5e-8 (~130 tok/s
+bf16) are third-party evidence for feasibility, not results of this code.
+
+### Catalog, discovery, and Raon inference behavior
+
+`shared/model-catalog/catalog.ts` is the single catalog source (the
+directory is not `shared/models/` because the weights rule `models/` in
+.gitignore would swallow the source - renaming beat weakening that rule).
+Catalog state is kept apart from endpoint state in types and UI copy:
+selection edits drafts only, availability is `advertised /
+not_advertised / unknown` strictly from discovery, and every deployment
+row carries its evidence string. Raon defaults follow the model card
+exactly (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0,
+repetition_penalty 1.0, frequency_penalty 0, presence_penalty 1.5
+general / 0 coding-math; thinking on and `truncate_history_thinking=false`
+are deployment/startup properties). `top_k`/`min_p`/`repetition_penalty`
+are opt-in end to end (wire type -> request builder with omitted-reporting
+-> shared validation used by browser and proxy -> bounded UI controls);
+unset means unsent, including for every pre-existing profile. No speed
+claim is made from the 4.3B active-parameter figure anywhere in the UI.
+
+### Tool-calling audit: defects reproduced, then fixed
+
+The full lifecycle was re-traced (profile/credential/model identity,
+capability cache keys by URL+credential-hash+model, catalog byte budget,
+argument validation, single-use credential-fingerprinted approvals,
+contextual cancellation, bounded recovery, stale-test invalidation). The
+dev4-dev6 protections held under their existing tests. Three new defects
+were each reproduced with a failing test first:
+
+1. **Streamed reasoning dropped for vLLM endpoints.**
+   `extractDelta` read only `reasoning_content`; vLLM streams
+   `delta.reasoning` (Raon/Qwen thinking models), so chain-of-thought
+   silently vanished on exactly the new deployments. Fix: canonical field
+   wins when both exist, reasoning never merges into `content`. Covered
+   in stream unit tests, a gateway test, deterministic mock frames, and
+   two new built-bundle integration assertions.
+2. **Conflicting streamed tool-call identity merged two calls.**
+   `ToolCallAccumulator` kept the first id/name per index and concatenated
+   a second, different call's arguments into it - a fabricated correlation.
+   Fix: a conflicting id/name poisons the entry; it is reported as
+   overflow and never handed back for execution.
+3. **Abort could not wake a silent SSE stream.**
+   `parseSseStream` checked the signal only between chunks, so timing out
+   a stream that never sends data hung until the server spoke (this also
+   bounded the streamed tool-probe's deadline). Fix: abort cancels the
+   reader; a cancelled stream no longer yields a trailing partial event.
+
+Mock/integration evidence after the fixes (deterministic, loopback):
+built-bundle integration 33/33 including probe, streamed fragments,
+calculator round trip, denied approval + replay refusal, bounded
+corrective round, contextual cancellation; benchmark smoke vs the mock
+6/6 with synthetic results labelled as such. **No live-model tool call
+was executed** (no endpoint/credential/hardware here); live Qwen/Raon/
+hosted tool tests remain operator work with `tools/model-benchmark.mjs`,
+whose layers distinguish protocol/selection/arguments from real
+execution. Synthetic results were never described as real execution.
+
+### Keyless search reassessment (fresh, 2026-10-22)
+
+Re-checked from primary sources instead of inheriting the earlier
+conclusion:
+
+* **SearXNG (software vs public instances).** The official Search API doc
+  (fetched from the searxng repository) still states many public
+  instances disable json/csv/rss and return 403 for unset formats. The
+  docs authorize querying *an instance*, they do not grant this
+  application rights on any public operator's instance or its upstream
+  engines. No default instance can be chosen honestly.
+* **DuckDuckGo.** No official web-search API exists; the Instant Answer
+  endpoint explicitly "is not a full search results API" (vendor text),
+  and HTML scraping is a terms/bot-protection problem, which this project
+  does not do.
+* **Marginalia.** A documented API exists, but the shared `public` key is
+  for experimentation with a shared, frequently-hit rate limit; a real
+  key needs registration (bot abuse), and results are CC-BY-NC-SA 4.0 -
+  a non-commercial, share-alike results license that conflicts with a
+  general-purpose default and with this app's retention model. Its index
+  also deliberately covers the non-commercial small web, not general web
+  search.
+* **Live verification from here is impossible:** both
+  `https://html.duckduckgo.com/html/` and a public SearXNG JSON query fail
+  from this sandbox with `SSL_ERROR_SYSCALL` (exit 35), re-confirmed
+  2026-10-22; outbound access is limited to GitHub/npm/PyPI hosts.
+
+**Decision (user-authorized reassessment):** keyless search is deferred
+and does **not** block this development release's readiness for review.
+The scope, UI, release notes and this audit all state it is absent; page
+retrieval is never presented as search; optional Brave (own key, own
+retention confirmation) remains the only search provider. A future
+integration needs a provider whose published terms authorize this use
+without a key (or an operator-run instance story), then the usual bar:
+bounded pinned requests, provenance-bearing results, parser/security
+tests, and a separately labelled live smoke test.
+
+### Verification on the continuation head (real output)
+
+* `npm run typecheck`, `npm run lint` - exit 0.
+* `npm test` - **47 files, 448 tests passed** (431 at the merge baseline;
+  +17: catalog 7, ProfileForm catalog UI 3, requests/validation 3,
+  stream 3, gateway 1).
+* `npm run build` - passed (entry 310.00 kB / 94.61 kB gzip).
+* `npm run check:integration` - **33/33** against the built bundle.
+* `python3 -m unittest discover -s notebooks` - **86 passed, 0 skipped**
+  (58 pre-existing + 12 Raon + 16 TPU).
+* `python3 -m unittest discover -s tools` - **25 passed**.
+* `tools/model-benchmark.mjs` vs the local mock - 6/6 (script mechanics
+  with synthetic results, labelled as such; not a real model).
+* `npm audit --json` - **0 vulnerabilities**; `git diff --check` clean.
+* `npm run test:e2e` - **blocked locally**: the Playwright Chromium
+  binary is absent and its download host is unreachable from this sandbox
+  (download failure recorded). The CI Browser end-to-end job on the final
+  head is the verification path; jsdom component tests cover the new UI
+  logic meanwhile. This is reported as not-run, not passed.
+
+### Status superseding the 2026-10-21 closing
+
+The earlier "partial candidate" verdict is superseded as follows:
+application code, catalog/UI, deployments, regression fixes, docs and
+version metadata are implemented and locally verified as above. The
+candidate is **kept in draft**, for two explicit reasons that local tests
+cannot remove: (1) Raon on T4 x2 and Qwen on TPU v5e-8 still need their
+live Kaggle executions (section 12 of the deployment guide) before anyone
+calls them verified; (2) Raon on TPU is a known upstream incompatibility.
+Browser Python remains deferred for the isolation reasons above. No tag,
+release, merge, or auto-merge is performed by this work.

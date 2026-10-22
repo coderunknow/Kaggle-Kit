@@ -1613,3 +1613,104 @@ results against a real model are claimed. No finite tests guarantee correctness.
 A draft/open PR is appropriate because genuine keyless search remains missing;
 this is partial dev7 work, not acceptance-complete. PR/CI state will be appended
 when confirmed. No tag, release publication, merge or other branch write.
+
+
+## 2026-10-22 - v0.1.0-dev7 continuation: deployment matrix and catalog decisions
+
+This entry records the design decisions of the dev7 continuation (commits
+on `arena/948908bc-kaggle-kit` after the merge of the PR #16 candidate).
+Earlier entries are unchanged.
+
+### Decision 1 - extend the verified GPU cell, add a separate TPU cell
+
+Raon lives in `notebooks/qwen3_8_27b_api.py` behind `config_for_model()`
+with additive `DeploymentConfig` fields whose defaults reproduce the
+Qwen deployment exactly - including the reuse fingerprint payload, which
+stays byte-identical for the default config (new identity fields are only
+mixed in for non-default deployments, and a test pins the legacy digest).
+The accepted alternative - a generic loader replacing the Qwen path - was
+rejected: the verified behavior is worth more than the deduplication.
+TPU gets its own script because forcing CUDA/GGUF and JAX/bf16 through
+one execution branch would be exactly the fragile coupling the task
+forbids; the two cells share conventions (ownership state, 0600 key,
+real-inference smoke test, pinned tunnel), not code paths.
+
+### Decision 2 - Raon quantization by per-device headroom, pinned by metadata
+
+Sizes and SHA-256 digests come from the official GGUF repository's LFS
+metadata at a pinned revision, so the operator-supplied-digest mechanism
+of dev6 becomes a baked-in pin for Raon (a *sourced* digest, never a
+guessed one). Selection caps the conservative per-device share (equal
+share x 1.10 imbalance) at 70% of a device: on T4 that is Q4_K_M, with
+Q5_K_M deliberately rejected although it fits the aggregate 32 GB -
+aggregate fitting is how OOM-at-load happens with layer splits. The
+KRAFTON llama.cpp branch is built from a pinned commit because `raon1`
+support in upstream prebuilt binaries must not be assumed; the codeload
+archive has no published digest and the script says so. DFlash
+speculative decoding stays off: baseline inference first, optimizations
+only after live verification.
+
+### Decision 3 - TPU: genuine path for Qwen, explicit refusal for Raon
+
+Qwen on v5e-8 uses the official bf16 safetensors checkpoint (the GGUF is
+not a TPU artifact) with vllm-tpu 0.28.0 - the release whose
+gated-DeltaNet Pallas kernels match this hybrid architecture - sharded
+TP=8. Two evidence-driven refusals are coded, not documented away: MTP
+(corrupts outputs on this stack via un-rolled-back recurrent state) and
+any session without eight detected TPU devices (Kaggle can provision
+CPU-only containers; a CPU "success" would be a false TPU claim). The
+key handoff via `VLLM_API_KEY` is *verified* with an unauthenticated
+probe and fails closed, because an env handoff that silently does not
+take effect must never become a public unauthenticated endpoint.
+Raon x TPU raises `UnsupportedDeploymentError` listing the kernel
+evidence; "blocked with reasons" is the honest terminal state, and the
+catalog, docs and audit all use that word.
+
+### Decision 4 - the catalog is metadata, discovery is truth
+
+`shared/model-catalog/catalog.ts` separates three things that are easy to
+conflate: known model metadata, models an endpoint currently reports,
+and verification status per deployment combination. Selection is a draft
+edit; availability derives only from `/v1/models`; "Implemented - not
+live-verified" and "Blocked" are first-class statuses with evidence
+strings, rendered in the profile editor. Raon's sampling baseline is
+applied per profile through the same omitted-when-unset rule as every
+other optional parameter, and thinking stays a deployment/startup
+property rather than an invented per-request field. No speed claim is
+derived from the 4.3B active-parameter count anywhere.
+
+### Decision 5 - streamed reasoning and tool-call identity are protocol invariants
+
+The three reproduced defects were all invariant violations, now encoded
+as tests: reasoning is a separate channel in both spellings
+(`reasoning_content`, `reasoning`) and never merges into content; one
+streamed index is one call identity, so a conflicting id/name poisons
+the entry instead of fabricating a merged call; cancellation must wake
+a pending read, because a deadline that cannot interrupt a silent stream
+is not a deadline. Adjacent approval/recovery/cancellation suites were
+re-run unchanged.
+
+### Decision 6 - keyless search deferred by evidence, not by inertia
+
+The reassessment was redone from primary sources. Marginalia was the
+closest candidate and still fails three independent bars: a shared
+experimentation key is not product authorization, CC-BY-NC-SA results
+conflict with a general default and the retention model, and its index
+is deliberately not general web search. SearXNG's docs do not authorize
+third-party public instances, and DuckDuckGo has no web-search API.
+Shipping any of them as "search" would misrepresent authorization,
+coverage, or both; deferring with the requirement recorded is the
+correct release state.
+
+### Verification and residual state
+
+Local evidence on the candidate head: typecheck/lint 0; Vitest 47/448;
+build ok; integration 33/33; notebooks 86/0 skipped; tools 25; audit 0
+vulnerabilities; benchmark smoke 6/6 vs the mock (synthetic, labelled).
+Playwright e2e is blocked locally (browser download host unreachable)
+and delegated to the CI Browser job - recorded as not-run. Live Kaggle
+execution (Raon T4, Qwen TPU), hosted-API calls, real-model tool
+behaviour, Docker, tunnels and Windows remain unverified; the operator
+procedure in the deployment guide is the path to close the first two.
+The PR therefore stays draft: implementation-complete and reviewable,
+not acceptance-complete. No merge, tag, release or auto-merge.

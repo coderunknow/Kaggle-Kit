@@ -2,15 +2,18 @@
 
 [![CI](https://github.com/coderunknow/Kaggle-Kit/actions/workflows/ci.yml/badge.svg)](https://github.com/coderunknow/Kaggle-Kit/actions/workflows/ci.yml)
 
-Deploy a large GGUF model on Kaggle (Tesla T4 x2) with the official CUDA build of
-`llama.cpp`, expose it through an OpenAI-compatible API, and talk to it from a
-polished browser chat interface.
+Deploy large language models on Kaggle - Qwen3.8-27B and Raon-1 mini preview
+on Tesla T4 x2, Qwen3.8-27B on TPU v5e-8 - expose them through an
+OpenAI-compatible API, and talk to them from a polished browser chat
+interface that also works with any other OpenAI-compatible endpoint
+(including a hosted Raon API you configure yourself).
 
 The repository contains two halves that work together:
 
 | Part | Location | What it does |
 | --- | --- | --- |
-| Kaggle deployment | [`notebooks/qwen3_8_27b_api.py`](notebooks/qwen3_8_27b_api.py) | Downloads the model and a CUDA `llama-server`, starts it with the verified configuration, smoke tests it with a real chat completion and (optionally) publishes it through a Cloudflare Quick Tunnel. |
+| Kaggle deployment (GPU) | [`notebooks/qwen3_8_27b_api.py`](notebooks/qwen3_8_27b_api.py) | Downloads the model and a CUDA `llama-server`, starts it with the verified configuration, smoke tests it with a real chat completion and (optionally) publishes it through a Cloudflare Quick Tunnel. `KAGGLE_KIT_MODEL=raon` selects the Raon-1 mini preview deployment (KRAFTON llama.cpp branch build, gated pinned GGUF). |
+| Kaggle deployment (TPU) | [`notebooks/tpu_deployment.py`](notebooks/tpu_deployment.py) | Serves Qwen3.8-27B bf16 through the pinned vLLM TPU backend on TPU v5e-8 with the same key/smoke-test/tunnel discipline. Raon x TPU is explicitly blocked (no TPU kernels upstream) - never a silent CPU/GPU fallback. |
 | Chat interface | [`src/`](src) + [`server/`](server) | A React chat client and a small local proxy backend that talk to any OpenAI-compatible endpoint. |
 
 ```
@@ -23,17 +26,31 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
 
 ## dev7 candidate status
 
-Guided connection setup, Basic/Advanced settings and an explicit reviewed
-keyless built-in grant are available. Calculator/conversion, uploaded-file
-tools, endpoint diagnostics and opening public pages need no separate tool
-subscription. Native tool calling still requires verification and explicit
-profile permissions; the model server may require its own credential.
+Guided connection setup, Basic/Advanced settings, an explicit reviewed
+keyless built-in grant, a **model catalog** (Qwen3.8-27B, Raon-1 mini
+preview, custom endpoints) with honest per-combination verification
+statuses, and model-specific sampling defaults are available. Calculator/
+conversion, uploaded-file tools, endpoint diagnostics and opening public
+pages need no separate tool subscription. Native tool calling still
+requires verification and explicit profile permissions; the model server
+may require its own credential.
 
-**Incomplete:** genuine keyless web search could not be verified and is not
-implemented. Opening a page is not search. Browser Python remains deferred
-pending a proven isolation boundary and client/server bridge; optional secure
-Docker execution remains in Advanced. This is partial dev7 work, not a
-search-enabled release. See [audit evidence and blockers](docs/dev7-audit.md)
+**Deployment matrix:** Qwen on T4 x2 is the verified deployment (unchanged).
+Raon on T4 x2 and Qwen on TPU v5e-8 are implemented with pinned
+checkpoints/runtimes and unit tests but are **not live-verified** yet - no
+Kaggle GPU/TPU or gated Raon access existed in the development
+environment. Raon on TPU is **blocked** with evidence (no upstream TPU
+kernels for its architecture) and refuses explicitly instead of falling
+back. A hosted Raon API works as an ordinary configurable profile; no
+provider endpoint or token is built in.
+
+**Deferred by evidence:** genuine keyless web search ships nothing - no
+credential-free provider met the authorization/reliability bar (opening a
+page is not search; Brave stays optional in Advanced). Browser Python
+remains deferred pending a proven isolation boundary; optional secure
+Docker execution remains in Advanced. See
+[audit evidence, the search reassessment and blockers](docs/dev7-audit.md),
+[deployment guide](docs/kaggle-deployment.md#8-model-x-accelerator-matrix-dev7)
 and [setup instructions](docs/chat-interface.md).
 
 ## Quick start
@@ -102,6 +119,15 @@ procedure. In short:
 The deployment script never depends on the GitHub release *list* API, which is
 unreliable from Kaggle (`RemoteDisconnected`). It downloads the pinned
 `llama.cpp` release assets directly and resumes interrupted downloads.
+
+For **Raon-1 mini preview** on the same T4 x2 setup, set
+`KAGGLE_KIT_MODEL=raon` before running the same cell (gated Hugging Face
+access + an `HF_TOKEN` secret are required; the cell builds KRAFTON's
+pinned llama.cpp branch). For **TPU v5e-8**, use
+`notebooks/tpu_deployment.py` instead (Qwen bf16 via the pinned vLLM TPU
+backend; Raon on TPU is explicitly blocked). The full status matrix,
+quantization reasoning and the operator live-verification procedure are in
+[docs/kaggle-deployment.md](docs/kaggle-deployment.md#8-model-x-accelerator-matrix-dev7).
 
 ## Chat interface
 

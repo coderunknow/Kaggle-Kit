@@ -325,3 +325,37 @@ operation signal has been aborted.
 No keyless search provider or browser Python runtime ships in this candidate.
 A worker alone does not isolate origin privileges from Python/JavaScript interop.
 See [dev7 audit](dev7-audit.md) for the deferred isolation and bridge requirements.
+
+## dev7 deployment boundaries (Raon, TPU, catalog)
+
+* **Gated-weight tokens stay in their lane.** The Raon GPU deployment reads
+  `HF_TOKEN` (or an existing huggingface_hub login) at download time only
+  and sends it solely in the `huggingface.co` request header of that one
+  download - never on the shared session (which also talks to GitHub,
+  Cloudflare and localhost), never in a URL, argv, log line, fixture, or
+  any file in this repository. A gated repository without authorization is
+  an explicit failure; no mirror or substitute model is fetched.
+* **Pinned supply chain.** The Raon GGUF revision and per-file SHA-256 come
+  from the official repository metadata; the KRAFTON llama.cpp branch and
+  the Qwen TPU checkpoint/runtime are pinned by commit/version
+  (`fb895662...`, `1d4bf0f2...`, `vllm-tpu==0.28.0`). Where no authoritative
+  digest exists (the codeload source archive), the script says so instead
+  of inventing one; the artifact still has to pass the real-inference
+  smoke test.
+* **TPU server key.** The vLLM API key is generated at runtime, stored at
+  mode `0600`, and passed via the `VLLM_API_KEY` environment variable -
+  never argv. Because an env handoff could silently not take effect, the
+  deployment *verifies* enforcement with an unauthenticated request and
+  fails closed (stopping its own server) when the endpoint answers without
+  the key. It never exposes an unauthenticated server through the tunnel.
+* **No accelerator fallback.** The TPU cell requires eight detected TPU
+  devices; CPU/GPU sessions abort. Raon x TPU is refused with reasons
+  before anything is installed. Nothing in dev7 reports a model as
+  available because it exists in the catalog: availability comes only from
+  `/v1/models` plus real inference, and applying catalog sampling values
+  changes nothing until the profile is saved.
+* **Hosted endpoints are user-configured.** No provider base URL, model ID
+  or token for a hosted Raon (or any) API is hardcoded; separate profiles
+  keep hosted and local credentials apart under the existing credential
+  modes, and the weights' Apache-2.0 license is never presented as API
+  access rights.
