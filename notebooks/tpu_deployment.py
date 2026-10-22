@@ -50,8 +50,12 @@ the development environment. The operator procedure in
 from __future__ import annotations
 
 import hashlib
+import hmac
+import http.client
+import http.server
 import json
 import os
+import threading
 import re
 import secrets
 import socket
@@ -61,6 +65,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 try:  # pragma: no cover - Kaggle always has requests installed
     import requests
@@ -122,6 +127,15 @@ class TpuDeploymentConfig:
 
     host: str = "127.0.0.1"
     port: int = 8000
+    # The public tunnel never targets the vLLM port: vLLM's API key guards
+    # only /v1, /v2, /inference and /cohere, while e.g. /invocations reaches
+    # the same inference handlers without authentication (vllm v0.28.0,
+    # entrypoints/serve/utils/server_utils.py GUARDED_PREFIX and
+    # entrypoints/serve/sagemaker/api_router.py). An allowlisting gateway on
+    # this port authenticates and forwards only the OpenAI routes the chat
+    # interface uses; the tunnel points at it.
+    gateway_port: int = 8001
+    gateway_max_body_bytes: int = 8 * 1024 * 1024
     tensor_parallel_size: int = EXPECTED_TPU_CHIPS
     dtype: str = "bfloat16"
     # Conservative default. The model's native context is 262144 and its
@@ -156,6 +170,10 @@ class TpuDeploymentConfig:
     @property
     def local_api_url(self) -> str:
         return f"{self.local_url}/v1"
+
+    @property
+    def gateway_url(self) -> str:
+        return f"http://{self.host}:{self.gateway_port}"
 
 
 def log(message: str) -> None:
@@ -657,6 +675,197 @@ def start_server(session, config: TpuDeploymentConfig, api_key: str,
 
 
 # --------------------------------------------------------------------------
+# Public gateway (authenticating allowlist in front of vLLM)
+# --------------------------------------------------------------------------
+
+#: The only (method, path) pairs the public route forwards. Everything else
+#: - /invocations, /pause, /update_weights, /metrics, /tokenize, ... - is
+#: answered 404 by the gateway and never reaches vLLM.
+GATEWAY_ROUTES = frozenset({
+    ("GET", "/v1/models"),
+    ("POST", "/v1/chat/completions"),
+    ("POST", "/v1/completions"),
+})
+
+_FORWARDED_REQUEST_HEADERS = ("Authorization", "Content-Type", "Accept")
+_FORWARDED_RESPONSE_HEADERS = ("Content-Type", "Cache-Control")
+
+
+def tunnel_target_url(config: TpuDeploymentConfig) -> str:
+    """What the public tunnel exposes: always the gateway, never vLLM."""
+    return config.gateway_url
+
+
+def _key_digest(value: str) -> bytes:
+    return hashlib.sha256(value.encode("utf-8")).digest()
+
+
+def make_gateway_handler(backend_host: str, backend_port: int, api_key: str,
+                         max_body_bytes: int, backend_timeout: float = 600.0):
+    """Build the request handler class bound to one backend and one key."""
+    expected = _key_digest(api_key)
+
+    class GatewayHandler(http.server.BaseHTTPRequestHandler):
+        # HTTP/1.0: the end of a (possibly streamed) response is the end of
+        # the connection, so SSE needs no re-chunking.
+        protocol_version = "HTTP/1.0"
+        server_version = "KaggleKitGateway/1"
+        sys_version = ""
+
+        def log_message(self, *args: Any) -> None:  # never log request data
+            return
+
+        def _json(self, status: int, message: str) -> None:
+            body = json.dumps({"error": {"message": message}}).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _authorized(self) -> bool:
+            scheme, _, token = (self.headers.get("Authorization") or "").partition(" ")
+            if scheme.lower() != "bearer" or not token:
+                return False
+            return hmac.compare_digest(_key_digest(token), expected)
+
+        def _handle(self, method: str) -> None:
+            parts = urlsplit(self.path)
+            # Exact-match only: no prefix, normalisation or query string, so
+            # "/v1/../invocations" or "/v1/models/x" can never slip through.
+            if parts.query or parts.fragment or (method, parts.path) not in GATEWAY_ROUTES:
+                self._json(404, "Not found.")
+                return
+            if not self._authorized():
+                self._json(401, "Unauthorized.")
+                return
+            body = b""
+            if method == "POST":
+                if self.headers.get("Transfer-Encoding"):
+                    self._json(411, "A Content-Length is required.")
+                    return
+                raw_length = self.headers.get("Content-Length") or ""
+                if not raw_length.isdigit():
+                    self._json(411, "A Content-Length is required.")
+                    return
+                length = int(raw_length)
+                if length > max_body_bytes:
+                    self._json(413, "The request body is too large.")
+                    return
+                body = self.rfile.read(length)
+            headers = {name: self.headers[name] for name in _FORWARDED_REQUEST_HEADERS if self.headers.get(name)}
+            connection = http.client.HTTPConnection(backend_host, backend_port, timeout=backend_timeout)
+            try:
+                connection.request(method, parts.path, body=body if method == "POST" else None, headers=headers)
+                upstream = connection.getresponse()
+                self.send_response(upstream.status)
+                for name in _FORWARDED_RESPONSE_HEADERS:
+                    value = upstream.getheader(name)
+                    if value:
+                        self.send_header(name, value)
+                self.end_headers()
+                while True:
+                    chunk = upstream.read1(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (OSError, http.client.HTTPException):
+                if not self.wfile.closed:
+                    try:
+                        self._json(502, "The model server is not reachable.")
+                    except OSError:
+                        pass
+            finally:
+                connection.close()
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._handle("GET")
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._handle("POST")
+
+        def _refuse(self) -> None:
+            self._json(404, "Not found.")
+
+        do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _refuse  # noqa: N815
+
+    return GatewayHandler
+
+
+class Gateway:
+    """A running in-process gateway (daemon thread)."""
+
+    def __init__(self, server: http.server.ThreadingHTTPServer, thread: threading.Thread, key_digest: bytes):
+        self.server = server
+        self.thread = thread
+        self.key_digest = key_digest
+
+    @property
+    def port(self) -> int:
+        return int(self.server.server_address[1])
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+_ACTIVE_GATEWAY: Optional[Gateway] = None
+_ACTIVE_TUNNEL: Optional[subprocess.Popen] = None
+
+
+def start_gateway(config: TpuDeploymentConfig, api_key: str) -> Gateway:
+    """
+    Start (or reuse, in the same kernel) the authenticating gateway.
+
+    A gateway of this process with the same key is reused across cell
+    reruns; one with a rotated key is replaced. A port held by anything
+    else is a conflict, never silently shared.
+    """
+    global _ACTIVE_GATEWAY
+    digest = _key_digest(api_key)
+    current = _ACTIVE_GATEWAY
+    if current is not None and current.thread.is_alive():
+        if current.key_digest == digest and current.port == config.gateway_port:
+            return current
+        current.stop()
+        _ACTIVE_GATEWAY = None
+    handler = make_gateway_handler(config.host, config.port, api_key, config.gateway_max_body_bytes)
+    try:
+        server = http.server.ThreadingHTTPServer((config.host, config.gateway_port), handler)
+    except OSError as exc:
+        raise RuntimeError(
+            f"The gateway port {config.gateway_port} on {config.host} is in use by "
+            "something this cell did not start. The public tunnel is only ever "
+            "attached to the authenticating gateway, so it was not started. Free "
+            "the port or set gateway_port in TpuDeploymentConfig."
+        ) from exc
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, name="kaggle-kit-gateway", daemon=True)
+    thread.start()
+    _ACTIVE_GATEWAY = Gateway(server, thread, digest)
+    return _ACTIVE_GATEWAY
+
+
+def verify_unguarded_route_blocked(session, root_url: str) -> bool:
+    """
+    True when an inference route outside vLLM's guarded prefixes does not
+    answer successfully without a key. ``/invocations`` is vLLM's
+    SageMaker-compatible inference route that its API key does not cover.
+    """
+    try:
+        response = session.post(
+            f"{root_url.rstrip('/')}/invocations",
+            json={"model": "probe", "messages": [{"role": "user", "content": "probe"}], "max_tokens": 1},
+            timeout=(5, 30),
+        )
+    except Exception:  # noqa: BLE001
+        # Unreachable is not "blocked": it proves nothing about exposure.
+        return False
+    return response.status_code in (401, 403, 404, 405)
+
+
+# --------------------------------------------------------------------------
 # Public tunnel (pinned cloudflared, verified with a real completion)
 # --------------------------------------------------------------------------
 
@@ -701,6 +910,7 @@ def parse_tunnel_url(log_text: str) -> Optional[str]:
 
 
 def start_public_tunnel(session, config: TpuDeploymentConfig) -> Optional[str]:
+    global _ACTIVE_TUNNEL
     log_path = config.root / "cloudflared.log"
     try:
         binary = get_cloudflared(session, config)
@@ -709,7 +919,7 @@ def start_public_tunnel(session, config: TpuDeploymentConfig) -> Optional[str]:
         return None
     with open(log_path, "w") as log_file:
         process = subprocess.Popen(
-            [str(binary), "tunnel", "--url", config.local_url, "--no-autoupdate"],
+            [str(binary), "tunnel", "--url", tunnel_target_url(config), "--no-autoupdate"],
             stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True,
         )
     for _ in range(90):
@@ -722,6 +932,7 @@ def start_public_tunnel(session, config: TpuDeploymentConfig) -> Optional[str]:
             text = ""
         url = parse_tunnel_url(text)
         if url:
+            _ACTIVE_TUNNEL = process
             return url
         time.sleep(1)
     # Never leave an orphan that could expose the server after reporting
@@ -851,7 +1062,21 @@ def main(config: Optional[TpuDeploymentConfig] = None) -> Dict[str, Any]:
     public_url: Optional[str] = None
     public_verified = False
     if config.enable_tunnel:
+        # The tunnel is attached only to the authenticating gateway, and only
+        # after the gateway itself proved it refuses an unguarded route.
+        start_gateway(config, api_key)
+        if not verify_unguarded_route_blocked(session, config.gateway_url):
+            raise RuntimeError(
+                "The gateway did not refuse an unauthenticated /invocations request, "
+                "so the tunnel was not started. The local API stays available."
+            )
         public_url = start_public_tunnel(session, config)
+        if public_url and not verify_unguarded_route_blocked(session, public_url):
+            # Fail closed: an exposed unauthenticated inference route is
+            # worse than no public endpoint.
+            stop_process(_ACTIVE_TUNNEL)
+            warn("The public route answered /invocations without a key; the tunnel was stopped.")
+            public_url = None
         if public_url:
             try:
                 public_model = list_models(session, f"{public_url}/v1", api_key)
@@ -879,6 +1104,8 @@ def main(config: Optional[TpuDeploymentConfig] = None) -> Dict[str, Any]:
     print("Local inference:  verified with a real chat completion")
     print("Authentication:   verified enforced (unauthenticated request rejected)")
     print(f"Public endpoint:  {f'{public_url}/v1' if public_url else 'unavailable'}")
+    if public_url:
+        print(f"Public gateway:   {config.gateway_url} (authenticated allowlist; /invocations and other unguarded vLLM routes refused)")
     if public_url:
         print("Public route:     " + ("verified with an authenticated chat completion" if public_verified else "not verified"))
     print(f"Runtime info:     {paths['runtime']}")
@@ -923,6 +1150,14 @@ def config_for_model(name: str) -> TpuDeploymentConfig:
 if __name__ == "__main__":
     try:
         main(config_for_model(os.environ.get("KAGGLE_KIT_MODEL", "qwen")))
+        # In a notebook the kernel keeps the gateway thread alive after the
+        # cell returns. As a plain script the process would exit and take
+        # the gateway with it, so keep serving until interrupted.
+        if _ACTIVE_GATEWAY is not None:
+            log("Serving the authenticating gateway; press Ctrl+C to stop.")
+            _ACTIVE_GATEWAY.thread.join()
+    except KeyboardInterrupt:
+        log("Stopped.")
     except UnsupportedDeploymentError as error:
         fail(str(error))
         sys.exit(2)

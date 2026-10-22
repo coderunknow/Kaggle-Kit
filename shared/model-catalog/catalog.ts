@@ -28,6 +28,7 @@ import type { InferenceParams } from '../api/requests';
 /** How much evidence exists for one model × accelerator combination. */
 export type DeploymentStatus =
   | 'verified'
+  | 'preexisting_not_reverified'
   | 'implemented_not_live_verified'
   | 'blocked'
   | 'unsupported'
@@ -35,6 +36,7 @@ export type DeploymentStatus =
 
 export const DEPLOYMENT_STATUS_LABELS: Record<DeploymentStatus, string> = {
   verified: 'Verified',
+  preexisting_not_reverified: 'Pre-existing — not re-verified live',
   implemented_not_live_verified: 'Implemented — not live-verified',
   blocked: 'Blocked',
   unsupported: 'Unsupported',
@@ -142,7 +144,10 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     deployments: [
       {
         accelerator: 'kaggle_t4x2',
-        status: 'verified',
+        // Not 'verified': the repository's logs record that this script was
+        // derived from an operator-verified cell but never itself executed on
+        // real Kaggle T4 hardware in any development environment.
+        status: 'preexisting_not_reverified',
         runtime: 'llama.cpp CUDA (pinned builds b11717–b11719), GGUF IQ3_S, ctx 8192, MTP when the build supports it',
         evidence:
           'The existing deployment cell (notebooks/qwen3_8_27b_api.py) with its real-inference smoke test and unit suite. Preserved unchanged in dev7; a rerun reuses a healthy server and never touches foreign processes.',

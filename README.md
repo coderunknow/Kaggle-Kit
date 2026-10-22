@@ -35,7 +35,9 @@ pages need no separate tool subscription. Native tool calling still
 requires verification and explicit profile permissions; the model server
 may require its own credential.
 
-**Deployment matrix:** Qwen on T4 x2 is the verified deployment (unchanged).
+**Deployment matrix:** Qwen on T4 x2 is the pre-existing deployment, preserved
+unchanged (derived from an operator-verified cell; this script itself has not
+been re-run on live Kaggle hardware in the development environments).
 Raon on T4 x2 and Qwen on TPU v5e-8 are implemented with pinned
 checkpoints/runtimes and unit tests but are **not live-verified** yet - no
 Kaggle GPU/TPU or gated Raon access existed in the development

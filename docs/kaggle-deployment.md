@@ -224,7 +224,7 @@ another port in DeploymentConfig, and rerun the cell.
 
 | Model | Accelerator | Status | Runtime / checkpoint |
 | --- | --- | --- | --- |
-| Qwen3.8-27B | GPU T4 x2 | **Verified** (existing deployment, preserved) | CUDA `llama.cpp` (pinned b11717-b11719), GGUF IQ3_S, ctx 8192, MTP when supported |
+| Qwen3.8-27B | GPU T4 x2 | **Pre-existing — not re-verified live** (preserved unchanged; derived from an operator-verified cell) | CUDA `llama.cpp` (pinned b11717-b11719), GGUF IQ3_S, ctx 8192, MTP when supported |
 | Raon-1 mini preview | GPU T4 x2 | **Implemented - not live-verified** | KRAFTON `llama.cpp` branch `raon-1-mini-preview` @ `fb895662...`, GGUF Q4_K_M on T4 |
 | Qwen3.8-27B | TPU v5e-8 | **Implemented - not live-verified** | `vllm-tpu==0.28.0`, `Qwen/Qwen3.8-27B` bf16 @ `1d4bf0f2...`, tensor parallel 8, MTP off |
 | Raon-1 mini preview | TPU v5e-8 | **Blocked** (evidence in section 11) | none - no TPU kernels for the `raon1` architecture |
@@ -305,7 +305,15 @@ through the vLLM TPU backend, sharded tensor-parallel 8.
    dtype bfloat16, `max_model_len` 32768 by default); waits (bounded) for
    health; runs a **real authenticated chat completion**; and verifies
    that an *unauthenticated* request is rejected before anything is
-   exposed through the optional tunnel. The API key is generated,
+   exposed through the optional tunnel. The tunnel never points at the
+   vLLM port (its key does not cover routes such as `/invocations`): it
+   points at an in-process authenticating gateway on `gateway_port`
+   (default 8001) that forwards only `/v1/models`, `/v1/chat/completions`
+   and `/v1/completions` and refuses everything else. The tunnel starts
+   only after the gateway rejects an unauthenticated `/invocations`, and is
+   stopped if the public URL answers it. Keep the notebook kernel running
+   (the gateway lives in it; run as a script, the cell keeps serving until
+   Ctrl+C). The API key is generated,
    stored at mode `0600`, and passed through the `VLLM_API_KEY`
    environment variable - never argv.
 3. **MTP is forced off.** With the pinned vllm-tpu, rejected MTP draft

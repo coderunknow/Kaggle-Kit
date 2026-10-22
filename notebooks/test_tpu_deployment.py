@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import socket
 import socketserver
 import sys
 import tempfile
@@ -240,6 +241,137 @@ class BundleTests(unittest.TestCase):
             "https://quick-brown-fox.trycloudflare.com",
         )
         self.assertIsNone(tpu.parse_tunnel_url("no url yet"))
+
+
+class PublicExposureTests(unittest.TestCase):
+    """vLLM's API key guards only /v1, /v2, /inference and /cohere; /invocations
+    reaches the same inference handlers unauthenticated (vllm v0.28.0
+    server_utils.GUARDED_PREFIX and serve/sagemaker/api_router.py). The tunnel
+    must therefore never point at the raw vLLM port."""
+
+    def test_the_tunnel_never_targets_the_raw_vllm_port(self) -> None:
+        config = tpu.TpuDeploymentConfig()
+        self.assertNotEqual(tpu.tunnel_target_url(config), config.local_url)
+        self.assertEqual(tpu.tunnel_target_url(config), config.gateway_url)
+        self.assertNotEqual(config.gateway_port, config.port)
+
+
+class _GuardedPrefixVllm(http.server.BaseHTTPRequestHandler):
+    """Mirrors vllm v0.28.0: the key is checked only under GUARDED_PREFIX."""
+
+    api_key = "tpu-gateway-key"
+    guarded = ("/v1", "/v2", "/inference", "/cohere")
+    last_path = ""
+
+    def log_message(self, *args):
+        pass
+
+    def _send(self, status: int, body: bytes, content_type: str = "application/json") -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _guard(self) -> bool:
+        type(self).last_path = self.path
+        if self.path.startswith(self.guarded) and self.headers.get("Authorization") != f"Bearer {self.api_key}":
+            self._send(401, b'{"error":"Unauthorized"}')
+            return False
+        return True
+
+    def do_GET(self):  # noqa: N802
+        if not self._guard():
+            return
+        self._send(200, json.dumps({"data": [{"id": "Qwen3.8-27B"}]}).encode())
+
+    def do_POST(self):  # noqa: N802
+        if not self._guard():
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        if payload.get("stream"):
+            frames = (
+                b'data: {"choices":[{"delta":{"content":"O"}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"K"},"finish_reason":"stop"}]}\n\n'
+                b"data: [DONE]\n\n"
+            )
+            self._send(200, frames, "text/event-stream")
+            return
+        self._send(200, json.dumps({
+            "choices": [{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+        }).encode())
+
+
+@unittest.skipUnless(tpu.REQUESTS_AVAILABLE, "needs the requests package")
+class GatewayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.backend = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _GuardedPrefixVllm)
+        threading.Thread(target=self.backend.serve_forever, daemon=True).start()
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            free_port = probe.getsockname()[1]
+        self.config = tpu.TpuDeploymentConfig(port=self.backend.server_address[1], gateway_port=free_port)
+        self.gateway = tpu.start_gateway(self.config, _GuardedPrefixVllm.api_key)
+        self.session = tpu._session()
+        self.key = {"Authorization": f"Bearer {_GuardedPrefixVllm.api_key}"}
+
+    def tearDown(self) -> None:
+        self.gateway.stop()
+        tpu._ACTIVE_GATEWAY = None
+        self.backend.shutdown()
+        self.backend.server_close()
+
+    def test_the_raw_backend_really_exposes_unauthenticated_inference(self) -> None:
+        # The defect the gateway exists for: this is what a tunnel pointed at
+        # the vLLM port would have exposed.
+        raw = f"http://127.0.0.1:{self.config.port}"
+        response = self.session.post(f"{raw}/invocations", json={"messages": []}, timeout=5)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(tpu.verify_unguarded_route_blocked(self.session, raw))
+
+    def test_the_gateway_refuses_unguarded_routes_without_reaching_vllm(self) -> None:
+        _GuardedPrefixVllm.last_path = ""
+        for path in ("/invocations", "/metrics", "/pause", "/update_weights", "/tokenize",
+                     "/v1/../invocations", "/v1/models/extra", "/v1/models?x=1"):
+            response = self.session.post(f"{self.config.gateway_url}{path}", headers=self.key, json={}, timeout=5)
+            self.assertEqual(response.status_code, 404, path)
+        self.assertEqual(_GuardedPrefixVllm.last_path, "")  # nothing was forwarded
+        self.assertTrue(tpu.verify_unguarded_route_blocked(self.session, self.config.gateway_url))
+
+    def test_the_gateway_requires_the_key_itself(self) -> None:
+        for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": "Basic abc"}):
+            response = self.session.post(f"{self.config.gateway_url}/v1/chat/completions",
+                                         headers=headers, json={"messages": []}, timeout=5)
+            self.assertEqual(response.status_code, 401)
+
+    def test_authorised_chat_and_streaming_are_forwarded(self) -> None:
+        base = f"{self.config.gateway_url}/v1"
+        self.assertEqual(tpu.list_models(self.session, base, _GuardedPrefixVllm.api_key), "Qwen3.8-27B")
+        self.assertEqual(tpu.smoke_test(self.session, base, _GuardedPrefixVllm.api_key, "Qwen3.8-27B"), "OK")
+        streamed = self.session.post(f"{base}/chat/completions", headers=self.key,
+                                     json={"stream": True, "messages": []}, timeout=5)
+        self.assertEqual(streamed.status_code, 200)
+        self.assertIn("text/event-stream", streamed.headers.get("Content-Type", ""))
+        self.assertIn(b"[DONE]", streamed.content)
+
+    def test_oversized_and_unbounded_bodies_are_refused(self) -> None:
+        small = tpu.TpuDeploymentConfig(port=self.config.port, gateway_port=self.config.gateway_port,
+                                        gateway_max_body_bytes=16)
+        self.gateway.stop()
+        tpu._ACTIVE_GATEWAY = None
+        self.gateway = tpu.start_gateway(small, _GuardedPrefixVllm.api_key)
+        response = self.session.post(f"{small.gateway_url}/v1/chat/completions", headers=self.key,
+                                     data=b"x" * 64, timeout=5)
+        self.assertEqual(response.status_code, 413)
+
+    def test_reuse_with_the_same_key_and_conflict_on_a_foreign_port(self) -> None:
+        self.assertIs(tpu.start_gateway(self.config, _GuardedPrefixVllm.api_key), self.gateway)
+        foreign = tpu.TpuDeploymentConfig(port=self.config.port, gateway_port=self.config.port)
+        with self.assertRaises(RuntimeError) as raised:
+            tpu.start_gateway(foreign, "another-key")
+        self.assertIn("not started", str(raised.exception))
+        tpu._ACTIVE_GATEWAY = None
 
 
 if __name__ == "__main__":

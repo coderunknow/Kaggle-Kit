@@ -101,7 +101,9 @@ describe('model catalog', () => {
     const row = (model: string, accelerator: string) =>
       matrix.find((entry) => entry.model === model && entry.accelerator === accelerator);
 
-    expect(row('Qwen3.8-27B', 'Kaggle GPU T4 x2')?.status).toBe('verified');
+    expect(row('Qwen3.8-27B', 'Kaggle GPU T4 x2')?.status).toBe('preexisting_not_reverified');
+    // No combination may claim live verification without live evidence.
+    expect(matrix.some((entry) => entry.status === 'verified')).toBe(false);
     expect(row('Qwen3.8-27B', 'Kaggle TPU v5e-8')?.status).toBe('implemented_not_live_verified');
     expect(row('Qwen3.8-27B', 'Kaggle TPU v5e-8')?.runtime).toContain('MTP off');
     expect(row('Raon-1 mini preview', 'Kaggle GPU T4 x2')?.status).toBe('implemented_not_live_verified');

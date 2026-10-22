@@ -87,6 +87,18 @@ describe('ProfileForm model catalog', () => {
     expect(saved?.baseUrl).toBe(baseProfile.baseUrl);
   });
 
+  it('selecting Raon never overwrites a hand-typed model ID (e.g. a hosted provider ID)', async () => {
+    const user = userEvent.setup();
+    renderForm({ ...baseProfile, modelId: 'raon-1-mini-preview' });
+
+    await user.selectOptions(screen.getByLabelText('Known models (catalog)'), 'raon-1-mini-preview');
+
+    expect(screen.getByLabelText(/^Model ID$/)).toHaveValue('raon-1-mini-preview');
+    expect(screen.getByText(/kept your model ID/i)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Use Raon-1-mini-preview' }));
+    expect(screen.getByLabelText(/^Model ID$/)).toHaveValue('Raon-1-mini-preview');
+  });
+
   it('selecting Qwen never overwrites a hand-typed model ID', async () => {
     const user = userEvent.setup();
     renderForm({ ...baseProfile, modelId: 'my-manual-model' });
@@ -94,7 +106,7 @@ describe('ProfileForm model catalog', () => {
     await user.selectOptions(screen.getByLabelText('Known models (catalog)'), 'Qwen3.8-27b');
 
     expect(screen.getByLabelText(/^Model ID$/)).toHaveValue('my-manual-model');
-    expect(screen.getByText(/Verified/)).toBeTruthy();
+    expect(screen.getByText(/Pre-existing — not re-verified live/)).toBeTruthy();
   });
 
   it('reports a catalog model that discovery did not advertise instead of claiming a switch', async () => {

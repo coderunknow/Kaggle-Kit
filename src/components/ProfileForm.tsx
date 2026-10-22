@@ -69,6 +69,7 @@ const CUSTOM_MODEL = '__custom__';
 
 const DEPLOYMENT_TONES: Record<DeploymentStatus, 'ok' | 'warning' | 'danger' | 'neutral'> = {
   verified: 'ok',
+  preexisting_not_reverified: 'neutral',
   implemented_not_live_verified: 'warning',
   blocked: 'danger',
   unsupported: 'danger',
@@ -187,19 +188,35 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, adva
    * our deployments are known to serve (when there is one) and nothing else.
    * It never installs, downloads, starts, or switches a model on the server,
    * and it never overwrites a hand-typed model ID for entries whose served
-   * ID is decided by discovery (Qwen/custom).
+   * ID is decided by discovery (Qwen/custom). A served ID is filled only
+   * into an empty model field: a model ID the user already entered (for
+   * example a hosted provider's own spelling) is kept, and replacing it is
+   * an explicit, separate action.
    */
+  const fillServedModelId = (servedId: string) => {
+    update('modelId', servedId);
+    setManualModel(discoveredModels.length > 0 && !discoveredModels.includes(servedId));
+  };
+
   const selectCatalogEntry = (entryId: string) => {
     setCatalogId(entryId);
     setCatalogNote(null);
     const entry = catalogEntryById(entryId);
     if (!entry) return;
     const servedId = entry.servedModelIds[0];
-    if (servedId) {
-      update('modelId', servedId);
-      setManualModel(discoveredModels.length > 0 && !discoveredModels.includes(servedId));
+    if (!servedId) return;
+    const current = form.modelId.trim();
+    if (!current) {
+      fillServedModelId(servedId);
+    } else if (current !== servedId) {
+      setCatalogNote(
+        `Kept your model ID "${current}". This project's ${entry.displayName} deployments serve "${servedId}"; use it only if this profile points at such a deployment.`,
+      );
     }
   };
+
+  const catalogServedId = catalogEntry?.servedModelIds[0];
+  const offerServedId = Boolean(catalogServedId && form.modelId.trim() && form.modelId.trim() !== catalogServedId);
 
   const applyCatalogParams = (useCase: 'general' | 'coding_math') => {
     if (!catalogEntry) return;
@@ -730,6 +747,13 @@ npm start`}
             <div role="status" style={{ marginTop: 6 }}>
               {describeModelAvailability(catalogEntry, discoveredModels).message}
             </div>
+            {offerServedId && catalogServedId ? (
+              <div className="row" style={{ marginTop: 8 }}>
+                <button type="button" className="button button--small" onClick={() => { fillServedModelId(catalogServedId); setCatalogNote(null); }}>
+                  Use {catalogServedId}
+                </button>
+              </div>
+            ) : null}
             {catalogEntry.recommendedParams ? (
               <div className="row" style={{ marginTop: 8 }}>
                 <button type="button" className="button button--small" onClick={() => applyCatalogParams('general')}>

@@ -321,3 +321,54 @@ live Kaggle executions (section 12 of the deployment guide) before anyone
 calls them verified; (2) Raon on TPU is a known upstream incompatibility.
 Browser Python remains deferred for the isolation reasons above. No tag,
 release, merge, or auto-merge is performed by this work.
+
+---
+
+## Final audit before the development merge — 2026-10-22
+
+Everything above is unchanged history. The user authorized a development
+merge of PR #17 with unverified deployments explicitly marked unverified;
+that supersedes the "keep draft" verdict above, and nothing below changes
+any live-verification status.
+
+**Defects found and fixed (each reproduced by a failing test first):**
+
+1. **TPU public route exposed unauthenticated inference (security).** The
+   tunnel pointed at the raw vLLM port, but vLLM's key guards only
+   `/v1`, `/v2`, `/inference`, `/cohere` (vllm v0.28.0
+   `entrypoints/serve/utils/server_utils.py` `GUARDED_PREFIX`), and
+   `/invocations` (`entrypoints/serve/sagemaker/api_router.py`) dispatches
+   to the same inference handlers without a key; vLLM's own security doc
+   lists further unguarded routes (`/pause`, `/update_weights`, ...). The
+   previous "auth enforcement" probe only tested `/v1/models`, so it could
+   not see this. Fix: an in-process allowlisting gateway (exact
+   `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/completions`,
+   own constant-time bearer check, bounded bodies, everything else 404
+   without contacting vLLM); the tunnel targets only the gateway, starts
+   only after the gateway refuses an unauthenticated `/invocations`, and
+   is stopped if the public URL answers it. A regression test proves the
+   raw backend (modelled on v0.28.0 semantics) did answer `/invocations`
+   unauthenticated and that the gateway does not. The GPU llama.cpp path
+   was checked at both pinned revisions: only `/health`, `/v1/health` and
+   static frontend files bypass its key, so it is not affected.
+2. **Catalog selection overwrote a manual model ID.** Choosing the Raon
+   entry replaced any typed ID (e.g. a hosted provider's own
+   `raon-1-mini-preview`) with `Raon-1-mini-preview`. The served ID is now
+   filled only into an empty field; replacing a typed ID is an explicit
+   "Use …" action.
+3. **Overstated status label.** The catalog/UI and deployment guide called
+   Qwen on T4 x2 "Verified", but every log entry records that this script
+   was never executed on real Kaggle T4 hardware (it derives from an
+   operator-verified cell). It is now "Pre-existing — not re-verified
+   live", and a test asserts that no matrix row claims `verified`. The
+   table row "Verified (pre-existing)" above is superseded by this note.
+
+**Re-verified against primary sources:** `Qwen/Qwen3.8-27B` revision
+`1d4bf0f2…` (HF API: current sha, safetensors, Apache-2.0, ungated);
+`krafton-ai/llama.cpp@raon-1-mini-preview` head `fb895662…` (GitHub API);
+`KRAFTON/Raon-1-mini-preview-gguf` at the pinned revision `fe24f24e…`
+still lists exactly the pinned files/sizes/LFS SHA-256 values (the repo's
+`main` has since moved to `3afcfcdb…` with only a README change, so the
+pin is still the intended bytes); `vllm-tpu==0.28.0` exists on PyPI
+(latest is 0.32.0; the pin is kept deliberately until a live parity run);
+kaggle-cli documents `TpuV5E8`; `VLLM_API_KEY` is the documented env alias.

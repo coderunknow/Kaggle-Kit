@@ -347,7 +347,19 @@ See [dev7 audit](dev7-audit.md) for the deferred isolation and bridge requiremen
   never argv. Because an env handoff could silently not take effect, the
   deployment *verifies* enforcement with an unauthenticated request and
   fails closed (stopping its own server) when the endpoint answers without
-  the key. It never exposes an unauthenticated server through the tunnel.
+  the key.
+* **TPU public route goes through an authenticating gateway.** vLLM's key
+  guards only the `/v1`, `/v2`, `/inference` and `/cohere` prefixes
+  (`GUARDED_PREFIX` in vllm v0.28.0 `entrypoints/serve/utils/server_utils.py`);
+  `/invocations` routes to the same inference handlers without a key, and
+  operational routes such as `/pause` or `/update_weights` are unguarded too.
+  The tunnel therefore never targets the vLLM port: it targets an in-process
+  gateway that forwards only exact `GET /v1/models`, `POST /v1/chat/completions`
+  and `POST /v1/completions`, checks the bearer key itself (constant-time),
+  bounds request bodies, and answers every other path 404 without contacting
+  vLLM. The cell refuses to start the tunnel unless the gateway rejects an
+  unauthenticated `/invocations`, and stops the tunnel if the public URL
+  ever answers it. vLLM itself binds `127.0.0.1` only.
 * **No accelerator fallback.** The TPU cell requires eight detected TPU
   devices; CPU/GPU sessions abort. Raon x TPU is refused with reasons
   before anything is installed. Nothing in dev7 reports a model as
