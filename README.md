@@ -21,8 +21,6 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
                             • verifies streaming support
 ```
 
-<<<<<<< HEAD
-=======
 ## dev7 candidate status
 
 Guided connection setup, Basic/Advanced settings and an explicit reviewed
@@ -38,7 +36,6 @@ Docker execution remains in Advanced. This is partial dev7 work, not a
 search-enabled release. See [audit evidence and blockers](docs/dev7-audit.md)
 and [setup instructions](docs/chat-interface.md).
 
->>>>>>> pr16-inspect
 ## Quick start
 
 **Windows, one command** (Node.js 20.19 or newer is the only prerequisite):

@@ -985,8 +985,6 @@ created and no release is published (explicitly out of scope for this task).
   committed here; it is then closed with a comment referencing this record,
   without deleting its branch. This entry is that record; the close comment
   outcome is reported in the task completion report.
-<<<<<<< HEAD
-=======
 
 ## 2026-10-21 — dev7 partial implementation and verification
 
@@ -1029,4 +1027,3 @@ created and no release is published (explicitly out of scope for this task).
   retained; PR/CI confirmation appended separately. Detailed evidence and
   concrete follow-up: `docs/dev7-audit.md`. Candidate must remain draft/open,
   not represented as acceptance-complete or bug-free.
->>>>>>> pr16-inspect

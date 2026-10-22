@@ -1,29 +1,5 @@
 {
   "tested": [
-<<<<<<< HEAD
-    "Arena sandbox: Linux x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11 with the requests package installed; npm ci reported 0 vulnerabilities",
-    "npm run typecheck: TypeScript client and server typecheck passed",
-    "npm run lint: ESLint passed",
-    "npm test: Vitest 44 files, 398 tests passed (tool-loop bounded recovery, selection recovery, catalog budget, benchmark core, notebook-driven policy and all prior suites)",
-    "npm run build: production Vite client and bundled standalone Node backend built",
-    "npm run check:integration: 29/29 checks against the built bundle and a loopback mock upstream, including the native tool-calling probe, streamed fragment assembly, an automatic calculator loop, a denied single-use code-execution approval, and one bounded corrective round after a protocol-violating model turn",
-    "python3 -m unittest discover -s notebooks -p 'test_*.py': 46 passed, 0 skipped (requests installed), including the LLAMA_API_KEY env fallback, the refusal of unauthenticated builds and the pinned cloudflared digest",
-    "python3 -m unittest discover -s tools -p 'test_*.py': 25 passed, including the release-workflow security regression tests",
-    "tools/model-benchmark.mjs smoke run against the local mock upstream: 6/6 model-mode cases passed with a clean report leak check (exit 0); the integration-mode skip path reported 3 skipped cases against a closed port (exit 0). This validates the script mechanics, not a real model",
-    "npm audit --json: 0 vulnerabilities",
-    "git diff --check: passed on the release candidate",
-    "tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6: staged archives, manifest, checksums and verification report validated, including the simulated downloaded-asset check"
-  ],
-  "notTested": [
-    "Kaggle GPU runtime, actual model download/weights, deployed Qwen3.8/llama.cpp inference, live native tool-call round trip, public tunnel or public Kaggle endpoint; the live-model benchmark has not been run against a real deployed model in this environment",
-    "The LLAMA_API_KEY environment fallback and the pinned cloudflared download on live Kaggle hardware (verified against the pinned builds' published sources and unit-tested locally)",
-    "Docker sandbox runtime/isolation and the pinned Python container image; the Docker CLI was unavailable in this sandbox (the real-Docker CI job covers the execution path)",
-    "Real Brave credentials/account, retention rights, live MCP servers or configured external HTTP services; missing-credential and failure paths are covered by tests",
-    "tools/model-benchmark.mjs --mode integration against a fully configured live proxy and endpoint pair; its skip and failure paths were exercised",
-    "Playwright browser end-to-end tests locally: browser binaries are not installed and the download host is unreachable from this sandbox; the Browser end-to-end CI job covers them on the PR branch",
-    "Real-browser or assistive-technology accessibility audit; component tests use jsdom",
-    "The Hugging Face model fetch remains on the unpinned resolve/main revision; no authoritative digest was reachable from this environment"
-=======
     "Arena sandbox Linux x86_64; Node.js v22.22.3, npm 10.9.8, Python 3.11.2; requests installed with pip --user --break-system-packages",
     "npm run typecheck and npm run lint: exit 0",
     "npm test: exit 0; 45 files / 431 tests passed; existing security, authorization, recovery, persistence, upload and protocol suites retained",
@@ -45,6 +21,5 @@
     "No live Brave account/retention rights, configured HTTP provider or MCP server was validated.",
     "No assistive-technology audit, other browser engines or comprehensive visual audit; Chromium E2E covers selected desktop/narrow-screen flows only.",
     "Model weights remain digest-unpinned unless the operator supplies the existing optional revision/digest configuration."
->>>>>>> pr16-inspect
   ]
 }

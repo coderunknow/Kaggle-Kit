@@ -1508,8 +1508,6 @@ each behaviour was re-implemented against the current `main` and re-tested.
 * Not verified here: real-model behaviour, the digest mechanism against the
   real Hugging Face host (unreachable from this environment; covered by
   fixtures), and browser e2e (CI job covers it).
-<<<<<<< HEAD
-=======
 
 ## 2026-10-21 — dev7 partial candidate: guided setup, reviewed core grant and bounded web lifetime
 
@@ -1615,4 +1613,3 @@ results against a real model are claimed. No finite tests guarantee correctness.
 A draft/open PR is appropriate because genuine keyless search remains missing;
 this is partial dev7 work, not acceptance-complete. PR/CI state will be appended
 when confirmed. No tag, release publication, merge or other branch write.
->>>>>>> pr16-inspect
