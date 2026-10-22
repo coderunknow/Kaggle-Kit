@@ -1187,3 +1187,23 @@ mark PR #17 ready, merge it with a merge commit, then close PR #16 as
 superseded. No tag, no release, no auto-merge, PR #15 untouched. The
 merge commit and post-merge CI are recorded in PR #17's comments and a
 follow-up log entry.
+
+
+## 2026-10-22 - CI evidence for the final-audit head `faff1e5`
+
+* PR run [39796243480](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39796243480)
+  on `faff1e508e853c34bdbeee79f6d0562931f8d20e`: **completed / success**.
+  All five jobs ran every step successfully, confirmed through the jobs
+  API: `typecheck, lint, test and build` (type check, lint, tests, build,
+  built-bundle integration, whitespace), `notebook tests` (notebook +
+  release-tool suites), `docker sandbox integration` (real Docker),
+  `windows launcher` (PowerShell launcher readiness) and
+  `Browser end-to-end` ("Run browser end-to-end tests" = success).
+  The run log host returned no content to this sandbox, so per-test
+  counts for CI come from the step conclusions, not from log text.
+* Push run [39796236571](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39796236571)
+  on the same SHA: four jobs success; its `Browser end-to-end` job
+  (119884031367) stayed `queued` for over 30 minutes without starting
+  (no runner picked it up) and could not be re-run from this
+  integration ("cannot be rerun" / HTTP 403). It is **not** counted as
+  passed. This entry's commit retriggers CI on a new head.
