@@ -29,6 +29,17 @@ import {
   estimatePromptTokens,
   qwenToolSystemPrompt,
 } from '../../shared/prompts/qwen';
+import {
+  ACCELERATOR_LABELS,
+  applyRecommendedParams,
+  catalogEntryById,
+  DEPLOYMENT_STATUS_LABELS,
+  describeModelAvailability,
+  findCatalogEntryByModelId,
+  MODEL_CATALOG,
+  type DeploymentStatus,
+} from '../../shared/model-catalog/catalog';
+import type { InferenceParams } from '../../shared/api/requests';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
 import { useApp } from '../state/AppProvider';
@@ -55,6 +66,14 @@ interface FormState {
 
 /** The value of the model select that switches to the manual input. */
 const CUSTOM_MODEL = '__custom__';
+
+const DEPLOYMENT_TONES: Record<DeploymentStatus, 'ok' | 'warning' | 'danger' | 'neutral'> = {
+  verified: 'ok',
+  implemented_not_live_verified: 'warning',
+  blocked: 'danger',
+  unsupported: 'danger',
+  not_applicable: 'neutral',
+};
 
 const CREDENTIAL_LABELS: Record<CredentialStorage, string> = {
   session: 'This tab only (memory)',
@@ -107,6 +126,14 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, adva
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [draftModels, setDraftModels] = useState<string[] | undefined>(undefined);
+  // Sampling defaults are part of the draft so catalog recommendations are
+  // saved with the profile (and only then). Editing them here never touches
+  // the saved profile or any other profile.
+  const [paramsDraft, setParamsDraft] = useState<InferenceParams>(() => ({ ...profile.defaultParams }));
+  const [catalogId, setCatalogId] = useState<string>(
+    () => findCatalogEntryByModelId(profile.modelId)?.id ?? '',
+  );
+  const [catalogNote, setCatalogNote] = useState<string | null>(null);
 
   const discoveredModels = draftModels ?? app.state.discoveredModels[profile.id] ?? [];
 
@@ -140,6 +167,8 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, adva
     credential: `cred-${profile.id}`,
     model: `model-${profile.id}`,
     modelHint: `model-hint-${profile.id}`,
+    catalog: `catalog-${profile.id}`,
+    catalogHint: `catalog-hint-${profile.id}`,
     system: `system-${profile.id}`,
     systemHint: `system-hint-${profile.id}`,
     timeout: `timeout-${profile.id}`,
@@ -148,6 +177,36 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, adva
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const catalogEntry = catalogEntryById(catalogId);
+  const recognizedEntry = findCatalogEntryByModelId(form.modelId);
+
+  /**
+   * Selecting a catalog entry only edits this draft: it fills the model ID
+   * our deployments are known to serve (when there is one) and nothing else.
+   * It never installs, downloads, starts, or switches a model on the server,
+   * and it never overwrites a hand-typed model ID for entries whose served
+   * ID is decided by discovery (Qwen/custom).
+   */
+  const selectCatalogEntry = (entryId: string) => {
+    setCatalogId(entryId);
+    setCatalogNote(null);
+    const entry = catalogEntryById(entryId);
+    if (!entry) return;
+    const servedId = entry.servedModelIds[0];
+    if (servedId) {
+      update('modelId', servedId);
+      setManualModel(discoveredModels.length > 0 && !discoveredModels.includes(servedId));
+    }
+  };
+
+  const applyCatalogParams = (useCase: 'general' | 'coding_math') => {
+    if (!catalogEntry) return;
+    setParamsDraft((current) => applyRecommendedParams(current, catalogEntry, useCase));
+    setCatalogNote(
+      `Recommended ${catalogEntry.displayName} sampling (${useCase === 'coding_math' ? 'coding/math' : 'general'}) is in the draft. Save the profile to keep it; maximum output tokens and streaming were not changed.`,
+    );
   };
 
   /** The credential that would be used for this form state. */
@@ -189,6 +248,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, adva
     systemPrompt: form.systemPrompt,
     timeoutMs: Number.isFinite(timeoutValue) ? timeoutValue : profile.timeoutMs,
     credentialStorage: form.credentialStorage,
+    defaultParams: { ...paramsDraft },
   });
 
   const savedCredential = resolveProfileCredential(profile, app.state);
@@ -614,6 +674,80 @@ npm start`}
           <span className="field__error">
             Browser storage is readable by any script on this origin. This is an explicit opt-in.
           </span>
+        ) : null}
+      </div>
+
+      <div className="field">
+        <label className="field__label" htmlFor={ids.catalog}>
+          Known models (catalog)
+        </label>
+        <select
+          id={ids.catalog}
+          value={catalogId}
+          aria-describedby={ids.catalogHint}
+          onChange={(event) => selectCatalogEntry(event.target.value)}
+        >
+          <option value="">(browse the catalog — no selection)</option>
+          {MODEL_CATALOG.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.displayName}
+            </option>
+          ))}
+        </select>
+        <span className="field__hint" id={ids.catalogHint}>
+          The catalog is metadata plus deployment guidance. Selecting an entry fills draft fields
+          only — it does not install, download, start, or switch a model on any server. Only
+          “Discover models” and a real connection test prove what this endpoint serves.
+          {recognizedEntry && recognizedEntry.id !== catalogId
+            ? ` The current model ID is recognized as ${recognizedEntry.displayName}.`
+            : ''}
+        </span>
+        {catalogEntry ? (
+          <div className="notice notice--info" style={{ marginTop: 8 }}>
+            <strong>{catalogEntry.displayName}</strong>
+            {catalogEntry.description}
+            <div className="text-subtle" style={{ marginTop: 6 }}>
+              {catalogEntry.architecture}
+              {catalogEntry.totalParameters ? ` · ${catalogEntry.totalParameters} total` : ''}
+              {catalogEntry.activeParameters ? ` · ${catalogEntry.activeParameters} active per token` : ''}
+              {catalogEntry.contextTokens ? ` · ${catalogEntry.contextTokens.toLocaleString()} token context` : ''}
+              {catalogEntry.license ? ` · ${catalogEntry.license}` : ''}
+            </div>
+            <div style={{ marginTop: 6 }}>{catalogEntry.accessNote}</div>
+            <ul className="result-list" style={{ marginTop: 8 }}>
+              {catalogEntry.deployments.map((deployment) => (
+                <li key={deployment.accelerator} className="result-item">
+                  <div className="result-item__label">
+                    <Badge tone={DEPLOYMENT_TONES[deployment.status]}>
+                      {DEPLOYMENT_STATUS_LABELS[deployment.status]}
+                    </Badge>
+                    <span>{ACCELERATOR_LABELS[deployment.accelerator]}</span>
+                  </div>
+                  <div className="text-subtle">{deployment.runtime}</div>
+                </li>
+              ))}
+            </ul>
+            <div role="status" style={{ marginTop: 6 }}>
+              {describeModelAvailability(catalogEntry, discoveredModels).message}
+            </div>
+            {catalogEntry.recommendedParams ? (
+              <div className="row" style={{ marginTop: 8 }}>
+                <button type="button" className="button button--small" onClick={() => applyCatalogParams('general')}>
+                  Apply recommended sampling
+                </button>
+                {catalogEntry.codingMathParams ? (
+                  <button type="button" className="button button--small" onClick={() => applyCatalogParams('coding_math')}>
+                    Apply coding/math variant
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {catalogNote ? (
+              <div className="text-subtle" role="status" style={{ marginTop: 6 }}>
+                {catalogNote}
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
