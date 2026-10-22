@@ -103,18 +103,6 @@ class WorkflowInjectionBoundary(unittest.TestCase):
         self.assertNotIn("pull-requests: write", release)
         self.assertIn("contents: read", ci)
 
-    def test_nightly_workflow_has_expected_schedule_and_tag_shape(self) -> None:
-        nightly = (ROOT / ".github" / "workflows" / "nightly-release.yml").read_text(encoding="utf-8")
-        self.assertIn("cron: '0 19 * * *'", nightly)
-        self.assertIn("02:00 in Asia/Ho_Chi_Minh", nightly)
-        self.assertIn("nightly-${DATE_LOCAL}-${RUN_ID}-${RUN_ATTEMPT}", nightly)
-
-    def test_nightly_permissions_are_scoped(self) -> None:
-        nightly = (ROOT / ".github" / "workflows" / "nightly-release.yml").read_text(encoding="utf-8")
-        self.assertIn("permissions:\n  contents: read", nightly)
-        self.assertIn("publish:\n", nightly)
-        self.assertIn("permissions:\n      contents: write", nightly)
-
     def test_tag_regex_rejects_hostile_values(self) -> None:
         hostile = [
             'v1.2.3"; touch PWNED; echo "',

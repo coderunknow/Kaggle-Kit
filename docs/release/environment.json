@@ -1,5 +1,6 @@
 {
   "tested": [
+<<<<<<< HEAD
     "Arena sandbox: Linux x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11 with the requests package installed; npm ci reported 0 vulnerabilities",
     "npm run typecheck: TypeScript client and server typecheck passed",
     "npm run lint: ESLint passed",
@@ -22,5 +23,28 @@
     "Playwright browser end-to-end tests locally: browser binaries are not installed and the download host is unreachable from this sandbox; the Browser end-to-end CI job covers them on the PR branch",
     "Real-browser or assistive-technology accessibility audit; component tests use jsdom",
     "The Hugging Face model fetch remains on the unpinned resolve/main revision; no authoritative digest was reachable from this environment"
+=======
+    "Arena sandbox Linux x86_64; Node.js v22.22.3, npm 10.9.8, Python 3.11.2; requests installed with pip --user --break-system-packages",
+    "npm run typecheck and npm run lint: exit 0",
+    "npm test: exit 0; 45 files / 431 tests passed; existing security, authorization, recovery, persistence, upload and protocol suites retained",
+    "npm run build: exit 0; production client and standalone backend bundled; entry approximately 310 kB / 95 kB gzip; no new application dependency",
+    "npm run check:integration: exit 0; 31/31 deterministic checks against the built application and local mock upstream",
+    "python3 -m unittest discover -s notebooks -p test_*.py: exit 0; 58 tests, no skips after requests installation",
+    "python3 -m unittest discover -s tools -p test_*.py: exit 0; 25 tests",
+    "npm run test:e2e: exit 0; 5 tests against built app and mock model; Chromium 153 provisioned from @sparticuz/chromium@153.0.0 outside repository, bundled NSS/NSPR via LD_LIBRARY_PATH; standard Playwright 1.56.1 CDN browser initially missing; no application dependency added",
+    "npm audit --json: exit 0; 0 vulnerabilities; git diff --check clean",
+    "Regression evidence: restoring old editor test expression fails the credential-edit test; removing the Docker pre-cancellation guard fails its focused regression",
+    "Pyodide 314.0.7 npm archive downloaded for feasibility inspection only: 6488647 bytes; not executed or shipped"
+  ],
+  "notTested": [
+    "Keyless public-web search is NOT implemented. Public hosts are inaccessible from this environment; no suitable public provider policy and live search responses were verified. Page retrieval is not search.",
+    "Browser/WebAssembly Python is NOT implemented. Safe origin/network/storage isolation, memory behavior and server/browser execution bridge remain undemonstrated. Docker is the only optional implemented execution mode.",
+    "No live deployed model, Kaggle GPU, model download, llama.cpp runtime or public tunnel was tested; deterministic mock evidence is not live-model reliability evidence.",
+    "Docker runtime unavailable locally (docker CLI absent); existing CI Docker job remains unchanged and must pass on the PR.",
+    "Windows launcher runtime unavailable locally; existing windows-latest CI job remains unchanged and must pass on the PR.",
+    "No live Brave account/retention rights, configured HTTP provider or MCP server was validated.",
+    "No assistive-technology audit, other browser engines or comprehensive visual audit; Chromium E2E covers selected desktop/narrow-screen flows only.",
+    "Model weights remain digest-unpinned unless the operator supplies the existing optional revision/digest configuration."
+>>>>>>> pr16-inspect
   ]
 }

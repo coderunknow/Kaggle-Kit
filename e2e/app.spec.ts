@@ -58,6 +58,7 @@ test('runs a safe tool automatically and lets the user deny risky code', async (
   // Configure tools through the real settings UI: probe, enable the loop,
   // allow the calculator, and pin a (deliberately unavailable) sandbox image.
   const dialog = await openSettings(page);
+  await dialog.getByRole('checkbox', { name: /advanced mode/i }).check();
   await dialog.getByRole('tab', { name: /tools & approvals/i }).click();
   await dialog.getByRole('button', { name: /verify native tool calling/i }).click();
   await expect(dialog.getByText('supported_verified')).toBeVisible();
@@ -84,4 +85,40 @@ test('runs a safe tool automatically and lets the user deny risky code', async (
   await expect(page.getByText(/Tool result received/)).toHaveCount(2);
   // The denial is recorded in the timeline and echoed into the mock answer.
   await expect(page.getByText(/The user denied this exact operation/).first()).toBeAttached();
+});
+
+
+test('Basic/Advanced keeps unsaved input and renders at 360px without horizontal overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto('/');
+  const dialog = await openSettings(page);
+  await dialog.getByRole('button', { name: /add profile/i }).click();
+  await expect(dialog.getByRole('region', { name: /guided connection setup/i })).toBeVisible();
+  await dialog.getByLabel(/display name/i).fill('Keep this draft');
+  const mode = dialog.getByRole('checkbox', { name: /advanced mode/i });
+  await mode.check();
+  await dialog.getByLabel(/^system prompt$/i).fill('Preserved instructions');
+  await mode.uncheck();
+  await expect(dialog.getByLabel(/^system prompt$/i)).toBeHidden();
+  await mode.check();
+  await expect(dialog.getByLabel(/^system prompt$/i)).toHaveValue('Preserved instructions');
+  await expect(dialog.getByLabel(/display name/i)).toHaveValue('Keep this draft');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('grants reviewed built-ins in Basic mode and executes a calculator through the real tool loop', async ({ page }) => {
+  await createProfile(page);
+  const dialog = await openSettings(page);
+  await dialog.getByRole('tab', { name: /tools & approvals/i }).click();
+  await expect(dialog.getByRole('checkbox', { name: /allow the model to request python/i })).toHaveCount(0);
+  await dialog.getByRole('button', { name: /allow reviewed keyless built-ins/i }).click();
+  await expect(dialog.getByText(/7 tool\(s\) selected/)).toBeVisible();
+  await dialog.getByRole('button', { name: /save tool settings/i }).click();
+  await dialog.getByRole('button', { name: /verify native tool calling/i }).click();
+  await expect(dialog.getByText('supported_verified')).toBeVisible();
+  await dialog.getByRole('button', { name: /close settings/i }).click();
+  await startConversation(page, 'calculate: 12*7');
+  await expect(page.getByText(/Tool result received/)).toBeVisible();
+  await page.locator('summary').filter({ hasText: /Tool activity/ }).click();
+  await expect(page.getByText(/Result: 84/)).toBeVisible();
 });

@@ -68,6 +68,7 @@ function headerLabel(tab: SettingsTab): string {
 
 export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanelProps) {
   const app = useApp();
+  const [advanced, setAdvanced] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   // The draft is created once so that its id stays stable while it is edited.
@@ -170,6 +171,13 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
           </button>
         </div>
 
+        <div className="row" style={{ padding: '8px 20px' }}>
+          <label className="checkbox">
+            <input type="checkbox" checked={advanced} onChange={(event) => setAdvanced(event.target.checked)} />
+            <span>Advanced mode</span>
+          </label>
+          <span className="field__hint">{advanced ? 'All controls available. Existing settings are preserved.' : 'Basic: connection and reviewed built-ins. Advanced settings are preserved, not reset.'}</span>
+        </div>
         <div
           className="tabs"
           role="tablist"
@@ -258,6 +266,7 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
               {creating && draftProfile ? (
                 <ProfileForm
                   key={draftProfile.id}
+                  advanced={advanced}
                   profile={draftProfile}
                   isNew
                   onSaved={finishEditing}
@@ -269,8 +278,7 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
               {!creating && profiles.length === 0 ? (
                 <div className="notice notice--info">
                   <strong>Start with a connection</strong>
-                  Paste the base URL and API key that the notebook printed. Without them this page
-                  cannot reach a model.
+                  Choose Add profile to begin guided setup. You need the model API address, and a key only if your model server requires one.
                 </div>
               ) : null}
 
@@ -284,7 +292,7 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
                       return (
                         <ProfileForm
                           key={editingProfile.id}
-                          profile={editingProfile}
+                          advanced={advanced} profile={editingProfile}
                           isNew={false}
                           onSaved={finishEditing}
                           onCancel={finishEditing}
@@ -341,6 +349,11 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
                         </div>
 
                         <div className="row profile-card__actions">
+                          {isActive && connection.state === 'connected' ? (
+                            <button type="button" className="button button--primary button--small" onClick={closePanel}>
+                              Start chatting
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="button button--small"
@@ -384,7 +397,7 @@ export function SettingsPanel({ open, tab, onTabChange, onClose }: SettingsPanel
           ) : null}
 
           {tab === 'inference' ? <InferenceSettings profile={app.activeProfile} /> : null}
-          {tab === 'tools' ? <ToolsSettings /> : null}
+          {tab === 'tools' ? <ToolsSettings advanced={advanced} /> : null}
           {tab === 'preferences' ? <PreferencesSettings /> : null}
           {tab === 'data' ? <DataSettings /> : null}
         </div>

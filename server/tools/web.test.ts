@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { assertPublicUrl, createPinnedLookup, extractHtml, isPublicAddress, retrievePublicPage, validatePublicRedirect, WebToolError, type LookupAll } from './web';
+import { withWebDeadline, parseBraveResults, assertPublicUrl, createPinnedLookup, extractHtml, isPublicAddress, retrievePublicPage, validatePublicRedirect, WebToolError, type LookupAll } from './web';
 
 const publicLookup: LookupAll = async () => [{ address: '93.184.216.34', family: 4 }];
 
@@ -80,5 +80,69 @@ describe('public-web destination policy', () => {
     const controller = new AbortController();
     controller.abort();
     await expect(retrievePublicPage('https://example.com/', publicLookup, controller.signal)).rejects.toThrow(/cancelled/i);
+  });
+});
+
+describe('whole-operation public-web deadline', () => {
+  it('bounds DNS even when the resolver never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const result = retrievePublicPage('https://example.com/', () => new Promise(() => undefined));
+      const assertion = expect(result).rejects.toThrow(/total time limit/);
+      await vi.advanceTimersByTimeAsync(12_000);
+      await assertion;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('cancels while DNS is pending rather than waiting for the resolver', async () => {
+    const controller = new AbortController();
+    const result = retrievePublicPage('https://example.com/', () => new Promise(() => undefined), controller.signal);
+    controller.abort();
+    await expect(result).rejects.toThrow(/cancelled/);
+  });
+
+  it('distinguishes explicit empty search results from an invalid provider response', () => {
+    expect(parseBraveResults({ web: { results: [] } }, 'query').results).toEqual([]);
+    for (const payload of [null, {}, { web: {} }, { web: { results: {} } }]) {
+      expect(() => parseBraveResults(payload, 'query')).toThrow(/unexpected results format/);
+    }
+    const result = parseBraveResults({ web: { results: [
+      { title: 'Real title', url: 'https://example.com/source', description: 'Actual provider snippet' },
+      { title: 'Unsafe', url: 'https://example.com/?api_key=redacted' },
+    ] } }, 'query');
+    expect(result.results).toEqual([{ title: 'Real title', url: 'https://example.com/source', description: 'Actual provider snippet' }]);
+  });
+});
+
+describe('deadline lifecycle', () => {
+  it('propagates timeout termination into the running operation', async () => {
+    vi.useFakeTimers();
+    try {
+      let operationSignal: AbortSignal | undefined;
+      const result = withWebDeadline((signal) => {
+        operationSignal = signal;
+        return new Promise(() => undefined);
+      }, undefined, 100);
+      const assertion = expect(result).rejects.toThrow(/total time limit/);
+      await vi.advanceTimersByTimeAsync(100);
+      await assertion;
+      expect(operationSignal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not dispatch an operation already cancelled by its caller', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const operation = vi.fn(async () => 'must not execute');
+    await expect(withWebDeadline(operation, controller.signal)).rejects.toThrow(/cancelled/);
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('cleans its timer on successful completion', async () => {
+    vi.useFakeTimers();
+    try {
+      expect(await withWebDeadline(async () => 'real result')).toBe('real result');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 });

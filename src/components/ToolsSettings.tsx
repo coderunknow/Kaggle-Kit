@@ -5,6 +5,7 @@ import type { ApiProfile } from '../../shared/domain';
 import type { HttpToolSetting, McpServerSetting, ToolProfileSettings } from '../../shared/tools/types';
 import { DEFAULT_TOOL_PROFILE_SETTINGS, HARD_TOOL_LIMITS } from '../../shared/tools/types';
 import { httpModelName, mcpModelName } from '../../shared/tools/catalog';
+import { applyCorePreset, CORE_PRESETS, grantKeylessCore } from '../../shared/tools/presets';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
 import { useApp } from '../state/AppProvider';
@@ -93,7 +94,7 @@ function newMcpServer(name: string, url: string): McpServerSetting {
   };
 }
 
-export function ToolsSettings() {
+export function ToolsSettings({ advanced = true }: { advanced?: boolean }) {
   const profile = useApp().activeProfile;
   if (!profile) {
     return (
@@ -103,10 +104,10 @@ export function ToolsSettings() {
       </div>
     );
   }
-  return <ProfileToolsSettings key={profile.id} profile={profile} />;
+  return <ProfileToolsSettings key={profile.id} profile={profile} advanced={advanced} />;
 }
 
-function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
+function ProfileToolsSettings({ profile, advanced }: { profile: ApiProfile; advanced: boolean }) {
   const app = useApp();
   const appRef = useRef(app);
   const profileId = profile.id;
@@ -343,6 +344,31 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
       </section>
 
       <section className="card">
+        <h3 className="card__title">Keyless built-in tools</h3>
+        <p>Calculator, unit conversion, uploaded-file analysis, endpoint diagnostics and public page retrieval need no separate tool-provider key. Your model server may still require its own credential.</p>
+        <p className="field__hint">Granting these read-only tools changes this profile’s permissions only after Save. It does not verify native tool calling, grant HTTP/MCP access, approve Python, or change execution limits.</p>
+        <button type="button" className="button" disabled={loading || saving} onClick={() => update(grantKeylessCore(draft))}>Allow reviewed keyless built-ins</button>
+        <label className="field">
+          <span className="field__label">Narrow the current tool selection</span>
+          <select defaultValue="" disabled={loading || saving} onChange={(event) => {
+            const value = event.target.value as keyof typeof CORE_PRESETS;
+            if (value in CORE_PRESETS) update(applyCorePreset(draft, value));
+            event.target.value = '';
+          }}>
+            <option value="" disabled>Choose a preset (never adds permissions)</option>
+            {Object.entries(CORE_PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
+          </select>
+        </label>
+        <p className="field__hint">If no tools are selected, use the reviewed grant above first. Presets never restore previously removed permissions.</p>
+        <p role="status">{draft.allowedTools.length} tool(s) selected{draft.enabled ? '; loop enabled after saving and successful verification.' : '; chat only.'}</p>
+        <div className="notice notice--warning">
+          <strong>Search and Python readiness</strong>
+          Keyless public-web search is not available in this build: no suitable public service could be verified. Opening a URL is not search. Optional Brave Search requires its own key in Advanced mode. Public services may block or rate-limit requests.
+          Browser Python is not available. Optional digest-pinned Docker execution remains in Advanced mode and always requires approval.
+        </div>
+      </section>
+
+      <section className="card" hidden={!advanced}>
         <h3 className="card__title">Available tool categories</h3>
         <p className="card__description">Only checked tools are exposed to the model. The server checks the allowlist again before every call.</p>
         {BUILTIN_GROUPS.map((group) => (
@@ -372,7 +398,7 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
         ) : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!advanced}>
         <h3 className="card__title">Web search provider</h3>
         <p className="card__description">Brave requires a subscribed API key. It is sent only to the local proxy secret store, never to a URL or browser storage.</p>
         <label className="field">
@@ -391,7 +417,7 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
         ) : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!advanced}>
         <h3 className="card__title">Bounded execution</h3>
         <p className="card__description">Server-enforced budgets. Conversation settings may only tighten these limits.</p>
         <div className="tool-settings__limits">
@@ -414,7 +440,7 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!advanced}>
         <h3 className="card__title">Configured HTTP tools</h3>
         <p className="card__description">Requests are pinned to public DNS results, limited to ports 80/443, bounded, and never follow redirects. Non-GET actions and unknown permissions pause for approval.</p>
         {draft.httpTools.map((tool) => (
@@ -460,7 +486,7 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
         </button>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!advanced}>
         <h3 className="card__title">Remote MCP connections</h3>
         <p className="card__description">Only public HTTPS Streamable HTTP connections are supported here. Discovery does not grant access. Each connection requires a separate explicit grant; individual tools remain off until selected. Local stdio is disabled.</p>
         {draft.mcpServers.map((server) => (
@@ -519,7 +545,7 @@ function ProfileToolsSettings({ profile }: { profile: ApiProfile }) {
         </button>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!advanced}>
         <h3 className="card__title">Code execution sandbox</h3>
         <p className="card__description">Host execution is never used. Every Python run requires approval, and Docker must already have the digest-pinned Python Alpine image; the proxy does not pull it automatically.</p>
         <label className="field">

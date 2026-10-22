@@ -210,9 +210,15 @@ The server enforces the policy; prompts are not an authorization boundary:
 ### Network and data boundaries for tools
 
 The configured model endpoint follows the pre-existing upstream host policy
+<<<<<<< HEAD
 (`KAGGLE_KIT_ALLOWED_HOSTS` and optional private-network blocking). This proxy
 still validates the model endpoint by hostname and does not pin DNS there; use
 an explicit host allowlist when the proxy can be reached by other local users.
+=======
+(`KAGGLE_KIT_ALLOWED_HOSTS` and optional private-network blocking). The model proxy also uses checked, pinned DNS (since dev5), while preserving
+explicit local model endpoints and the documented private-network policy.
+Use an explicit host allowlist when other local users can reach the proxy.
+>>>>>>> pr16-inspect
 
 Public web, configured HTTP and MCP destinations have a stricter tool-specific
 policy: private, loopback, link-local, reserved and metadata addresses are
@@ -310,3 +316,21 @@ No capability is claimed from a model family, URL or template flag alone.
 If you find a place where a credential could leak, open an issue without
 including the key. Rotate the key afterwards and remove it from the history of
 the affected system.
+<<<<<<< HEAD
+=======
+
+
+## dev7 candidate boundaries
+
+Basic/Advanced is presentation only. An explicit reviewed core grant still needs
+Save and the exact native tool probe; presets only narrow the profile allowlist.
+Neither action grants HTTP/MCP, approves Python or opts into history retention.
+Public-page retrieval and optional Brave search now share a whole-operation
+12-second deadline including DNS and redirects, in addition to response bounds.
+A cancelled DNS resolver may finish later, but cannot open a socket after the
+operation signal has been aborted.
+
+No keyless search provider or browser Python runtime ships in this candidate.
+A worker alone does not isolate origin privileges from Python/JavaScript interop.
+See [dev7 audit](dev7-audit.md) for the deferred isolation and bridge requirements.
+>>>>>>> pr16-inspect

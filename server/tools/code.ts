@@ -102,6 +102,8 @@ export async function runPythonInDocker(
   }
   if (!code.trim() || Buffer.byteLength(code, 'utf8') > 8_192) throw new CodeSandboxError('Python code must contain 1–8,192 bytes.');
 
+  if (signal?.aborted) throw new CodeSandboxError('Python execution was cancelled before Docker started.');
+
   const containerName = sandboxContainerName();
   const args = buildDockerRunArgs(settings, containerName);
   const timeoutMs = boundedInt(settings.timeoutMs, 1_000, 60_000, 10_000);
