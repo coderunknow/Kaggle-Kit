@@ -29,6 +29,17 @@ export async function* parseSseStream(
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
 
+  // An abort must wake a read that is still waiting for the next chunk:
+  // checking the signal only at the top of the loop leaves a pending
+  // `reader.read()` hanging until the server happens to send more data, so
+  // a timeout/abort of a silent stream would never take effect.
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal && !signal.aborted) {
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+
   try {
     for (;;) {
       if (signal?.aborted) break;
@@ -46,10 +57,15 @@ export async function* parseSseStream(
       }
     }
 
-    buffer += decoder.decode();
-    const trailing = parseSseBlock(buffer);
-    if (trailing) yield trailing;
+    // A cancelled stream must not deliver a trailing partial event after the
+    // cancellation: the caller has already decided the answer is incomplete.
+    if (!signal?.aborted) {
+      buffer += decoder.decode();
+      const trailing = parseSseBlock(buffer);
+      if (trailing) yield trailing;
+    }
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     // The body is closed when the loop was left early (a cancelled request),
     // so the connection is not left open.
     try {
@@ -128,6 +144,7 @@ export function extractDelta(event: SseEvent): StreamDelta {
       delta?: {
         content?: string | null;
         reasoning_content?: string | null;
+        reasoning?: string | null;
         tool_calls?: Array<{
           index?: number;
           id?: string;
@@ -159,7 +176,15 @@ export function extractDelta(event: SseEvent): StreamDelta {
   const content = choice.delta?.content;
   if (typeof content === 'string' && content.length > 0) delta.content = content;
 
-  const reasoning = choice.delta?.reasoning_content;
+  // llama.cpp streams chain-of-thought as `reasoning_content`; vLLM (and
+  // therefore Raon/Qwen served through it) uses `reasoning`. They are two
+  // spellings of the same channel: the canonical field wins when both are
+  // present, and reasoning is never merged into the final `content`.
+  const reasoningContent = choice.delta?.reasoning_content;
+  const reasoning =
+    typeof reasoningContent === 'string' && reasoningContent.length > 0
+      ? reasoningContent
+      : choice.delta?.reasoning;
   if (typeof reasoning === 'string' && reasoning.length > 0) delta.reasoning = reasoning;
 
   const fragments = choice.delta?.tool_calls;
@@ -201,7 +226,7 @@ export interface AssembledToolCalls {
  * approval policy before anything runs.
  */
 export class ToolCallAccumulator {
-  private readonly byIndex = new Map<number, { id?: string; name?: string; arguments: string }>();
+  private readonly byIndex = new Map<number, { id?: string; name?: string; arguments: string; conflict?: boolean }>();
   private finishReason: string | undefined;
   private overflow = false;
 
@@ -221,6 +246,12 @@ export class ToolCallAccumulator {
         this.byIndex.set(fragment.index, { arguments: '' });
       }
       const entry = this.byIndex.get(fragment.index)!;
+      // One index is one call. A second, different id or function name on the
+      // same index is a provider/protocol error: merging the fragments would
+      // fabricate a call that correlates with neither, so the whole entry is
+      // poisoned and reported as overflow instead of being handed back.
+      if (fragment.id && entry.id && fragment.id !== entry.id) entry.conflict = true;
+      if (fragment.name && entry.name && fragment.name !== entry.name) entry.conflict = true;
       if (fragment.id && !entry.id) entry.id = fragment.id;
       if (fragment.name && !entry.name) entry.name = fragment.name;
       if (fragment.argumentsFragment) {
@@ -237,7 +268,7 @@ export class ToolCallAccumulator {
     const calls = [...this.byIndex.entries()]
       .sort(([left], [right]) => left - right)
       .flatMap(([, entry]): OpenAIToolCall[] => {
-        if (!entry.id || !entry.name) return [];
+        if (!entry.id || !entry.name || entry.conflict) return [];
         return [{
           id: entry.id,
           type: 'function',

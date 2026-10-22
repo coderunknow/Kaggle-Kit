@@ -19,6 +19,16 @@ export interface InferenceParams {
   /** `undefined` means "do not send this parameter". */
   frequencyPenalty?: number;
   presencePenalty?: number;
+  /**
+   * Sampling extensions (`top_k`, `min_p`, `repetition_penalty`). These are
+   * not part of the strict OpenAI schema, so they follow the same rule as the
+   * penalties: `undefined` means the field is never sent. Model-specific
+   * catalog defaults (for example Raon's) set them explicitly per profile;
+   * they never leak into profiles that did not opt in.
+   */
+  topK?: number;
+  minP?: number;
+  repetitionPenalty?: number;
   /** Request time reasoning effort. Only sent when the server supports it. */
   reasoningEffort?: ReasoningEffort | null;
   /** Only honoured when the transport was verified to support SSE. */
@@ -42,6 +52,9 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   topP: 0.95,
   frequencyPenalty: undefined,
   presencePenalty: undefined,
+  topK: undefined,
+  minP: undefined,
+  repetitionPenalty: undefined,
   reasoningEffort: null,
   stream: false,
 };
@@ -83,6 +96,24 @@ export function buildChatCompletionBody(input: BuildChatBodyInput): BuildChatBod
     body.presence_penalty = params.presencePenalty;
   } else {
     omitted.push('presence_penalty');
+  }
+
+  if (params.topK !== undefined) {
+    body.top_k = params.topK;
+  } else {
+    omitted.push('top_k');
+  }
+
+  if (params.minP !== undefined) {
+    body.min_p = params.minP;
+  } else {
+    omitted.push('min_p');
+  }
+
+  if (params.repetitionPenalty !== undefined) {
+    body.repetition_penalty = params.repetitionPenalty;
+  } else {
+    omitted.push('repetition_penalty');
   }
 
   if (params.reasoningEffort) {

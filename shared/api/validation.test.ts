@@ -31,6 +31,26 @@ describe('parseInferenceParams', () => {
     expect(params.reasoningEffort).toBe('medium');
   });
 
+  it('keeps the sampling extensions unset by default and clamps configured ones', () => {
+    const unset = parseInferenceParams({}).params;
+    expect(unset.topK).toBeUndefined();
+    expect(unset.minP).toBeUndefined();
+    expect(unset.repetitionPenalty).toBeUndefined();
+
+    const { params, issues } = parseInferenceParams({ topK: 5000, minP: 4, repetitionPenalty: 99 });
+    expect(params.topK).toBe(LIMITS.topK.max);
+    expect(params.minP).toBe(LIMITS.minP.max);
+    expect(params.repetitionPenalty).toBe(LIMITS.repetitionPenalty.max);
+    expect(issues.join(' ')).toContain('top_k');
+    expect(issues.join(' ')).toContain('min_p');
+    expect(issues.join(' ')).toContain('repetition_penalty');
+
+    // top_k is an integer cutoff; a fractional value is truncated, not sent raw.
+    expect(parseInferenceParams({ topK: 20.9 }).params.topK).toBe(20);
+    // Non-numeric input is ignored (unset), never guessed.
+    expect(parseInferenceParams({ topK: 'many' }).params.topK).toBeUndefined();
+  });
+
   it('coerces numeric strings', () => {
     const { params } = parseInferenceParams({ maxTokens: '512', temperature: '0.2' });
     expect(params.maxTokens).toBe(512);
