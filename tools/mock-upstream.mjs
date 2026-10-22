@@ -17,6 +17,10 @@
  *   - a user message `run code: <python>` -> `code_execute`.
  *
  * Streamed tool calls are emitted as argument fragments, like a real server.
+ *
+ * A user message starting with `reasoning:` answers like a vLLM-served
+ * thinking model (Raon/Qwen): chain-of-thought in `message.reasoning`
+ * (non-streamed) or `delta.reasoning` (streamed), final text in `content`.
  */
 
 import http from 'node:http';
@@ -185,12 +189,23 @@ const server = http.createServer((request, response) => {
         return;
       }
 
+      const wantsReasoning = /^reasoning:/i.test(prompt);
+
       if (parsed.stream) {
         response.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
+        if (wantsReasoning) {
+          // vLLM-style reasoning deltas arrive before (never inside) content.
+          response.write(
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'mock ' } }] })}\n\n`,
+          );
+          response.write(
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'thinking' } }] })}\n\n`,
+          );
+        }
         const chunks = ['This ', 'is ', 'a ', 'mock ', 'answer.'];
         let index = 0;
         const timer = setInterval(() => {
@@ -218,7 +233,9 @@ const server = http.createServer((request, response) => {
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: `Mock answer for: ${prompt}` },
+            message: wantsReasoning
+              ? { role: 'assistant', content: `Mock answer for: ${prompt}`, reasoning: 'mock thinking' }
+              : { role: 'assistant', content: `Mock answer for: ${prompt}` },
             finish_reason: 'stop',
           },
         ],
