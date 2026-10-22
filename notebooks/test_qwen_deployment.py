@@ -1284,5 +1284,203 @@ class ModelChecksumTests(unittest.TestCase):
             self.assertFalse((config.model_dir / config.model_file).exists())
 
 
+class RaonDeploymentTests(unittest.TestCase):
+    """Raon-1 mini preview on T4 x2: pinned sources, sizing, gated download."""
+
+    GGUF_PAYLOAD = b"GGUF" + b"5" * 4092
+
+    def test_the_default_deployment_stays_the_verified_qwen_one(self) -> None:
+        config = nb.DeploymentConfig()
+        self.assertEqual(config.repo, "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF")
+        self.assertEqual(config.model_file, "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf")
+        self.assertEqual(config.llama_cpp_source, "release")
+        self.assertEqual(config.llama_cpp_tags, ("b11719", "b11718", "b11717"))
+        self.assertFalse(config.requires_hf_token)
+        self.assertEqual(nb.config_for_model("qwen").repo, config.repo)
+        self.assertEqual(nb.config_for_model("").repo, config.repo)
+
+    def test_an_unknown_model_name_is_refused_explicitly(self) -> None:
+        with self.assertRaises(ValueError):
+            nb.config_for_model("llama")
+
+    def test_the_raon_preset_is_pinned_and_kept_apart_from_qwen(self) -> None:
+        config = nb.raon_deployment_config()
+        self.assertEqual(config.repo, "KRAFTON/Raon-1-mini-preview-gguf")
+        # Exact revision + digest pins from the official repo metadata.
+        self.assertEqual(len(config.model_revision), 40)
+        self.assertEqual(config.model_revision, nb.RAON_GGUF_REVISION)
+        file_name, size, digest = nb.RAON_QUANTIZATIONS["Q4_K_M"]
+        self.assertEqual(config.model_file, file_name)
+        self.assertEqual(config.min_model_bytes, size)
+        self.assertEqual(config.model_sha256, digest)
+        self.assertEqual(len(digest), 64)
+        self.assertEqual(config.llama_cpp_source, "krafton-branch")
+        self.assertTrue(config.requires_hf_token)
+        self.assertFalse(config.enable_mtp)  # no Qwen MTP flags for Raon
+        self.assertEqual(config.model_alias, "Raon-1-mini-preview")
+        self.assertNotEqual(config.root, nb.DeploymentConfig().root)
+        self.assertEqual(nb.config_for_model("raon").repo, config.repo)
+
+    def test_every_published_quantization_has_a_size_and_a_digest(self) -> None:
+        for name in nb.RAON_QUANTIZATION_PREFERENCE:
+            file_name, size, digest = nb.RAON_QUANTIZATIONS[name]
+            self.assertTrue(file_name.endswith(".gguf"), name)
+            self.assertGreater(size, 10_000_000_000, name)
+            self.assertEqual(len(digest), 64, name)
+            int(digest, 16)  # must be hex
+
+    def test_quantization_selection_uses_per_device_headroom_not_aggregate_vram(self) -> None:
+        gib = 1024 ** 3
+        self.assertEqual(nb.select_raon_quantization(15 * gib), "Q4_K_M")
+        self.assertEqual(nb.select_raon_quantization(16 * gib), "Q4_K_M")
+        self.assertEqual(nb.select_raon_quantization(32 * gib), "Q8_0")
+        # The conservative share leaves real headroom on a T4.
+        share = nb.estimate_per_device_bytes(nb.RAON_QUANTIZATIONS["Q4_K_M"][1])
+        self.assertLess(share, int(15 * gib * 0.70))
+        with self.assertRaises(RuntimeError):
+            nb.select_raon_quantization(8 * gib)
+        with self.assertRaises(ValueError):
+            nb.apply_raon_quantization(nb.DeploymentConfig(), "Q3_K_M")
+
+    def test_gpu_memory_parsing_reads_nvidia_smi_mib_lines(self) -> None:
+        self.assertEqual(
+            nb._parse_gpu_memory_mib("16384\n16384\n"),
+            [16384 * 1024 * 1024, 16384 * 1024 * 1024],
+        )
+        self.assertEqual(nb._parse_gpu_memory_mib("no devices\n"), [])
+
+    def test_a_missing_gated_token_fails_before_any_download(self) -> None:
+        import types
+
+        hub_without_token = types.ModuleType("huggingface_hub")
+        hub_without_token.get_token = lambda: None
+        hub_without_token.hf_hub_download = lambda **kwargs: self.fail("must not download")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.raon_deployment_config()
+            config.root = Path(directory)
+            config.input_root = Path(directory) / "input"
+            session = FakeSession(self.GGUF_PAYLOAD)
+            with unittest.mock.patch.dict(os.environ, {}, clear=True):
+                with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": hub_without_token}):
+                    with self.assertRaises(RuntimeError) as raised:
+                        nb.download_model(session, config)
+            self.assertIn("access-gated", str(raised.exception))
+            self.assertIn("HF_TOKEN", str(raised.exception))
+            self.assertEqual(session.ranges, [])  # no request was attempted
+
+    def test_the_token_only_travels_in_the_hf_request_header(self) -> None:
+        token = "hf-test-token-not-a-real-secret"
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.DeploymentConfig()
+            config.root = Path(directory)
+            config.input_root = Path(directory) / "input"
+            config.min_model_bytes = 1024
+            config.requires_hf_token = True
+            session = FakeSession(self.GGUF_PAYLOAD)
+            with unittest.mock.patch.dict(os.environ, {"HF_TOKEN": token}):
+                with unittest.mock.patch.dict(sys.modules, {"huggingface_hub": None}):
+                    path = nb.download_model(session, config)
+            self.assertTrue(path.exists())
+            url, headers = session.ranges[0]
+            self.assertTrue(url.startswith("https://huggingface.co/"))
+            self.assertNotIn(token, url)
+            self.assertEqual(headers.get("Authorization"), f"Bearer {token}")
+
+    def test_the_krafton_build_is_pinned_to_a_commit_and_builds_only_the_server(self) -> None:
+        url = nb.krafton_llama_archive_url()
+        self.assertIn(nb.KRAFTON_LLAMA_CPP_REF, url)
+        self.assertEqual(len(nb.KRAFTON_LLAMA_CPP_REF), 40)
+        self.assertNotIn("latest", url)
+        commands = nb.krafton_build_commands(Path("/src"), Path("/build"))
+        self.assertIn("-DGGML_CUDA=ON", commands[0])
+        self.assertIn("llama-server", commands[1])
+        for command in commands:
+            self.assertNotIn("sh", command[0])
+
+    def test_raon_startup_args_are_filtered_by_build_support_and_mtp_stays_off(self) -> None:
+        config = nb.raon_deployment_config()
+        supported = nb.server_flags(
+            "--api-key-file --alias --temp --top-p --top-k --min-p --repeat-penalty "
+            "--split-mode --tensor-split --cache-type-k --cache-type-v --jinja"
+        )
+        launch = nb.build_server_command(
+            config,
+            Path("/tmp/llama-server"),
+            Path("/tmp/raon.gguf"),
+            "secret",
+            supported,
+            {"ctx": 8192, "mtp": False, "reasoning": True},
+            api_key_file=Path("/tmp/api_key.txt"),
+        )
+        self.assertEqual(launch.applied["alias"], "Raon-1-mini-preview")
+        self.assertIn("--temp", launch.command)
+        self.assertIn("--top-k", launch.command)
+        self.assertIn("20", launch.command)
+        # Unsupported extras are dropped and reported, never sent blind.
+        self.assertNotIn("--reasoning", launch.command)
+        self.assertIn("extra:--reasoning", launch.dropped)
+        self.assertIn("extra:--chat-template-kwargs", launch.dropped)
+        # No Qwen speculative-decoding flags and no key in argv.
+        self.assertNotIn("--spec-type", launch.command)
+        self.assertFalse(launch.applied["mtp"])
+        self.assertNotIn("secret", launch.command)
+
+    def test_the_qwen_fingerprint_is_unchanged_but_raon_is_distinct(self) -> None:
+        import hashlib
+        import json as json_module
+
+        config = nb.DeploymentConfig()
+        legacy_payload = {
+            "model_file": "/m/model.gguf",
+            "binary": "/b/llama-server",
+            "host": config.host,
+            "port": config.port,
+            "ctx_size": config.ctx_size,
+            "enable_mtp": bool(config.enable_mtp),
+            "reasoning_effort": config.reasoning_effort,
+            "n_gpu_layers": config.n_gpu_layers,
+            "split_mode": config.split_mode,
+            "tensor_split": config.tensor_split,
+        }
+        legacy = hashlib.sha256(json_module.dumps(legacy_payload, sort_keys=True).encode()).hexdigest()
+        current = nb.deployment_fingerprint(config, Path("/m/model.gguf"), Path("/b/llama-server"))
+        self.assertEqual(current, legacy)
+
+        raon = nb.raon_deployment_config()
+        self.assertNotEqual(
+            nb.deployment_fingerprint(raon, Path("/m/model.gguf"), Path("/b/llama-server")),
+            current,
+        )
+
+    def test_the_raon_runtime_bundle_names_the_deployment_without_the_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.raon_deployment_config()
+            config.root = Path(directory)
+            model_path = config.model_dir / config.model_file
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            model_path.write_bytes(self.GGUF_PAYLOAD)
+            paths = nb.write_runtime_bundle(
+                config,
+                "raon-secret",
+                "Raon-1-mini-preview",
+                model_path,
+                {"ctx": 8192, "mtp": False, "alias": "Raon-1-mini-preview", "extra_args": ["--temp=1.0"]},
+                None,
+                Path("/tmp/llama-server"),
+            )
+            runtime = json.loads(paths["runtime"].read_text())
+            profile = json.loads(paths["profile"].read_text())
+            self.assertEqual(runtime["deployment"], "Raon")
+            self.assertEqual(runtime["model_repo"], "KRAFTON/Raon-1-mini-preview-gguf")
+            self.assertEqual(runtime["model_revision"], nb.RAON_GGUF_REVISION)
+            self.assertFalse(runtime["mtp_speculative_decoding"])
+            self.assertNotIn("enabled with --spec-type", runtime["mtp_note"])
+            self.assertEqual(profile["name"], "Kaggle T4 x2 - Raon")
+            self.assertNotIn("raon-secret", paths["runtime"].read_text())
+            self.assertNotIn("raon-secret", paths["profile"].read_text())
+
+
+
 if __name__ == "__main__":
     unittest.main()
