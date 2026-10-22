@@ -1714,3 +1714,11 @@ behaviour, Docker, tunnels and Windows remain unverified; the operator
 procedure in the deployment guide is the path to close the first two.
 The PR therefore stays draft: implementation-complete and reviewable,
 not acceptance-complete. No merge, tag, release or auto-merge.
+
+
+## 2026-10-22 - Correction to the preceding entry (tools test count)
+
+Same correction as in `AGENTS_LOG.md`: after restoring PR #15's
+nightly-workflow tests (dropped by the merge's `--theirs` resolution),
+the tools suite is **27 passed**, not 25. Appended rather than edited,
+per the append-only rule.

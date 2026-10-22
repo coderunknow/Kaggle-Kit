@@ -1112,3 +1112,14 @@ endpoint is hardcoded), real-model tool behaviour, Docker runtime,
 public tunnels, Windows launcher, real browser. No token, speed, memory
 or startup figure for any new path is claimed. The PR stays draft for
 those reasons; no merge, tag, release or auto-merge was performed.
+
+
+## 2026-10-22 - Correction to the preceding entry (tools test count)
+
+The 2026-10-22 entry above reports the tools suite as 25 tests. Reviewing
+the final diff found that the merge had taken PR #16's older
+`tools/test_workflow_security.py`, dropping PR #15's two
+nightly-workflow test methods (the workflow file itself was preserved).
+The `main` version of that one test file was restored; the suite now
+runs **27 passed**. No other count in the entry changes. This note is
+appended, not edited into the entry, per the append-only rule.

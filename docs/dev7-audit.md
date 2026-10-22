@@ -297,7 +297,10 @@ tests, and a separately labelled live smoke test.
 * `npm run check:integration` - **33/33** against the built bundle.
 * `python3 -m unittest discover -s notebooks` - **86 passed, 0 skipped**
   (58 pre-existing + 12 Raon + 16 TPU).
-* `python3 -m unittest discover -s tools` - **25 passed**.
+* `python3 -m unittest discover -s tools` - **27 passed** (after restoring
+  PR #15's two nightly-workflow test methods, which the unrelated-histories
+  merge had dropped with `--theirs`; `nightly-release.yml` itself was
+  preserved throughout and PR #15 remains otherwise untouched).
 * `tools/model-benchmark.mjs` vs the local mock - 6/6 (script mechanics
   with synthetic results, labelled as such; not a real model).
 * `npm audit --json` - **0 vulnerabilities**; `git diff --check` clean.
