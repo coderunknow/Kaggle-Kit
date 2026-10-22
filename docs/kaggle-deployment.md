@@ -219,3 +219,157 @@ another port in DeploymentConfig, and rerun the cell.
   passed to the binary, not that they made the answer faster.
 * The `t4x2` mode needs two T4s. `single` exists for experiments only and is
   not the verified configuration.
+
+## 8. Model x accelerator matrix (dev7)
+
+| Model | Accelerator | Status | Runtime / checkpoint |
+| --- | --- | --- | --- |
+| Qwen3.8-27B | GPU T4 x2 | **Pre-existing — not re-verified live** (preserved unchanged; derived from an operator-verified cell) | CUDA `llama.cpp` (pinned b11717-b11719), GGUF IQ3_S, ctx 8192, MTP when supported |
+| Raon-1 mini preview | GPU T4 x2 | **Implemented - not live-verified** | KRAFTON `llama.cpp` branch `raon-1-mini-preview` @ `fb895662...`, GGUF Q4_K_M on T4 |
+| Qwen3.8-27B | TPU v5e-8 | **Implemented - not live-verified** | `vllm-tpu==0.28.0`, `Qwen/Qwen3.8-27B` bf16 @ `1d4bf0f2...`, tensor parallel 8, MTP off |
+| Raon-1 mini preview | TPU v5e-8 | **Blocked** (evidence in section 11) | none - no TPU kernels for the `raon1` architecture |
+| Raon-1 mini preview | Hosted API | **Implemented - not live-verified** | ordinary connection profile with the endpoint/credential your provider issued |
+
+"Implemented - not live-verified" means the code path, its pins, its failure
+modes and its unit tests exist, but no run on the real accelerator happened
+in the development environment. It never means "will work". Section 12 is
+the exact operator procedure that turns a row into a verified one.
+
+## 9. Raon-1 mini preview on GPU T4 x2
+
+Raon is KRAFTON AI's 30B-A4B MoE model (28.8B total parameters, 4.3B active
+per token, Apache-2.0 weights). It uses the **same cell** as Qwen
+(`notebooks/qwen3_8_27b_api.py`); Qwen stays the default and is unchanged.
+
+1. **Get access first.** The GGUF repository
+   (`KRAFTON/Raon-1-mini-preview-gguf`) is access-gated. Request access on
+   Hugging Face with your own account, then make a token available *without
+   pasting it into the notebook*: add it as a Kaggle Secret/environment
+   variable named `HF_TOKEN`, or run `hf auth login`. The cell reads the
+   token at download time only and sends it solely in the
+   `huggingface.co` request header - never in a URL, argv, log or file of
+   this repository. Without authorization the run stops with that exact
+   message; nothing is substituted.
+2. Set the accelerator to **GPU T4 x2**, Internet on, and select Raon:
+   environment `KAGGLE_KIT_MODEL=raon`, or call
+   `main(raon_deployment_config())` after pasting the cell.
+3. The cell then, in order: checks the two T4s; *builds* `llama-server`
+   from KRAFTON's pinned branch commit `fb895662...` with CUDA (the
+   `raon1` GGUF architecture is not assumed to exist in upstream prebuilt
+   binaries, so none is used); selects a quantization from the detected
+   GPU memory; downloads that exact file from the pinned revision
+   `fe24f24e...` and verifies its SHA-256 from the official repository
+   metadata; starts the server with alias `Raon-1-mini-preview` and the
+   model-card startup sampling (only flags the built binary lists);
+   and proves a real chat completion before announcing success.
+
+**Quantization choice is evidence-based, not "fits the aggregate".**
+Published sizes: Q8_0 30.69 GB, Q6_K 25.84 GB, Q5_K_M 22.18 GB,
+Q4_K_M 19.69 GB, IQ4_XS 16.07 GB. A layer split does not pool the two
+16 GB devices, so the cell caps the conservative per-device weight share
+(equal share inflated by 1.10 for split imbalance) at 70% of a device,
+leaving at least 30% for KV cache (small for Raon - only its 7 MLA layers
+keep one), compute buffers, the CUDA context and fragmentation. On T4 that
+selects **Q4_K_M** (about 10.1 GiB/device estimated), the quantization of
+KRAFTON's documented examples. `raon_deployment_config(quantization=...)`
+overrides it explicitly; the applied value is always what the summary and
+`runtime.json` report.
+
+Context stays at the application's documented 8192 although the model
+supports 262144. Qwen's MTP flags are never applied to Raon; its DFlash
+speculative path is *not* enabled in this release (baseline inference
+first - it is added only after live verification). The Raon server owns a
+separate directory (`/kaggle/working/raon1_api`) with its own key/state,
+follows the same reuse/restart/conflict rules, and generates its own API
+key. In the chat interface, use the **model catalog** entry
+"Raon-1 mini preview" and apply its recommended sampling (temperature 1.0,
+top_p 0.95, top_k 20, min_p 0.0, repetition_penalty 1.0,
+frequency_penalty 0, presence_penalty 1.5 general / 0 coding-math).
+
+## 10. Qwen3.8-27B on TPU v5e-8
+
+The GGUF/CUDA path cannot run on a TPU, so this is a separate script:
+`notebooks/tpu_deployment.py`. It serves the authoritative checkpoints
+`Qwen/Qwen3.8-27B` bf16 safetensors at pinned revision `1d4bf0f2...`
+through the vLLM TPU backend, sharded tensor-parallel 8.
+
+1. Create the notebook with **TPU v5e-8** (Kaggle CLI accelerator id
+   `TpuV5E8`), Internet on. Beware sessions provisioned without hardware
+   (a CPU-only container): the cell detects the accelerator with JAX and
+   **aborts** - it never falls back to CPU and never reports CPU work as
+   TPU success.
+2. Paste `notebooks/tpu_deployment.py` and run it. In order, it: requires
+   exactly 8 TPU devices; installs the pinned `vllm-tpu==0.28.0` (the
+   release with native gated-DeltaNet Pallas kernels for this hybrid
+   architecture); starts vLLM's OpenAI server (`PJRT_DEVICE=TPU`,
+   dtype bfloat16, `max_model_len` 32768 by default); waits (bounded) for
+   health; runs a **real authenticated chat completion**; and verifies
+   that an *unauthenticated* request is rejected before anything is
+   exposed through the optional tunnel. The tunnel never points at the
+   vLLM port (its key does not cover routes such as `/invocations`): it
+   points at an in-process authenticating gateway on `gateway_port`
+   (default 8001) that forwards only `/v1/models`, `/v1/chat/completions`
+   and `/v1/completions` and refuses everything else. The tunnel starts
+   only after the gateway rejects an unauthenticated `/invocations`, and is
+   stopped if the public URL answers it. Keep the notebook kernel running
+   (the gateway lives in it; run as a script, the cell keeps serving until
+   Ctrl+C). The API key is generated,
+   stored at mode `0600`, and passed through the `VLLM_API_KEY`
+   environment variable - never argv.
+3. **MTP is forced off.** With the pinned vllm-tpu, rejected MTP draft
+   tokens advance the gated-DeltaNet recurrent state and corrupt output.
+   Setting `enable_mtp=True` is refused with that reason instead of being
+   silently applied or dropped. No speculative flag is emitted.
+4. Expect long XLA compilation on the first run; the startup wait is
+   bounded at one hour and the server log is `vllm-server.log` in
+   `/kaggle/working/qwen38_tpu_api`. The ~55 GB bf16 checkpoint download
+   dominates disk use; keep it as a Kaggle Dataset like the GGUF.
+5. The summary prints local/public endpoints, detected devices, and the
+   key once. `profile.json` ("Kaggle TPU v5e-8") has the values for the
+   chat interface; nothing about speed or memory is printed because this
+   script does not measure them - measure with
+   `tools/model-benchmark.mjs` against your live endpoint instead.
+
+## 11. Raon-1 mini preview on TPU v5e-8: blocked
+
+Requesting this combination (`KAGGLE_KIT_MODEL=raon` in the TPU cell)
+raises `UnsupportedDeploymentError` before anything is installed. The
+evidence, checked against the vendor and runtime documentation:
+
+* the published GGUF is a llama.cpp artifact - no TPU runtime consumes it;
+* KRAFTON's `llama.cpp` branch and vLLM fork are CUDA paths, and CUDA
+  kernels do not run on TPU;
+* the `raon1` architecture (Raon Delta Attention, Gated MLA, SiTU-GLU,
+  Raon-mHC) has no kernels in the documented vLLM TPU / tpu-inference or
+  SGLang TPU model support;
+* a checkpoint merely loading somewhere would prove neither generation
+  nor Kaggle v5e-8 support, and no such execution proof exists upstream.
+
+There is deliberately no CPU, GPU, remote, or hosted fallback behind this
+refusal. Revisit when a TPU backend publishes `raon1` support; the first
+steps would be the minimal proof (checkpoint load, short generation,
+correct decoding) on v5e-8 before any serving work.
+
+## 12. Live verification procedure (operator)
+
+Run these on real Kaggle sessions and record the summary blocks,
+`runtime.json`, and benchmark reports. Only executed output turns a matrix
+row into "verified".
+
+**Raon / T4 x2** (needs approved gated access + `HF_TOKEN`):
+`KAGGLE_KIT_MODEL=raon` in the GPU cell. Expect `RAON API STATUS`, model
+`Raon-1-mini-preview`, `Local inference: verified`, the selected
+quantization in the log, and a verified public route. Rerun the cell: it
+must *reuse* the server with the same key. Then, locally:
+`OPENAI_API_KEY=<key> node tools/model-benchmark.mjs --base-url <public>/v1
+--model Raon-1-mini-preview --trials 3` (synthetic-result protocol
+evidence), plus one ordinary chat and one tool-probe verification from the
+interface (Tools settings -> Verify native tool calling). Record the
+tokens/sec *from the server log/benchmark*, not from expectations.
+
+**Qwen / TPU v5e-8**: run the TPU cell in a `TpuV5E8` session. Expect
+"8 TPU device(s) detected", the inference test, the auth-enforcement line,
+and a verified public route. Negative checks worth the minutes: the same
+cell in a CPU session must abort with the accelerator message, and
+`KAGGLE_KIT_MODEL=raon` in the TPU cell must print the blocked analysis
+and exit non-zero without installing anything.

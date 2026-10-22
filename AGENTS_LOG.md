@@ -985,3 +985,225 @@ created and no release is published (explicitly out of scope for this task).
   committed here; it is then closed with a comment referencing this record,
   without deleting its branch. This entry is that record; the close comment
   outcome is reported in the task completion report.
+
+## 2026-10-21 — dev7 partial implementation and verification
+
+- Baseline: complete repository-memory documents read before edits; live main
+  `3b5cec8ebeda2f985f27f65249d43c34f19d59a9`, package dev6, no dev7 tag/release.
+  Work stays on `arena/4327fa8e-kaggle-kit`; PR #15 inspected and untouched.
+- Implementation: `d80a2e3829b8f17e1e37e5cfe71a464fa2d55fec` — guided setup,
+  Basic/Advanced without value loss, reviewed keyless grant and narrowing-only
+  presets, empty discovery guidance, connected-profile chat action, typed-key
+  editor test invalidation, total web deadline/cancellation including DNS,
+  malformed Brave payload validation, pre-cancelled Docker dispatch refusal,
+  browser/component/unit regressions, dev7 version/docs/verification metadata.
+- Reproduced old credential-edit and Docker-cancellation failures by temporarily
+  restoring their old expressions/guard, running focused tests (exit 1), then
+  restoring fixes. Rejected the suspected old-key fingerprint-order defect
+  (presence-only fingerprint); did not retain that speculative change.
+- Search is **not implemented**: SearXNG API/limiter documentation does not prove
+  public-instance permission or availability, and outbound search hosts are
+  unavailable (DuckDuckGo curl TLS exit 35). No placeholder or guessed citations.
+- Browser Python is **not implemented**: inspected Pyodide 314.0.7 docs/license,
+  actual downloaded npm archive 6,488,647 bytes. Same-origin worker privileges
+  and missing lifecycle bridge remain undemonstrated safety requirements, not
+  reasons to ship an insecure demo. Optional strict Docker retained.
+- Verification against implementation SHA: typecheck 0, lint 0, Vitest 45 files /
+  431 tests 0, build 0, built integration 31/31 0, notebook 58/no-skips 0, tools
+  25 0, npm audit 0 vulnerabilities, diff-check 0. Exact required scripts also
+  repeated by the release dry run. Initial notebook run skipped 7 until requests
+  was installed; final run has no skips.
+- Provisioned Chromium 153 via @sparticuz/chromium@153.0.0 outside repo, plus its
+  NSS/NSPR libs via LD_LIBRARY_PATH. `npm run test:e2e`: 5 passed on built app /
+  local mock, exit 0. Initial missing-binary/dependency failures resolved locally;
+  no browser/runtime dependency added to application or workflow. New 360px test
+  caught/fixed CSS overriding hidden; new Basic grant/probe/calculator/continuation
+  E2E passes. This is real browser integration but **not** a live-model test.
+- `tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7`: exit 0 at `d80a2e3`; both
+  validators valid, source SHA rendered into notes. App 2,166,718 bytes, notebook
+  91,914, source 875,918. No tag or publication; generated assets remain ignored.
+- Residual: keyless search outstanding; safe browser Python deferred; no live
+  model/Kaggle/provider/MCP/HTTP or local Docker/Windows run. Existing CI jobs
+  retained; PR/CI confirmation appended separately. Detailed evidence and
+  concrete follow-up: `docs/dev7-audit.md`. Candidate must remain draft/open,
+  not represented as acceptance-complete or bug-free.
+
+
+## 2026-10-22 - v0.1.0-dev7 continuation: deployment matrix, catalog, tool audit
+
+**Branch and starting point.** Continued the dev7 candidate on
+`arena/948908bc-kaggle-kit`. Live GitHub showed PR #16 open/draft at
+`3abb618` (`arena/4327fa8e-kaggle-kit`) and `main` at `2b73983` (merge of
+PR #15, untouched including `nightly-release.yml`). The histories are
+unrelated, so the candidate was merged with `--allow-unrelated-histories`
+(commit `3a09178`), taking the PR branch versions of conflicting dev7
+files; PR #15's files were verified preserved. The merge initially staged
+add/add conflict *markers* in six documentation files as if resolved;
+they were removed (commit `a300560`) by restoring the PR-branch versions
+after proving both append-only logs were exact byte-prefix extensions of
+`main`, then re-applying the new documentation on the clean base. This
+session's branch binding prevents pushing to PR #16's own branch, so the
+work is proposed from this branch as its continuation; PR #16 itself was
+not modified from here.
+
+**What was implemented (commits `81dcd84`, `55d32ec`, `aa74926`, `2a546c9`).**
+
+* Model catalog `shared/model-catalog/catalog.ts` (renamed from
+  `shared/models/` - the weights rule `models/` in .gitignore swallowed
+  the source until the rename) with Qwen/Raon/custom entries, gated-access
+  notes, per-combination statuses + evidence, discovery matching and
+  honest availability states; ProfileForm catalog browser + deployment
+  badges; InferenceSettings catalog apply (general vs coding/math) and
+  opt-in `top_k`/`min_p`/`repetition_penalty` end to end (wire type,
+  request builder omitted-reporting, shared browser/proxy validation).
+  Unset stays unsent; old profiles load unchanged; Qwen defaults clear
+  Raon extensions (no cross-profile leak).
+* Raon on T4 x2 inside the existing cell (`KAGGLE_KIT_MODEL=raon`): pinned
+  GGUF revision/digests from official HF metadata, quantization selection
+  by per-device headroom (Q4_K_M on T4), KRAFTON llama.cpp branch built
+  from pinned commit `fb895662...`, served alias, flag-filtered model-card
+  startup sampling, HF token only in the huggingface.co request header
+  with fail-before-download when gated access is missing, separate
+  root/state/key. The default Qwen deployment is unchanged - including a
+  byte-identical reuse fingerprint, proven by test.
+* `notebooks/tpu_deployment.py`: Qwen bf16 (`Qwen/Qwen3.8-27B` @
+  `1d4bf0f2...`) via `vllm-tpu==0.28.0`, TP=8, eight-TPU requirement with
+  no CPU fallback, MTP refused (documented output corruption), key via
+  `VLLM_API_KEY` env + verified auth enforcement, real-inference smoke
+  test, pinned tunnel, runtime bundle. Raon x TPU raises
+  `UnsupportedDeploymentError` with the kernel evidence before installing
+  anything.
+* Tool/stream defects, each reproduced failing first: streamed
+  `delta.reasoning` (vLLM/Raon) was dropped; conflicting streamed
+  tool-call id/name on one index merged two calls; abort could not wake a
+  silent SSE read (and a cancelled stream yielded a trailing event).
+  Mock upstream + gateway + built-bundle integration now cover
+  reasoning separation.
+* Docs: deployment matrix + operator live-verification procedure,
+  catalog/inference docs, security boundaries, troubleshooting entries,
+  rewritten dev7 release notes and environment metadata, audit
+  continuation with the fresh keyless-search reassessment.
+
+**Search decision.** Reassessed 2026-10-22 from primary sources (SearXNG
+search-API docs, DuckDuckGo API text, Marginalia API/license pages;
+sandbox `curl` to candidate hosts re-confirmed `SSL_ERROR_SYSCALL`).
+No credential-free provider met the authorization/reliability bar, so
+keyless search ships nothing and, per the user's reassessment mandate,
+does not block review readiness; it stays honestly absent in UI/docs.
+Browser Python remains deferred (no proven isolation/bridge).
+
+**Checks executed on the candidate (real output).**
+
+* `npm run typecheck`, `npm run lint` - exit 0.
+* `npm test` - **47 files, 448 tests passed** (merge baseline 45/431).
+* `npm run build` - passed (entry 310.00 kB / 94.61 kB gzip).
+* `npm run check:integration` - **33/33** against the built bundle.
+* `python3 -m unittest discover -s notebooks` - **86 passed, 0 skipped**
+  (requests installed); `-s tools` - **25 passed**.
+* Benchmark smoke vs the local mock - 6/6, synthetic results labelled.
+* `npm audit --json` - 0 vulnerabilities; `git diff --check` clean.
+* `npm run test:e2e` - **blocked**: Chromium binary absent and the
+  Playwright download host unreachable (recorded download failure). The
+  CI Browser job is the verification path; not reported as passed.
+
+**Not verified.** Everything live: Raon T4 inference (no GPU, no gated
+access), Qwen TPU execution (no TPU), Raon hosted API (no credential; no
+endpoint is hardcoded), real-model tool behaviour, Docker runtime,
+public tunnels, Windows launcher, real browser. No token, speed, memory
+or startup figure for any new path is claimed. The PR stays draft for
+those reasons; no merge, tag, release or auto-merge was performed.
+
+
+## 2026-10-22 - Correction to the preceding entry (tools test count)
+
+The 2026-10-22 entry above reports the tools suite as 25 tests. Reviewing
+the final diff found that the merge had taken PR #16's older
+`tools/test_workflow_security.py`, dropping PR #15's two
+nightly-workflow test methods (the workflow file itself was preserved).
+The `main` version of that one test file was restored; the suite now
+runs **27 passed**. No other count in the entry changes. This note is
+appended, not edited into the entry, per the append-only rule.
+
+
+## 2026-10-22 - Final audit and development-merge preparation of PR #17
+
+**Starting state (live GitHub, re-fetched).** PR #17 open/draft, head
+`7502508a11454074507101153e02075fd52fa198`, base `main` @
+`2b739831cb8b5a990129918362d5027815c3a7b0` (PR #15's merge), mergeable /
+clean; PR #16 (`3abb618`) open/draft and an ancestor of the PR #17 head;
+PR #15 already merged and untouched. `main` is reported unprotected with
+no rulesets (the detailed branch-protection API returns 403 to this
+integration, so reviews/required checks were read from the PR state: no
+required reviewers, no review requests). Prior CI on `7502508` was green.
+
+**Defects found by the audit and fixed in `0de64185530fc31ca903c74710fa8077b1907dac`
+(each reproduced by a failing test first):**
+
+1. Security - the TPU tunnel exposed vLLM directly, but vLLM's key guards
+   only `/v1`, `/v2`, `/inference`, `/cohere` (read in vllm `v0.28.0`
+   source: `entrypoints/serve/utils/server_utils.py` `GUARDED_PREFIX`;
+   `entrypoints/serve/sagemaker/api_router.py` serves `/invocations` with
+   the same inference handlers). The old `/v1/models` auth probe could not
+   detect this. Fixed with an in-process allowlisting, bearer-checking,
+   body-bounded gateway as the only tunnel target; tunnel start gated on
+   the gateway refusing `/invocations`; tunnel stopped if the public URL
+   answers it. llama.cpp (GPU) checked at both pinned revisions: only
+   health/static frontend paths bypass its key - not affected.
+2. Catalog selection of Raon overwrote a typed model ID; now only fills an
+   empty field, replacement is explicit.
+3. Qwen/T4 was labelled "Verified" without live evidence of this script;
+   now "Pre-existing - not re-verified live", with a test forbidding any
+   `verified` row.
+
+**Primary-source re-verification.** Qwen TPU revision `1d4bf0f2...` is the
+current HF sha; KRAFTON llama.cpp branch head is `fb895662...`; the pinned
+Raon GGUF revision `fe24f24e...` still lists the pinned files, sizes and
+LFS SHA-256 (repo `main` moved to `3afcfcdb...`, README-only change);
+`vllm-tpu==0.28.0` exists (latest 0.32.0, pin kept until live parity);
+kaggle-cli documents `TpuV5E8`; `VLLM_API_KEY` is the documented alias.
+
+**Local verification on `0de6418` (real output).** `npm ci` (0
+vulnerabilities); `npm run typecheck` 0; `npm run lint` 0; `npm test`
+**47 files / 449 tests**; `npm run build` 0 (entry 310.00 kB / 94.61 kB
+gzip); `npm run check:integration` **33/33**; notebooks **93 passed, 0
+skipped**; tools **27 passed** (PR #15 nightly tests included);
+`npm audit` 0; `git diff --check` clean; no conflict markers;
+`tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7` exit 0, "The release
+v0.1.0-dev7 is valid" (staged + simulated download), notes rendered with
+`0de6418` - not a publication. `npm run test:e2e` locally: **blocked**
+(Chromium executable absent, download fails; 5 launch failures, no
+assertion ran) - the CI Browser job is the evidence path.
+
+**Unchanged limitations.** Raon/T4 x2, Qwen/TPU v5e-8 and hosted Raon:
+implemented, **not live-verified** (no Kaggle GPU/TPU, gated access or
+provider credential here). Raon/TPU: **blocked**, refused without
+fallback. Qwen/T4: pre-existing, not re-run live. No live-model tool
+calls, Docker locally, Windows, keyless search or browser Python. No
+speed/memory/startup figures exist for the new paths.
+
+**Merge plan.** The user authorized a development merge with unverified
+paths kept explicitly unverified. After CI passes on the final head:
+mark PR #17 ready, merge it with a merge commit, then close PR #16 as
+superseded. No tag, no release, no auto-merge, PR #15 untouched. The
+merge commit and post-merge CI are recorded in PR #17's comments and a
+follow-up log entry.
+
+
+## 2026-10-22 - CI evidence for the final-audit head `faff1e5`
+
+* PR run [39796243480](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39796243480)
+  on `faff1e508e853c34bdbeee79f6d0562931f8d20e`: **completed / success**.
+  All five jobs ran every step successfully, confirmed through the jobs
+  API: `typecheck, lint, test and build` (type check, lint, tests, build,
+  built-bundle integration, whitespace), `notebook tests` (notebook +
+  release-tool suites), `docker sandbox integration` (real Docker),
+  `windows launcher` (PowerShell launcher readiness) and
+  `Browser end-to-end` ("Run browser end-to-end tests" = success).
+  The run log host returned no content to this sandbox, so per-test
+  counts for CI come from the step conclusions, not from log text.
+* Push run [39796236571](https://github.com/coderunknow/Kaggle-Kit/actions/runs/39796236571)
+  on the same SHA: four jobs success; its `Browser end-to-end` job
+  (119884031367) stayed `queued` for over 30 minutes without starting
+  (no runner picked it up) and could not be re-run from this
+  integration ("cannot be rerun" / HTTP 403). It is **not** counted as
+  passed. This entry's commit retriggers CI on a new head.

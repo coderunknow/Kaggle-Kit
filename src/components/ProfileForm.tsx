@@ -29,6 +29,17 @@ import {
   estimatePromptTokens,
   qwenToolSystemPrompt,
 } from '../../shared/prompts/qwen';
+import {
+  ACCELERATOR_LABELS,
+  applyRecommendedParams,
+  catalogEntryById,
+  DEPLOYMENT_STATUS_LABELS,
+  describeModelAvailability,
+  findCatalogEntryByModelId,
+  MODEL_CATALOG,
+  type DeploymentStatus,
+} from '../../shared/model-catalog/catalog';
+import type { InferenceParams } from '../../shared/api/requests';
 import { gateway } from '../lib/gateway';
 import { createId } from '../lib/id';
 import { useApp } from '../state/AppProvider';
@@ -40,6 +51,7 @@ export interface ProfileFormProps {
   onSaved: () => void;
   onCancel: () => void;
   onDeleted: () => void;
+  advanced?: boolean;
 }
 
 interface FormState {
@@ -55,13 +67,22 @@ interface FormState {
 /** The value of the model select that switches to the manual input. */
 const CUSTOM_MODEL = '__custom__';
 
+const DEPLOYMENT_TONES: Record<DeploymentStatus, 'ok' | 'warning' | 'danger' | 'neutral'> = {
+  verified: 'ok',
+  preexisting_not_reverified: 'neutral',
+  implemented_not_live_verified: 'warning',
+  blocked: 'danger',
+  unsupported: 'danger',
+  not_applicable: 'neutral',
+};
+
 const CREDENTIAL_LABELS: Record<CredentialStorage, string> = {
   session: 'This tab only (memory)',
   server: 'Local proxy secret store',
   browser: 'Browser storage (plain text)',
 };
 
-export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: ProfileFormProps) {
+export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted, advanced = true }: ProfileFormProps) {
   const app = useApp();
   // The form is mounted with the key of the profile, so a new profile always
   // starts with a fresh form.
@@ -106,6 +127,14 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [draftModels, setDraftModels] = useState<string[] | undefined>(undefined);
+  // Sampling defaults are part of the draft so catalog recommendations are
+  // saved with the profile (and only then). Editing them here never touches
+  // the saved profile or any other profile.
+  const [paramsDraft, setParamsDraft] = useState<InferenceParams>(() => ({ ...profile.defaultParams }));
+  const [catalogId, setCatalogId] = useState<string>(
+    () => findCatalogEntryByModelId(profile.modelId)?.id ?? '',
+  );
+  const [catalogNote, setCatalogNote] = useState<string | null>(null);
 
   const discoveredModels = draftModels ?? app.state.discoveredModels[profile.id] ?? [];
 
@@ -139,6 +168,8 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     credential: `cred-${profile.id}`,
     model: `model-${profile.id}`,
     modelHint: `model-hint-${profile.id}`,
+    catalog: `catalog-${profile.id}`,
+    catalogHint: `catalog-hint-${profile.id}`,
     system: `system-${profile.id}`,
     systemHint: `system-hint-${profile.id}`,
     timeout: `timeout-${profile.id}`,
@@ -147,6 +178,52 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const catalogEntry = catalogEntryById(catalogId);
+  const recognizedEntry = findCatalogEntryByModelId(form.modelId);
+
+  /**
+   * Selecting a catalog entry only edits this draft: it fills the model ID
+   * our deployments are known to serve (when there is one) and nothing else.
+   * It never installs, downloads, starts, or switches a model on the server,
+   * and it never overwrites a hand-typed model ID for entries whose served
+   * ID is decided by discovery (Qwen/custom). A served ID is filled only
+   * into an empty model field: a model ID the user already entered (for
+   * example a hosted provider's own spelling) is kept, and replacing it is
+   * an explicit, separate action.
+   */
+  const fillServedModelId = (servedId: string) => {
+    update('modelId', servedId);
+    setManualModel(discoveredModels.length > 0 && !discoveredModels.includes(servedId));
+  };
+
+  const selectCatalogEntry = (entryId: string) => {
+    setCatalogId(entryId);
+    setCatalogNote(null);
+    const entry = catalogEntryById(entryId);
+    if (!entry) return;
+    const servedId = entry.servedModelIds[0];
+    if (!servedId) return;
+    const current = form.modelId.trim();
+    if (!current) {
+      fillServedModelId(servedId);
+    } else if (current !== servedId) {
+      setCatalogNote(
+        `Kept your model ID "${current}". This project's ${entry.displayName} deployments serve "${servedId}"; use it only if this profile points at such a deployment.`,
+      );
+    }
+  };
+
+  const catalogServedId = catalogEntry?.servedModelIds[0];
+  const offerServedId = Boolean(catalogServedId && form.modelId.trim() && form.modelId.trim() !== catalogServedId);
+
+  const applyCatalogParams = (useCase: 'general' | 'coding_math') => {
+    if (!catalogEntry) return;
+    setParamsDraft((current) => applyRecommendedParams(current, catalogEntry, useCase));
+    setCatalogNote(
+      `Recommended ${catalogEntry.displayName} sampling (${useCase === 'coding_math' ? 'coding/math' : 'general'}) is in the draft. Save the profile to keep it; maximum output tokens and streaming were not changed.`,
+    );
   };
 
   /** The credential that would be used for this form state. */
@@ -188,6 +265,7 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     systemPrompt: form.systemPrompt,
     timeoutMs: Number.isFinite(timeoutValue) ? timeoutValue : profile.timeoutMs,
     credentialStorage: form.credentialStorage,
+    defaultParams: { ...paramsDraft },
   });
 
   const savedCredential = resolveProfileCredential(profile, app.state);
@@ -209,7 +287,8 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
     form.credentialStorage === profile.credentialStorage &&
     draftConfig === savedConfig;
 
-  const testIsCurrent = testResult !== undefined && testedConfig === draftConfig;
+  const testIsCurrent = testResult !== undefined && testedConfig === draftConfig &&
+    (testSnapshot ? testSnapshot.typedKey === typedKey : !typedKey);
 
   const handleSave = async () => {
     if (!validation.ok) {
@@ -421,6 +500,9 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
         setDraftModels(models);
       }
 
+      if (models.length === 0) {
+        setFormError('The endpoint returned no model IDs. Enter the exact model ID manually, then test inference. Discovery alone does not verify a connection.');
+      }
       if (models.length > 0 && !form.modelId) {
         update('modelId', models[0] as string);
         setManualModel(false);
@@ -454,6 +536,31 @@ export function ProfileForm({ profile, isNew, onSaved, onCancel, onDeleted }: Pr
           <Icon name="close" size={15} />
         </button>
       </div>
+
+      {isNew ? <section className="notice notice--info" aria-label="Guided connection setup">
+        <strong>Connect your model, then start chatting</strong>
+        <ol>
+          <li>Choose an endpoint type and enter its model API address below — not this page’s address.</li>
+          <li>Enter a model-server key only if that server requires one. Built-in local tools need no provider account.</li>
+          <li>Discover models, or enter the exact model ID manually.</li>
+          <li>Test connection to verify actual inference, then save the profile.</li>
+          <li>Start a conversation. Tools are an optional, separately verified opt-in.</li>
+        </ol>
+        <label className="field">
+          <span className="field__label">Endpoint type (guidance only)</span>
+          <select defaultValue="compatible" onChange={(event) => setNotes([
+            event.target.value === 'kaggle'
+              ? 'Kaggle: paste the current model API URL and key printed by your notebook. Tunnel addresses can change.'
+              : event.target.value === 'local'
+                ? 'Local server: use the address and port printed by your OpenAI-compatible server. Authentication depends on its configuration.'
+                : 'OpenAI-compatible: use your provider’s API base URL and exact model ID; a model credential may be required.',
+          ])}>
+            <option value="compatible">OpenAI-compatible endpoint</option>
+            <option value="kaggle">Kaggle notebook / tunnel</option>
+            <option value="local">Local model server</option>
+          </select>
+        </label>
+      </section> : null}
 
       <div className="field">
         <label className="field__label" htmlFor={ids.name}>
@@ -588,6 +695,87 @@ npm start`}
       </div>
 
       <div className="field">
+        <label className="field__label" htmlFor={ids.catalog}>
+          Known models (catalog)
+        </label>
+        <select
+          id={ids.catalog}
+          value={catalogId}
+          aria-describedby={ids.catalogHint}
+          onChange={(event) => selectCatalogEntry(event.target.value)}
+        >
+          <option value="">(browse the catalog — no selection)</option>
+          {MODEL_CATALOG.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.displayName}
+            </option>
+          ))}
+        </select>
+        <span className="field__hint" id={ids.catalogHint}>
+          The catalog is metadata plus deployment guidance. Selecting an entry fills draft fields
+          only — it does not install, download, start, or switch a model on any server. Only
+          “Discover models” and a real connection test prove what this endpoint serves.
+          {recognizedEntry && recognizedEntry.id !== catalogId
+            ? ` The current model ID is recognized as ${recognizedEntry.displayName}.`
+            : ''}
+        </span>
+        {catalogEntry ? (
+          <div className="notice notice--info" style={{ marginTop: 8 }}>
+            <strong>{catalogEntry.displayName}</strong>
+            {catalogEntry.description}
+            <div className="text-subtle" style={{ marginTop: 6 }}>
+              {catalogEntry.architecture}
+              {catalogEntry.totalParameters ? ` · ${catalogEntry.totalParameters} total` : ''}
+              {catalogEntry.activeParameters ? ` · ${catalogEntry.activeParameters} active per token` : ''}
+              {catalogEntry.contextTokens ? ` · ${catalogEntry.contextTokens.toLocaleString()} token context` : ''}
+              {catalogEntry.license ? ` · ${catalogEntry.license}` : ''}
+            </div>
+            <div style={{ marginTop: 6 }}>{catalogEntry.accessNote}</div>
+            <ul className="result-list" style={{ marginTop: 8 }}>
+              {catalogEntry.deployments.map((deployment) => (
+                <li key={deployment.accelerator} className="result-item">
+                  <div className="result-item__label">
+                    <Badge tone={DEPLOYMENT_TONES[deployment.status]}>
+                      {DEPLOYMENT_STATUS_LABELS[deployment.status]}
+                    </Badge>
+                    <span>{ACCELERATOR_LABELS[deployment.accelerator]}</span>
+                  </div>
+                  <div className="text-subtle">{deployment.runtime}</div>
+                </li>
+              ))}
+            </ul>
+            <div role="status" style={{ marginTop: 6 }}>
+              {describeModelAvailability(catalogEntry, discoveredModels).message}
+            </div>
+            {offerServedId && catalogServedId ? (
+              <div className="row" style={{ marginTop: 8 }}>
+                <button type="button" className="button button--small" onClick={() => { fillServedModelId(catalogServedId); setCatalogNote(null); }}>
+                  Use {catalogServedId}
+                </button>
+              </div>
+            ) : null}
+            {catalogEntry.recommendedParams ? (
+              <div className="row" style={{ marginTop: 8 }}>
+                <button type="button" className="button button--small" onClick={() => applyCatalogParams('general')}>
+                  Apply recommended sampling
+                </button>
+                {catalogEntry.codingMathParams ? (
+                  <button type="button" className="button button--small" onClick={() => applyCatalogParams('coding_math')}>
+                    Apply coding/math variant
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {catalogNote ? (
+              <div className="text-subtle" role="status" style={{ marginTop: 6 }}>
+                {catalogNote}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="field">
         <label className="field__label" htmlFor={ids.model}>
           Model ID
         </label>
@@ -646,7 +834,7 @@ npm start`}
         </span>
       </div>
 
-      <div className="field">
+      <div className="field" hidden={!advanced}>
         <label className="field__label" htmlFor={ids.system}>
           System prompt
         </label>
@@ -689,7 +877,7 @@ npm start`}
         </span>
       </div>
 
-      <div className="field">
+      <div className="field" hidden={!advanced}>
         <label className="field__label" htmlFor={ids.timeout}>
           Request timeout (ms)
         </label>
@@ -797,7 +985,7 @@ npm start`}
           <button type="button" className="button" onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit" className="button button--primary" disabled={saving}>
+          <button type="submit" className="button button--primary" disabled={saving || testing || discovering}>
             {saving ? 'Saving…' : 'Save profile'}
           </button>
         </div>

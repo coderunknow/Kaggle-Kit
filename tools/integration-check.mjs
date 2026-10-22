@@ -232,6 +232,47 @@ async function main() {
       `HTTP ${streamed.status}: ${streamText.slice(0, 200)}`,
     );
 
+    // 7b. vLLM-style reasoning stays a separate channel end to end: the
+    // streamed frames carry delta.reasoning (never merged into content) and
+    // the non-streamed answer carries message.reasoning next to content.
+    const reasoningStream = await post(base, '/api/proxy/chat', {
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'reasoning: hello' }],
+      params: { stream: true, maxTokens: 32 },
+      timeoutMs: 10_000,
+    });
+    const reasoningStreamText = await reasoningStream.text();
+    assert(
+      'the stream forwards vLLM-style reasoning deltas separately from content',
+      reasoningStream.status === 200 &&
+        reasoningStreamText.includes('"reasoning":"mock "') &&
+        reasoningStreamText.includes('"reasoning":"thinking"') &&
+        reasoningStreamText.includes('"content":"This "') &&
+        reasoningStreamText.includes('[DONE]'),
+      `HTTP ${reasoningStream.status}: ${reasoningStreamText.slice(0, 300)}`,
+    );
+
+    const reasoningChat = await post(base, '/api/proxy/chat', {
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'reasoning: hello' }],
+      params: { stream: false, maxTokens: 32 },
+      timeoutMs: 10_000,
+    });
+    const reasoningChatBody = await reasoningChat.json();
+    const reasoningMessage = reasoningChatBody.response?.choices?.[0]?.message ?? {};
+    assert(
+      'the non-streamed answer keeps message.reasoning separate from content',
+      reasoningChat.status === 200 &&
+        reasoningMessage.reasoning === 'mock thinking' &&
+        typeof reasoningMessage.content === 'string' &&
+        !reasoningMessage.content.includes('mock thinking'),
+      JSON.stringify(reasoningChatBody).slice(0, 300),
+    );
+
     // 8. the cancellation of a running stream
     const cancelled = await new Promise((resolve) => {
       const payload = JSON.stringify({

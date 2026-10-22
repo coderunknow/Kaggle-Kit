@@ -90,6 +90,10 @@ export interface ChatCompletionRequestBody {
   top_p?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
+  /** Sampling extensions understood by llama.cpp/vLLM; omitted unless set. */
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
   stream?: boolean;
   reasoning_effort?: string;
   tools?: OpenAIToolDefinition[];

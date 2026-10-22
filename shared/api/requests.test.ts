@@ -62,6 +62,51 @@ describe('buildChatCompletionBody', () => {
     expect(body.presence_penalty).toBe(0.1);
   });
 
+  it('omits the sampling extensions until a profile configures them', () => {
+    const { body, omitted } = buildChatCompletionBody({
+      model: 'm',
+      messages: [{ role: 'user', content: 'x' }],
+      params: { maxTokens: 16, temperature: 0, topP: 1, stream: false },
+      capabilities: noCapabilities,
+    });
+
+    expect(body.top_k).toBeUndefined();
+    expect(body.min_p).toBeUndefined();
+    expect(body.repetition_penalty).toBeUndefined();
+    expect(omitted).toContain('top_k');
+    expect(omitted).toContain('min_p');
+    expect(omitted).toContain('repetition_penalty');
+  });
+
+  it('sends configured sampling extensions with their wire names (Raon baseline)', () => {
+    const { body, omitted } = buildChatCompletionBody({
+      model: 'Raon-1-mini-preview',
+      messages: [{ role: 'user', content: 'x' }],
+      params: {
+        maxTokens: 16,
+        temperature: 1.0,
+        topP: 0.95,
+        topK: 20,
+        minP: 0.0,
+        repetitionPenalty: 1.0,
+        frequencyPenalty: 0,
+        presencePenalty: 1.5,
+        stream: false,
+      },
+      capabilities: noCapabilities,
+    });
+
+    expect(body.top_k).toBe(20);
+    // 0 is a real configured value for min_p/repetition_penalty, not "unset".
+    expect(body.min_p).toBe(0);
+    expect(body.repetition_penalty).toBe(1.0);
+    expect(body.frequency_penalty).toBe(0);
+    expect(body.presence_penalty).toBe(1.5);
+    expect(omitted).not.toContain('top_k');
+    expect(omitted).not.toContain('min_p');
+    expect(omitted).not.toContain('repetition_penalty');
+  });
+
   it('never sends stream:true when streaming was not verified', () => {
     const { body, omitted } = buildChatCompletionBody({
       model: 'm',

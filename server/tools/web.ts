@@ -188,7 +188,41 @@ async function requestPinned(
   });
 }
 
-export async function braveSearch(query: string, apiKey: string, maxResults = 5, lookup?: LookupAll, signal?: AbortSignal): Promise<{ provider: string; query: string; results: Array<{ title: string; url: string; description: string; age?: string }> }> {
+/** Bound the entire operation, including DNS, redirects and a trickling body.
+ * Socket inactivity timeouts alone do not bound any of those lifetimes.
+ */
+export async function withWebDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = WEB_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: () => void = () => undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    const stop = (message: string) => {
+      controller.abort();
+      reject(new WebToolError(message, 'timeout'));
+    };
+    onAbort = () => stop('The public web request was cancelled.');
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => stop('The public web operation exceeded its total time limit.'), timeoutMs);
+  });
+  try {
+    if (signal?.aborted) return await interrupted;
+    return await Promise.race([interrupted, operation(controller.signal)]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+export function braveSearch(query: string, apiKey: string, maxResults = 5, lookup?: LookupAll, signal?: AbortSignal) {
+  return withWebDeadline((boundedSignal) => braveSearchWithinDeadline(query, apiKey, maxResults, lookup, boundedSignal), signal);
+}
+
+async function braveSearchWithinDeadline(query: string, apiKey: string, maxResults = 5, lookup?: LookupAll, signal?: AbortSignal): Promise<{ provider: string; query: string; results: Array<{ title: string; url: string; description: string; age?: string }> }> {
   if (!apiKey.trim()) throw new WebToolError('Brave Search is not configured: add a server-side API key in Tools settings.', 'provider');
   if (query.trim().length < 2 || query.length > 400) throw new WebToolError('Search query must be 2–400 characters.', 'invalid');
   const url = new URL(BRAVE_ENDPOINT);
@@ -208,8 +242,13 @@ export async function braveSearch(query: string, apiKey: string, maxResults = 5,
   if (response.contentType !== 'application/json') throw new WebToolError('Brave Search returned an unexpected content type.', 'response');
   let payload: unknown;
   try { payload = JSON.parse(response.body.toString('utf8')); } catch { throw new WebToolError('Brave Search returned malformed JSON.', 'response'); }
+  return parseBraveResults(payload, query);
+}
+
+export function parseBraveResults(payload: unknown, query: string) {
   const web = payload && typeof payload === 'object' ? (payload as { web?: { results?: unknown[] } }).web : undefined;
-  const results = (web?.results ?? []).flatMap((raw) => {
+  if (!web || !Array.isArray(web.results)) throw new WebToolError('Brave Search returned an unexpected results format.', 'response');
+  const results = web.results.flatMap((raw) => {
     if (!raw || typeof raw !== 'object') return [];
     const item = raw as Record<string, unknown>;
     const link = typeof item.url === 'string' ? validCitationUrl(item.url) : null;
@@ -237,7 +276,11 @@ export async function validatePublicRedirect(current: URL, location: string, loo
   return next;
 }
 
-export async function retrievePublicPage(rawUrl: string, lookup?: LookupAll, signal?: AbortSignal): Promise<{ text: string; citation: SourceCitation; contentType: string }> {
+export function retrievePublicPage(rawUrl: string, lookup?: LookupAll, signal?: AbortSignal) {
+  return withWebDeadline((boundedSignal) => retrievePublicPageWithinDeadline(rawUrl, lookup, boundedSignal), signal);
+}
+
+async function retrievePublicPageWithinDeadline(rawUrl: string, lookup?: LookupAll, signal?: AbortSignal): Promise<{ text: string; citation: SourceCitation; contentType: string }> {
   let current = await assertPublicUrl(rawUrl, lookup);
   let response: PinnedResponse | undefined;
   for (let hop = 0; hop <= WEB_MAX_REDIRECTS; hop += 1) {

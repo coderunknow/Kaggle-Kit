@@ -156,6 +156,63 @@ describe('ToolCallAccumulator', () => {
     expect(result.overflow).toBe(true);
   });
 
+  it('reads reasoning from the vLLM-style delta.reasoning field without duplicating it into content', () => {
+    const delta = extractDelta({
+      data: JSON.stringify({
+        choices: [{ delta: { reasoning: 'thinking…', content: 'answer' }, finish_reason: null }],
+      }),
+    });
+    expect(delta.reasoning).toBe('thinking…');
+    expect(delta.content).toBe('answer');
+
+    // When both spellings are present the canonical llama.cpp field wins and
+    // the text is reported once, never concatenated from the two fields.
+    const both = extractDelta({
+      data: JSON.stringify({
+        choices: [{ delta: { reasoning: 'duplicate', reasoning_content: 'canonical', content: null } }],
+      }),
+    });
+    expect(both.reasoning).toBe('canonical');
+    expect(both.content).toBeUndefined();
+  });
+
+  it('flags a conflicting tool-call id or name on one index as overflow instead of merging two calls', () => {
+    const accumulator = new ToolCallAccumulator();
+    accumulator.add(deltaEvent({
+      choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-1', function: { name: 'files_list', arguments: '{}' } }] } }],
+    }));
+    accumulator.add(deltaEvent({
+      choices: [{
+        delta: { tool_calls: [{ index: 0, id: 'call-2', function: { name: 'code_execute', arguments: '{}' } }] },
+        finish_reason: 'tool_calls',
+      }],
+    }));
+    const assembled = accumulator.finish();
+    expect(assembled.overflow).toBe(true);
+    expect(assembled.calls).toHaveLength(0);
+  });
+
+  it('an abort wakes a read that is still waiting for the next chunk', async () => {
+    const hanging = new ReadableStream<Uint8Array>({
+      start() {
+        // Never enqueue and never close: only cancellation can end this.
+      },
+    });
+    const controller = new AbortController();
+    const collected = (async () => {
+      const events = [];
+      for await (const event of parseSseStream(hanging, controller.signal)) events.push(event);
+      return events;
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    const outcome = await Promise.race([
+      collected.then(() => 'ended' as const),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+    expect(outcome).toBe('ended');
+  });
+
   it('survives malformed events without throwing', () => {
     const accumulator = new ToolCallAccumulator();
     accumulator.add(extractDelta({ data: 'not json' }));

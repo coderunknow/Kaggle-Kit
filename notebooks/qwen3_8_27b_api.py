@@ -46,6 +46,16 @@ Environment (Kaggle):
 
 * Accelerator: *GPU T4 x2* (Settings -> Accelerator -> GPU T4 x2)
 * Internet: on
+
+Two model deployments share this cell (dev7): Qwen3.8-27B (the default,
+behaviour unchanged) and Raon-1 mini preview, selected with
+``KAGGLE_KIT_MODEL=raon`` or ``config_for_model("raon")``. Raon keeps its own
+root directory, its own pinned KRAFTON ``llama.cpp`` branch build (the
+``raon1`` GGUF architecture is not assumed to exist in upstream prebuilt
+binaries), its own gated-download token handling, and its own startup
+sampling defaults. TPU deployments live in ``notebooks/tpu_deployment.py``:
+a GGUF/CUDA path must never be presented as a TPU path, and no path in this
+repository silently falls back to CPU inference.
 """
 
 from __future__ import annotations
@@ -104,6 +114,33 @@ class DeploymentConfig:
     # llama.cpp
     llama_cpp_tags: Tuple[str, ...] = ("b11719", "b11718", "b11717")
     cuda_version: str = "12.8"
+    # Where the server binary comes from: "release" downloads the pinned
+    # upstream CUDA builds above; "krafton-branch" builds the pinned commit
+    # of KRAFTON's llama.cpp branch from source (required for Raon, whose
+    # raon1 architecture is not assumed to exist in upstream binaries).
+    llama_cpp_source: str = "release"
+
+    # Identity / presentation (defaults preserve the verified Qwen output).
+    deployment_name: str = "Qwen"
+    status_title: str = "QWEN API STATUS"
+    profile_name: str = "Kaggle T4 x2"
+    log_prefix: str = "[qwen]"
+    # Served model alias ("--alias") when the deployment defines one.
+    model_alias: Optional[str] = None
+    # Model-specific *startup* defaults as (flag, value) pairs. They are
+    # passed only when the installed build lists the flag, and they are
+    # reported in applied/dropped exactly like every other option.
+    extra_server_args: Tuple[Tuple[str, Optional[str]], ...] = ()
+
+    # Gated-weight downloads. The token is read from the environment (or an
+    # existing huggingface_hub login) at download time only; it is never a
+    # config value stored in this file, never an argv element and never a
+    # session-wide header (it must reach huggingface.co and nothing else).
+    requires_hf_token: bool = False
+    hf_token_env: str = "HF_TOKEN"
+    # Re-select the quantization from detected GPU memory before downloading
+    # (Raon only; the verified Qwen file choice never changes implicitly).
+    auto_select_quantization: bool = False
 
     # Hardware
     mode: str = "t4x2"  # "t4x2" (verified) or "single"
@@ -248,6 +285,191 @@ CLOUDFLARED_BINARY = "cloudflared-linux-amd64"
 CLOUDFLARED_SHA256 = "35fbdd2beb378436c7da377d7358cea8e33f9c94a6705d1d8036bf9b0d6d8005"
 
 
+# --------------------------------------------------------------------------
+# Raon-1 mini preview (Kaggle GPU T4 x2)
+# --------------------------------------------------------------------------
+#
+# Facts below were read from the official sources on 2026-10-22, not assumed:
+# * model card: github.com/krafton-ai/Raon-1-mini-preview (30B-A4B MoE,
+#   28.8B total / 4.3B active, Apache-2.0, thinking on by default);
+# * GGUF repo metadata API (huggingface.co/api/models/
+#   KRAFTON/Raon-1-mini-preview-gguf[/tree/main]): repository revision, file
+#   sizes and the Hugging Face LFS object ids (which are the files' SHA-256
+#   digests) used as the pinned checksums here;
+# * runtime: github.com/krafton-ai/llama.cpp branch ``raon-1-mini-preview``
+#   (branch head pinned below; upstream prebuilt binaries are not assumed
+#   to understand the ``raon1`` GGUF architecture).
+
+RAON_GGUF_REPO = "KRAFTON/Raon-1-mini-preview-gguf"
+RAON_GGUF_REVISION = "fe24f24edd834355368b20353a4d499d2752b1f3"
+RAON_SERVED_MODEL_ID = "Raon-1-mini-preview"
+
+KRAFTON_LLAMA_CPP_REPO = "krafton-ai/llama.cpp"
+KRAFTON_LLAMA_CPP_REF = "fb895662d25868756a19253ca5e0688f99b18994"
+
+# name -> (file, exact bytes, sha256). Sizes/digests: the LFS metadata of the
+# official GGUF repository at RAON_GGUF_REVISION. The DFlash draft file is
+# deliberately not part of the baseline deployment: ordinary inference ships
+# first and speculative decoding is only added after live verification.
+RAON_QUANTIZATIONS: Dict[str, Tuple[str, int, str]] = {
+    "Q8_0": ("raon-1-mini-preview-Q8_0.gguf", 30_693_556_000, "c09eabcdc8336b123246de0e3189f39388a98cdf6da66ab6c0a752f713f4d003"),
+    "Q6_K": ("raon-1-mini-preview-Q6_K.gguf", 25_839_462_144, "e911feace2244fe26a2b7478ca785494b4b0af8aedefac07ef06ef69c3f5b6a3"),
+    "Q5_K_M": ("raon-1-mini-preview-Q5_K_M.gguf", 22_183_765_504, "77580fd24505cf441ef0ed3e1a77f09014c796feb147455ea03de35ba563b6ca"),
+    "Q4_K_M": ("raon-1-mini-preview-Q4_K_M.gguf", 19_686_434_304, "bedbd8a35de6242c686bbbcdc6e8caac1920423e1dd320616ba14b1a04fe1705"),
+    "IQ4_XS": ("raon-1-mini-preview-IQ4_XS.gguf", 16_071_801_344, "85570a704f9adc0df8b5b64c4e74ce956a5519e4868636d5daa00a84eb30696f"),
+}
+
+# Quality order for automatic selection, best first.
+RAON_QUANTIZATION_PREFERENCE: Tuple[str, ...] = ("Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "IQ4_XS")
+
+# A T4 advertises 16 GB; treat 15 GiB as usable for planning when the real
+# figure cannot be read from nvidia-smi.
+T4_USABLE_BYTES = 15 * 1024 ** 3
+
+
+def estimate_per_device_bytes(file_bytes: int, gpu_count: int = 2, imbalance: float = 1.10) -> int:
+    """
+    Conservative per-device weight share for a layer split.
+
+    ``--split-mode layer --tensor-split 1,1`` does not hand every device an
+    exact half (layer sizes differ, the first dense layer is large), so the
+    equal share is inflated by an imbalance factor instead of planning with
+    the aggregate VRAM as if it were one pool.
+    """
+    if gpu_count < 1:
+        raise ValueError("gpu_count must be at least 1")
+    share = file_bytes / gpu_count * imbalance
+    return int(share) + (1 if share != int(share) else 0)
+
+
+def select_raon_quantization(per_gpu_usable_bytes: int, gpu_count: int = 2) -> str:
+    """
+    Choose the best Raon quantization that plausibly fits every device.
+
+    Rule (kept explicit so it can be argued with): the conservative
+    per-device weight share may use at most 70% of a device, leaving at
+    least 30% for the KV cache (small for Raon: only its 7 MLA layers keep
+    one), compute buffers, the CUDA context and fragmentation. On a T4 that
+    selects Q4_K_M — also the quantization of KRAFTON's documented
+    examples — and not a larger file that merely fits the aggregate VRAM.
+    """
+    if per_gpu_usable_bytes <= 0:
+        raise RuntimeError("No usable GPU memory figure is available for quantization selection.")
+    budget = int(per_gpu_usable_bytes * 0.70)
+    for name in RAON_QUANTIZATION_PREFERENCE:
+        _file, size, _digest = RAON_QUANTIZATIONS[name]
+        if estimate_per_device_bytes(size, gpu_count) <= budget:
+            return name
+    raise RuntimeError(
+        "No published Raon GGUF quantization fits this GPU memory budget "
+        f"({per_gpu_usable_bytes / 1e9:.1f} GB/device, {gpu_count} device(s)) "
+        "with the required headroom. Use a larger accelerator; CPU offload "
+        "is never substituted silently."
+    )
+
+
+def _parse_gpu_memory_mib(text: str) -> List[int]:
+    """Parse ``nvidia-smi --query-gpu=memory.total`` output (MiB per line)."""
+    values: List[int] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.isdigit():
+            values.append(int(stripped) * 1024 * 1024)
+    return values
+
+
+def gpu_memory_bytes() -> List[int]:
+    """Total memory of every detected GPU in bytes; empty when unreadable."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:  # noqa: BLE001 - planning falls back to the T4 figure
+        return []
+    if result.returncode != 0:
+        return []
+    return _parse_gpu_memory_mib(result.stdout)
+
+
+def apply_raon_quantization(config: "DeploymentConfig", quantization: str) -> "DeploymentConfig":
+    """Point a config at one pinned Raon quantization (file, size, digest)."""
+    try:
+        model_file, size, digest = RAON_QUANTIZATIONS[quantization]
+    except KeyError:
+        raise ValueError(
+            f"Unknown Raon quantization {quantization!r}; published options: "
+            f"{', '.join(RAON_QUANTIZATION_PREFERENCE)}."
+        ) from None
+    config.model_file = model_file
+    config.min_model_bytes = size
+    config.model_sha256 = digest
+    return config
+
+
+# KRAFTON model-card sampling baseline as *server startup* defaults. The
+# chat client sends its per-profile values per request (see the model
+# catalog); these are the fallback for clients that send none, and they are
+# only passed when the built binary lists the flags.
+RAON_STARTUP_SAMPLING_ARGS: Tuple[Tuple[str, Optional[str]], ...] = (
+    ("--temp", "1.0"),
+    ("--top-p", "0.95"),
+    ("--top-k", "20"),
+    ("--min-p", "0.0"),
+    ("--repeat-penalty", "1.0"),
+    ("--frequency-penalty", "0.0"),
+    ("--presence-penalty", "1.5"),
+    ("--reasoning", "on"),
+    ("--chat-template-kwargs", '{"enable_thinking": true, "truncate_history_thinking": false}'),
+)
+
+
+def raon_deployment_config(
+    quantization: Optional[str] = None,
+    per_gpu_usable_bytes: int = T4_USABLE_BYTES,
+) -> "DeploymentConfig":
+    """
+    The Raon-1 mini preview deployment for Kaggle GPU T4 x2.
+
+    Separate from Qwen where the two genuinely differ: own root directory
+    (its own server state/key/runtime bundle), gated pinned GGUF download,
+    KRAFTON llama.cpp branch build, served alias, MoE-safe defaults, and no
+    Qwen MTP flags (Raon's DFlash speculative path stays off until it is
+    live-verified). The context stays at the application's documented 8192
+    even though the model natively supports 262144.
+    """
+    chosen = quantization or select_raon_quantization(per_gpu_usable_bytes, gpu_count=2)
+    config = DeploymentConfig(
+        repo=RAON_GGUF_REPO,
+        model_revision=RAON_GGUF_REVISION,
+        llama_cpp_source="krafton-branch",
+        deployment_name="Raon",
+        status_title="RAON API STATUS",
+        profile_name="Kaggle T4 x2 - Raon",
+        log_prefix="[raon]",
+        model_alias=RAON_SERVED_MODEL_ID,
+        extra_server_args=RAON_STARTUP_SAMPLING_ARGS,
+        requires_hf_token=True,
+        auto_select_quantization=quantization is None,
+        enable_mtp=False,
+        root=Path("/kaggle/working/raon1_api"),
+    )
+    return apply_raon_quantization(config, chosen)
+
+
+def config_for_model(name: str) -> "DeploymentConfig":
+    """Resolve ``KAGGLE_KIT_MODEL``/a cell argument to a deployment config."""
+    normalized = (name or "qwen").strip().lower()
+    if normalized in ("qwen", "qwen3.8-27b", "qwen3.8", ""):
+        return DeploymentConfig()
+    if normalized in ("raon", "raon-1", "raon-1-mini-preview", "raon1"):
+        return raon_deployment_config()
+    raise ValueError(
+        f"Unknown model deployment {name!r}; available: 'qwen' (default) and 'raon'. "
+        "TPU deployments are separate (notebooks/tpu_deployment.py)."
+    )
+
+
 def sha256_of(path: Path) -> str:
     """The SHA-256 digest of a file, read in chunks."""
     digest = hashlib.sha256()
@@ -276,6 +498,7 @@ def download_resumable(
     verify_tar: bool = False,
     attempts: int = 10,
     expected_sha256: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> Path:
     """
     Download ``url`` to ``destination`` and continue after an interruption.
@@ -284,6 +507,11 @@ def download_resumable(
     ``Range`` header so the server only sends the missing bytes. The file is
     renamed into place only after it is complete, so a half written download
     is never mistaken for a finished one.
+
+    ``headers`` are per-download only (for example a Hugging Face bearer
+    token for gated weights): they are attached to this URL's requests and
+    never stored on the shared session, so a credential for one host can
+    never leak to another.
     """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -307,12 +535,14 @@ def download_resumable(
 
     for attempt in range(1, attempts + 1):
         offset = part.stat().st_size if part.exists() else 0
-        headers = {"Range": f"bytes={offset}-"} if offset else {}
+        request_headers: Dict[str, str] = dict(headers or {})
+        if offset:
+            request_headers["Range"] = f"bytes={offset}-"
 
         try:
             with session.get(
                 url,
-                headers=headers,
+                headers=request_headers,
                 stream=True,
                 allow_redirects=True,
                 timeout=(30, 120),
@@ -568,6 +798,14 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
     The build is downloaded from direct release asset URLs; the GitHub release
     *list* API is never called.
     """
+    if config.llama_cpp_source == "krafton-branch":
+        # Raon must never silently reuse an upstream prebuilt binary: the
+        # raon1 GGUF architecture comes from KRAFTON's branch, so only a
+        # binary from that pinned source build is acceptable here.
+        return build_krafton_server_binary(session, config)
+    if config.llama_cpp_source != "release":
+        raise RuntimeError(f"Unknown llama.cpp source {config.llama_cpp_source!r}.")
+
     existing = find_working_server(config.bin_root)
     if existing:
         return existing
@@ -642,6 +880,116 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
     )
 
 
+
+def krafton_llama_archive_url(ref: str = KRAFTON_LLAMA_CPP_REF) -> str:
+    """Direct source-archive URL of the pinned KRAFTON llama.cpp commit."""
+    return f"https://codeload.github.com/{KRAFTON_LLAMA_CPP_REPO}/tar.gz/{ref}"
+
+
+def krafton_build_commands(source_dir: Path, build_dir: Path) -> List[List[str]]:
+    """
+    The exact CUDA source-build commands for the KRAFTON branch.
+
+    Kept pure so tests can assert them without a GPU or a compiler. Only
+    ``llama-server`` is built; no shell is involved.
+    """
+    return [
+        [
+            "cmake", "-S", str(source_dir), "-B", str(build_dir),
+            "-DGGML_CUDA=ON", "-DCMAKE_BUILD_TYPE=Release",
+        ],
+        [
+            "cmake", "--build", str(build_dir), "--config", "Release",
+            "-j", "--target", "llama-server",
+        ],
+    ]
+
+
+def build_krafton_server_binary(
+    session: requests.Session,
+    config: DeploymentConfig,
+    runner=None,
+) -> Path:
+    """
+    Build ``llama-server`` from the pinned KRAFTON branch commit.
+
+    The source archive is fetched from the direct codeload URL (never the
+    GitHub release list API) and extracted with the same safe extractor as
+    every other archive. No digest is pinned for the archive because GitHub
+    does not publish one for codeload tarballs; inventing one would be
+    worse. The pin is the exact commit, the transport is HTTPS, and the
+    result still has to pass ``--version`` plus the real inference smoke
+    test before anything is reported as running. A previously built binary
+    of the same pinned commit is reused.
+    """
+    run = runner or subprocess.run
+    ref = KRAFTON_LLAMA_CPP_REF
+    build_root = config.bin_root / f"krafton-{ref[:12]}"
+    build_dir = build_root / "build"
+    candidate = build_dir / "bin" / "llama-server"
+
+    def _working(binary: Path) -> bool:
+        if not binary.is_file():
+            return False
+        binary.chmod(0o755)
+        try:
+            check = run(
+                [str(binary), "--version"],
+                capture_output=True, text=True, timeout=60,
+                env=library_env(config.bin_root),
+            )
+        except Exception:  # noqa: BLE001
+            return False
+        return check.returncode == 0
+
+    if _working(candidate):
+        log(f"Reusing the KRAFTON-branch llama-server: {candidate}")
+        return candidate
+
+    if shutil.which("cmake") is None:
+        raise RuntimeError(
+            "Building the KRAFTON llama.cpp branch needs cmake, which was not "
+            "found in this environment. Install cmake (Kaggle images ship it) "
+            "and rerun the cell; no prebuilt binary is substituted."
+        )
+
+    build_root.mkdir(parents=True, exist_ok=True)
+    archive = download_resumable(
+        session,
+        krafton_llama_archive_url(ref),
+        build_root / f"llama.cpp-{ref}.tar.gz",
+        min_bytes=1_000_000,
+        verify_tar=True,
+        attempts=config.download_attempts,
+    )
+    log(f"Extracting {archive.name}...")
+    extract_archive(archive, build_root)
+    archive.unlink(missing_ok=True)
+
+    sources = sorted(path for path in build_root.iterdir() if path.is_dir() and path.name != "build")
+    if not sources:
+        raise RuntimeError("The KRAFTON llama.cpp source archive contained no source directory.")
+    source_dir = sources[0]
+
+    log(f"Building llama-server from the KRAFTON branch at {ref} (CUDA)...")
+    for command in krafton_build_commands(source_dir, build_dir):
+        result = run(command, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            tail = ((result.stderr or "") + (result.stdout or ""))[-4000:]
+            raise RuntimeError(
+                "The KRAFTON llama.cpp build failed; no other binary was "
+                f"substituted. Build output tail:\n{tail}"
+            )
+
+    if not _working(candidate):
+        raise RuntimeError(
+            "The KRAFTON-branch build finished but llama-server does not start. "
+            "Check the build output above and rerun the cell."
+        )
+    log(f"KRAFTON-branch llama.cpp is ready: {candidate}")
+    return candidate
+
+
 @dataclass
 class ServerLaunch:
     """
@@ -696,6 +1044,8 @@ def build_server_command(
         "flash_attn": False,
         "jinja": False,
         "api_key_source": None,
+        "alias": None,
+        "extra_args": [],
     }
 
     command = [
@@ -729,6 +1079,28 @@ def build_server_command(
             "start an unauthenticated server that may become publicly "
             "reachable through the tunnel."
         )
+
+    # A served alias makes the model ID deterministic for the chat profile
+    # (Raon). Qwen sets none and keeps the server-reported ID.
+    if config.model_alias:
+        if "--alias" in supported:
+            command += ["--alias", config.model_alias]
+            applied["alias"] = config.model_alias
+        else:
+            dropped.append("alias")
+            log("This build has no --alias option; the server-reported model ID is used.")
+
+    # Model-specific startup defaults (Raon sampling baseline). Each flag is
+    # passed only when this build lists it; unknown flags are reported as
+    # dropped, never sent blind and never claimed as applied.
+    for flag, value in config.extra_server_args:
+        if flag in supported:
+            command.append(flag)
+            if value is not None:
+                command.append(str(value))
+            applied["extra_args"].append(flag if value is None else f"{flag}={value}")
+        else:
+            dropped.append(f"extra:{flag}")
 
     command += [
         "--n-gpu-layers",
@@ -909,21 +1281,74 @@ def find_saved_model(config: DeploymentConfig) -> Optional[Path]:
     return None
 
 
+def resolve_hf_token(config: DeploymentConfig, environ: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """
+    Resolve the Hugging Face token for a gated download, if one exists.
+
+    Order: the configured environment variable (Kaggle Secrets expose values
+    as environment variables in the notebook), then an existing
+    ``huggingface_hub`` login. The value is only ever returned to the
+    download call sites; it is never logged, written to disk by this script,
+    put into a URL, or placed on the shared session (which also talks to
+    GitHub, Cloudflare and localhost).
+    """
+    env = os.environ if environ is None else environ
+    candidate = (env.get(config.hf_token_env) or "").strip()
+    if candidate:
+        return candidate
+    try:
+        from huggingface_hub import get_token  # type: ignore
+
+        cached = get_token()
+    except Exception:  # noqa: BLE001 - no hub login is a normal situation
+        cached = None
+    return cached.strip() if isinstance(cached, str) and cached.strip() else None
+
+
+def require_hf_token(config: DeploymentConfig, environ: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """
+    Resolve the token, failing explicitly when gated weights need one.
+
+    A gated repository without authorization is an actionable operator
+    error, never a silent success and never a reason to substitute another
+    model or an ungated mirror.
+    """
+    token = resolve_hf_token(config, environ)
+    if config.requires_hf_token and not token:
+        raise RuntimeError(
+            f"The model repository {config.repo} is access-gated and no Hugging Face "
+            "token is available. Request access on the model page with your own "
+            "account, then make a token available without writing it into the "
+            f"notebook: set the {config.hf_token_env} environment variable (for "
+            "example through Kaggle Secrets) or run `hf auth login`, and rerun "
+            "the cell. Nothing was downloaded and no server was started."
+        )
+    return token
+
+
 def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
     """Download the GGUF model, resuming an interrupted download."""
     config.model_dir.mkdir(parents=True, exist_ok=True)
     destination = config.model_dir / config.model_file
+    # Resolved before any network call so a gated repository without
+    # authorization fails immediately and explicitly (outside the fallback
+    # handling below, which must not mask it as a generic download failure).
+    hf_token = require_hf_token(config)
 
     try:
         from huggingface_hub import hf_hub_download  # type: ignore
 
         log("Downloading the model from Hugging Face...")
+        hub_kwargs: Dict[str, Any] = {}
+        if hf_token:
+            hub_kwargs["token"] = hf_token
         path = Path(
             hf_hub_download(
                 repo_id=config.repo,
                 filename=config.model_file,
                 local_dir=str(config.model_dir),
                 revision=config.model_revision,
+                **hub_kwargs,
             )
         )
         if path.exists() and path.stat().st_size >= config.min_model_bytes:
@@ -952,6 +1377,9 @@ def download_model(session: requests.Session, config: DeploymentConfig) -> Path:
         verify_tar=False,
         attempts=config.download_attempts,
         expected_sha256=config.model_sha256,
+        # The bearer token travels in this request's header to
+        # huggingface.co only; it is never part of the URL or the session.
+        headers={"Authorization": f"Bearer {hf_token}"} if hf_token else None,
     )
     if not _looks_like_gguf(path):
         raise RuntimeError(f"The downloaded file {path} is not a GGUF file.")
@@ -1088,7 +1516,7 @@ def deployment_fingerprint(
     had to fall back to a smaller context is still the server of this
     configuration and is reused.
     """
-    payload = {
+    payload: Dict[str, Any] = {
         "model_file": str(model_path),
         "binary": str(binary),
         "host": config.host,
@@ -1100,6 +1528,27 @@ def deployment_fingerprint(
         "split_mode": config.split_mode,
         "tensor_split": config.tensor_split,
     }
+    # Non-default deployments (Raon) also bind their identity, revision,
+    # alias and startup extras: changing any of them restarts that server.
+    # The default Qwen payload above is byte-identical to earlier releases,
+    # so a healthy Qwen server from before this change is still reused with
+    # its existing key instead of being restarted by the upgrade itself.
+    if (
+        config.deployment_name != "Qwen"
+        or config.model_alias
+        or config.extra_server_args
+        or config.llama_cpp_source != "release"
+    ):
+        payload.update(
+            {
+                "deployment_name": config.deployment_name,
+                "model_repo": config.repo,
+                "model_revision": config.model_revision,
+                "model_alias": config.model_alias,
+                "extra_server_args": [list(pair) for pair in config.extra_server_args],
+                "llama_cpp_source": config.llama_cpp_source,
+            }
+        )
     blob = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 
@@ -1691,7 +2140,13 @@ def write_runtime_bundle(
 
     public = public_status or {}
     runtime = {
+        "deployment": config.deployment_name,
         "model": model_id,
+        "model_repo": config.repo,
+        "model_revision": config.model_revision,
+        "model_alias": applied.get("alias"),
+        "startup_extra_args": list(applied.get("extra_args") or []),
+        "llama_cpp_source": config.llama_cpp_source,
         "model_file": str(model_path),
         "model_bytes": model_path.stat().st_size if model_path.exists() else None,
         "context_size": applied.get("ctx"),
@@ -1720,13 +2175,16 @@ def write_runtime_bundle(
             "The MTP draft head is enabled with --spec-type/--spec-draft-n-max. "
             "The start-up test proves that the server answers; it does not measure "
             "the effect of the speculative decoding."
+            if applied.get("mtp")
+            else "Speculative decoding is not enabled for this deployment. "
+            "The start-up test proves that the server answers a real chat completion."
         ),
     }
     runtime_path = config.root / "runtime.json"
     runtime_path.write_text(json.dumps(runtime, indent=2) + "\n", encoding="utf-8")
 
     profile = {
-        "name": "Kaggle T4 x2",
+        "name": config.profile_name,
         "baseUrl": f"{public_url}/v1" if public_url else config.local_api_url,
         "model": model_id,
         "note": "The API key is not part of this file; paste it into the chat interface.",
@@ -1752,12 +2210,27 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
     start is never touched.
     """
     config = config or DeploymentConfig()
+    global _LOG_PREFIX
+    _LOG_PREFIX = config.log_prefix
     for directory in (config.root, config.model_dir, config.bin_root):
         directory.mkdir(parents=True, exist_ok=True)
 
     session = build_session()
 
     check_gpus(config)
+
+    if config.auto_select_quantization:
+        # Re-derive the quantization from the memory this session really
+        # has, before anything is downloaded. The choice (and its rule) is
+        # logged; an explicit operator choice disables this entirely.
+        memories = gpu_memory_bytes()
+        usable = min(memories) if memories else T4_USABLE_BYTES
+        chosen = select_raon_quantization(usable, gpu_count=max(1, len(memories) or config.required_gpus))
+        apply_raon_quantization(config, chosen)
+        log(
+            f"Selected Raon quantization {chosen} for {usable / 1e9:.1f} GB/device "
+            "(weights share capped at 70% of a device; see select_raon_quantization)."
+        )
 
     binary = get_server_binary(session, config)
 
@@ -1879,9 +2352,11 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
     public_streaming = public_status.get("streaming_supported")
 
     print("\n" + "=" * 60)
-    print("QWEN API STATUS")
+    print(config.status_title)
     print("=" * 60)
     print(f"Model:            {model_id}")
+    if applied.get("extra_args"):
+        print(f"Startup defaults: {', '.join(applied['extra_args'])}")
     print(f"Model file:       {model_path}")
     print(f"Context size:     {applied.get('ctx')}")
     if applied.get("reasoning"):
@@ -1950,7 +2425,10 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     try:
-        main()
+        # Default stays the verified Qwen deployment. Set
+        # KAGGLE_KIT_MODEL=raon in the notebook environment (or call
+        # main(raon_deployment_config())) for the Raon T4 x2 deployment.
+        main(config_for_model(os.environ.get("KAGGLE_KIT_MODEL", "qwen")))
     except Exception as error:  # noqa: BLE001
         fail(f"{type(error).__name__}: {error}")
         sys.exit(1)

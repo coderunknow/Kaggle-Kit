@@ -1508,3 +1508,296 @@ each behaviour was re-implemented against the current `main` and re-tested.
 * Not verified here: real-model behaviour, the digest mechanism against the
   real Hugging Face host (unreachable from this environment; covered by
   fixtures), and browser e2e (CI job covers it).
+
+## 2026-10-21 — dev7 partial candidate: guided setup, reviewed core grant and bounded web lifetime
+
+**Baseline.** Complete AGENTS.md and both historical logs read before edits.
+Live main/default branch verified at `3b5cec8ebeda2f985f27f65249d43c34f19d59a9`,
+version `0.1.0-dev6`; tags/releases dev1–dev6, no dev7. Existing bound branch
+`arena/4327fa8e-kaggle-kit` starts at that commit. Main CI 39594402934 green.
+PR #15 remains separate/open (nightly workflow); no workflows were changed.
+
+**Settled user intent.** Easier onboarding, Basic/Advanced, explicitly enabled
+keyless core tools; genuine keyless search only with verified source/policy;
+browser Python only if safety and real lifecycle integration can be demonstrated;
+no host fallback, preserved probes/permissions/approvals/storage, append-only
+history, tested dev7 branch and open PR, no tag, merge or release publication.
+
+**Implemented in `d80a2e3829b8f17e1e37e5cfe71a464fa2d55fec`.** Guided ordered
+connection help with endpoint-type guidance; no guessed model or connected state;
+empty discovery guidance, Start chatting on a verified active connection;
+in-memory Basic/Advanced views preserving mounted fields and existing data;
+explicit reviewed calculator/conversion/file/diagnostics/page-open grant with
+Save and native-probe gates unchanged. Narrowing presets intersect the existing
+allowlist, never grant HTTP/MCP/code/search, change budgets, persist tool history
+or widen conversation authority. No new application dependency or storage format.
+Advanced prompt/timeout and integrations remain; inference/data/preferences tabs
+stay available even in Basic.
+
+**Confirmed defects.** Typed credential changes left a green editor test because
+only non-secret configuration was compared (new regression fails with the old
+expression). Web socket inactivity timers left DNS/total response duration
+unbounded (whole-operation 12s deadline/cancellation plus DNS-stall tests now).
+Malformed Brave result containers became an empty success or incidental TypeError
+(explicit array validation, empty-result and safe-URL fixtures now). Already
+cancelled Docker requests could spawn the CLI (early rejection; regression fails
+without guard). New browser mode-switch E2E found author CSS overriding hidden;
+explicit hidden rule fixes it. A suspected old-key fingerprint ordering issue
+was rejected: presence-only fingerprint has no difference for two nonempty keys;
+no speculative rewrite retained. Review/test coverage is not an exhaustive proof
+that all repository code or external environments are bug-free.
+
+**Search mechanism: none selected; incomplete.** SearXNG API and limiter sources
+at `81371861f67226091d1c4df2e3908a11d3b54eb9` document JSON API, disabled public
+formats/403 and bot blocking. These do not establish a public operator's consent
+or upstream terms. Direct DuckDuckGo TLS access failed (curl exit 35); sandbox
+outbound allowlist excludes search hosts. No compliant, usable public source was
+verified, so no scraper/placeholder/fabricated citation ships. Existing optional
+Brave stays Advanced. URL opening is explicitly not search. Public service
+availability/rate limits remain external. Required follow-up: source access and
+terms verification plus actual request/parser/provenance/error tests and a
+separate live smoke. Detailed links/evidence: `docs/dev7-audit.md`.
+
+**Python feasibility: deferred, not impossible in principle.** Inspected Pyodide
+module-worker/JS-interop documentation at `f45d58d65de40251cc136c07c206328d91029bde`
+and MPL-2.0 LICENSE. Downloaded pinned 314.0.7 npm archive outside the repo:
+6,488,647 bytes (npm unpacked metadata 13,879,282); release API core archive
+6,757,104 bytes/full distribution 337,536,678 bytes. These are distribution
+measurements, not browser startup/memory measurements. Python can access worker
+JS globals; worker isolation is not denial of origin/network/storage privileges,
+nor a portable strict memory quota. Existing lifecycle is server-governed and has
+no browser-result bridge. No sandbox/bridge isolation, timeout/recovery and
+approval/continuation proof exists here, so no browser mode/runtime download was
+added. Optional strict pinned Docker remains; no host/third-party fallback.
+Need isolated origin/CSP, pinned assets and correlated authorization-preserving
+bridge with actual runtime tests before reconsidering. No choice between two
+proven modes needed user input because the browser mode was not proven safe.
+
+**Files and compatibility.** `shared/tools/presets{,.test}.ts`, profile/settings
+components and their tests, E2E, CSS, `server/tools/{web,code}` and tests, package/
+lock/shared version, README/interface/security docs, release notes/environment,
+and audit record. No persistence migration, second API client, state/secret store,
+new authorization mechanism or dependency. Existing DNS pinning, URL/redirect
+validation, resource limits, optional advanced integrations and history contract
+remain. Corrected stale security documentation claiming model DNS was not pinned.
+
+**Actual verification on implementation commit (all exit 0 unless noted).**
+
+- `npm run typecheck`; `npm run lint` — passed, repeated by dry run.
+- `npm test` — 45 files / 431 tests, repeated by dry run.
+- `npm run build` — production Vite and standalone server bundle passed; entry
+  about 310 kB / 95 kB gzip, no new dependency. Existing PDF font warning persists.
+- `npm run check:integration` — 31/31 deterministic built-app/mock checks.
+- `python3 -m unittest discover -s notebooks -p 'test_*.py'` — 58, no skips after
+  installing requests (`--user --break-system-packages`). Initial run had 7 skips;
+  the final run and dry run execute all 58.
+- `python3 -m unittest discover -s tools -p 'test_*.py'` — 25 passed.
+- `npm run test:e2e` with `LD_LIBRARY_PATH` for locally provisioned browser libs —
+  5 passed on actual built app/mock model. Chromium 153 from pinned
+  `@sparticuz/chromium@153.0.0` npm archive outside repo; bundled NSS/NSPR used.
+  Initial standard launch failed for missing Playwright binary, then missing
+  system libs; these blockers were provisioned without changing CI/dependencies.
+- `npm audit --json` — 0 vulnerabilities. `git diff --check` — clean.
+- `tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7` — exit 0 at `d80a2e3`;
+  staged and simulated-download validators both say valid. App 2,166,718 bytes,
+  notebook 91,914, source 875,918. This is artifact validation, not publication
+  or acceptance of the incomplete search requirement.
+
+**Unverified/deferred.** No live model, public search/provider account/terms,
+Kaggle GPUs/model/tunnel, live MCP/HTTP, local Docker (CLI absent), Windows runtime
+or assistive-technology audit. Existing CI Docker/Windows/browser jobs remain.
+JS/CSS/browser tests do not prove a browser Python sandbox exists. No benchmark
+results against a real model are claimed. No finite tests guarantee correctness.
+
+**Delivery.** Version `0.1.0-dev7`, implementation SHA above, bound branch above.
+A draft/open PR is appropriate because genuine keyless search remains missing;
+this is partial dev7 work, not acceptance-complete. PR/CI state will be appended
+when confirmed. No tag, release publication, merge or other branch write.
+
+
+## 2026-10-22 - v0.1.0-dev7 continuation: deployment matrix and catalog decisions
+
+This entry records the design decisions of the dev7 continuation (commits
+on `arena/948908bc-kaggle-kit` after the merge of the PR #16 candidate).
+Earlier entries are unchanged.
+
+### Decision 1 - extend the verified GPU cell, add a separate TPU cell
+
+Raon lives in `notebooks/qwen3_8_27b_api.py` behind `config_for_model()`
+with additive `DeploymentConfig` fields whose defaults reproduce the
+Qwen deployment exactly - including the reuse fingerprint payload, which
+stays byte-identical for the default config (new identity fields are only
+mixed in for non-default deployments, and a test pins the legacy digest).
+The accepted alternative - a generic loader replacing the Qwen path - was
+rejected: the verified behavior is worth more than the deduplication.
+TPU gets its own script because forcing CUDA/GGUF and JAX/bf16 through
+one execution branch would be exactly the fragile coupling the task
+forbids; the two cells share conventions (ownership state, 0600 key,
+real-inference smoke test, pinned tunnel), not code paths.
+
+### Decision 2 - Raon quantization by per-device headroom, pinned by metadata
+
+Sizes and SHA-256 digests come from the official GGUF repository's LFS
+metadata at a pinned revision, so the operator-supplied-digest mechanism
+of dev6 becomes a baked-in pin for Raon (a *sourced* digest, never a
+guessed one). Selection caps the conservative per-device share (equal
+share x 1.10 imbalance) at 70% of a device: on T4 that is Q4_K_M, with
+Q5_K_M deliberately rejected although it fits the aggregate 32 GB -
+aggregate fitting is how OOM-at-load happens with layer splits. The
+KRAFTON llama.cpp branch is built from a pinned commit because `raon1`
+support in upstream prebuilt binaries must not be assumed; the codeload
+archive has no published digest and the script says so. DFlash
+speculative decoding stays off: baseline inference first, optimizations
+only after live verification.
+
+### Decision 3 - TPU: genuine path for Qwen, explicit refusal for Raon
+
+Qwen on v5e-8 uses the official bf16 safetensors checkpoint (the GGUF is
+not a TPU artifact) with vllm-tpu 0.28.0 - the release whose
+gated-DeltaNet Pallas kernels match this hybrid architecture - sharded
+TP=8. Two evidence-driven refusals are coded, not documented away: MTP
+(corrupts outputs on this stack via un-rolled-back recurrent state) and
+any session without eight detected TPU devices (Kaggle can provision
+CPU-only containers; a CPU "success" would be a false TPU claim). The
+key handoff via `VLLM_API_KEY` is *verified* with an unauthenticated
+probe and fails closed, because an env handoff that silently does not
+take effect must never become a public unauthenticated endpoint.
+Raon x TPU raises `UnsupportedDeploymentError` listing the kernel
+evidence; "blocked with reasons" is the honest terminal state, and the
+catalog, docs and audit all use that word.
+
+### Decision 4 - the catalog is metadata, discovery is truth
+
+`shared/model-catalog/catalog.ts` separates three things that are easy to
+conflate: known model metadata, models an endpoint currently reports,
+and verification status per deployment combination. Selection is a draft
+edit; availability derives only from `/v1/models`; "Implemented - not
+live-verified" and "Blocked" are first-class statuses with evidence
+strings, rendered in the profile editor. Raon's sampling baseline is
+applied per profile through the same omitted-when-unset rule as every
+other optional parameter, and thinking stays a deployment/startup
+property rather than an invented per-request field. No speed claim is
+derived from the 4.3B active-parameter count anywhere.
+
+### Decision 5 - streamed reasoning and tool-call identity are protocol invariants
+
+The three reproduced defects were all invariant violations, now encoded
+as tests: reasoning is a separate channel in both spellings
+(`reasoning_content`, `reasoning`) and never merges into content; one
+streamed index is one call identity, so a conflicting id/name poisons
+the entry instead of fabricating a merged call; cancellation must wake
+a pending read, because a deadline that cannot interrupt a silent stream
+is not a deadline. Adjacent approval/recovery/cancellation suites were
+re-run unchanged.
+
+### Decision 6 - keyless search deferred by evidence, not by inertia
+
+The reassessment was redone from primary sources. Marginalia was the
+closest candidate and still fails three independent bars: a shared
+experimentation key is not product authorization, CC-BY-NC-SA results
+conflict with a general default and the retention model, and its index
+is deliberately not general web search. SearXNG's docs do not authorize
+third-party public instances, and DuckDuckGo has no web-search API.
+Shipping any of them as "search" would misrepresent authorization,
+coverage, or both; deferring with the requirement recorded is the
+correct release state.
+
+### Verification and residual state
+
+Local evidence on the candidate head: typecheck/lint 0; Vitest 47/448;
+build ok; integration 33/33; notebooks 86/0 skipped; tools 25; audit 0
+vulnerabilities; benchmark smoke 6/6 vs the mock (synthetic, labelled).
+Playwright e2e is blocked locally (browser download host unreachable)
+and delegated to the CI Browser job - recorded as not-run. Live Kaggle
+execution (Raon T4, Qwen TPU), hosted-API calls, real-model tool
+behaviour, Docker, tunnels and Windows remain unverified; the operator
+procedure in the deployment guide is the path to close the first two.
+The PR therefore stays draft: implementation-complete and reviewable,
+not acceptance-complete. No merge, tag, release or auto-merge.
+
+
+## 2026-10-22 - Correction to the preceding entry (tools test count)
+
+Same correction as in `AGENTS_LOG.md`: after restoring PR #15's
+nightly-workflow tests (dropped by the merge's `--theirs` resolution),
+the tools suite is **27 passed**, not 25. Appended rather than edited,
+per the append-only rule.
+
+
+## 2026-10-22 - Final audit decisions before the dev7 development merge
+
+**Starting state (live GitHub, re-fetched).** PR #17 open/draft, head
+`7502508a11454074507101153e02075fd52fa198`, base `main` @
+`2b739831cb8b5a990129918362d5027815c3a7b0` (PR #15's merge), mergeable /
+clean; PR #16 (`3abb618`) open/draft and an ancestor of the PR #17 head;
+PR #15 already merged and untouched. `main` is reported unprotected with
+no rulesets (the detailed branch-protection API returns 403 to this
+integration, so reviews/required checks were read from the PR state: no
+required reviewers, no review requests). Prior CI on `7502508` was green.
+
+**Defects found by the audit and fixed in `0de64185530fc31ca903c74710fa8077b1907dac`
+(each reproduced by a failing test first):**
+
+1. Security - the TPU tunnel exposed vLLM directly, but vLLM's key guards
+   only `/v1`, `/v2`, `/inference`, `/cohere` (read in vllm `v0.28.0`
+   source: `entrypoints/serve/utils/server_utils.py` `GUARDED_PREFIX`;
+   `entrypoints/serve/sagemaker/api_router.py` serves `/invocations` with
+   the same inference handlers). The old `/v1/models` auth probe could not
+   detect this. Fixed with an in-process allowlisting, bearer-checking,
+   body-bounded gateway as the only tunnel target; tunnel start gated on
+   the gateway refusing `/invocations`; tunnel stopped if the public URL
+   answers it. llama.cpp (GPU) checked at both pinned revisions: only
+   health/static frontend paths bypass its key - not affected.
+2. Catalog selection of Raon overwrote a typed model ID; now only fills an
+   empty field, replacement is explicit.
+3. Qwen/T4 was labelled "Verified" without live evidence of this script;
+   now "Pre-existing - not re-verified live", with a test forbidding any
+   `verified` row.
+
+**Primary-source re-verification.** Qwen TPU revision `1d4bf0f2...` is the
+current HF sha; KRAFTON llama.cpp branch head is `fb895662...`; the pinned
+Raon GGUF revision `fe24f24e...` still lists the pinned files, sizes and
+LFS SHA-256 (repo `main` moved to `3afcfcdb...`, README-only change);
+`vllm-tpu==0.28.0` exists (latest 0.32.0, pin kept until live parity);
+kaggle-cli documents `TpuV5E8`; `VLLM_API_KEY` is the documented alias.
+
+**Local verification on `0de6418` (real output).** `npm ci` (0
+vulnerabilities); `npm run typecheck` 0; `npm run lint` 0; `npm test`
+**47 files / 449 tests**; `npm run build` 0 (entry 310.00 kB / 94.61 kB
+gzip); `npm run check:integration` **33/33**; notebooks **93 passed, 0
+skipped**; tools **27 passed** (PR #15 nightly tests included);
+`npm audit` 0; `git diff --check` clean; no conflict markers;
+`tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7` exit 0, "The release
+v0.1.0-dev7 is valid" (staged + simulated download), notes rendered with
+`0de6418` - not a publication. `npm run test:e2e` locally: **blocked**
+(Chromium executable absent, download fails; 5 launch failures, no
+assertion ran) - the CI Browser job is the evidence path.
+
+**Unchanged limitations.** Raon/T4 x2, Qwen/TPU v5e-8 and hosted Raon:
+implemented, **not live-verified** (no Kaggle GPU/TPU, gated access or
+provider credential here). Raon/TPU: **blocked**, refused without
+fallback. Qwen/T4: pre-existing, not re-run live. No live-model tool
+calls, Docker locally, Windows, keyless search or browser Python. No
+speed/memory/startup figures exist for the new paths.
+
+**Merge plan.** The user authorized a development merge with unverified
+paths kept explicitly unverified. After CI passes on the final head:
+mark PR #17 ready, merge it with a merge commit, then close PR #16 as
+superseded. No tag, no release, no auto-merge, PR #15 untouched. The
+merge commit and post-merge CI are recorded in PR #17's comments and a
+follow-up log entry.
+
+**Decision - gateway instead of relying on the vLLM key.** Options were (a)
+document the limitation, (b) drop the TPU tunnel, (c) put a reverse proxy
+in front. (a) leaves a known unauthenticated inference route on a public
+URL; (b) removes a requested capability. (c) keeps the feature with a
+narrow surface: stdlib-only (no new dependency), exact-path allowlist of
+the three routes the chat interface uses, its own key check, HTTP/1.0
+connection-delimited streaming so SSE passes through unchanged, and a
+fail-closed probe on both the gateway and the public URL. The gateway is
+in-process (a kernel thread), so script mode keeps serving until Ctrl+C.
+
+**Decision - status vocabulary.** "Verified" is reserved for executed
+live evidence of this repository's code. The preserved Qwen/T4 path gets
+its own status rather than inheriting the operator-verified origin cell's
+evidence.

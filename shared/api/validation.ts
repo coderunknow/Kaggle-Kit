@@ -14,6 +14,11 @@ export const LIMITS = {
   topP: { min: 0, max: 1, default: DEFAULT_INFERENCE_PARAMS.topP },
   frequencyPenalty: { min: -2, max: 2 },
   presencePenalty: { min: -2, max: 2 },
+  // llama.cpp/vLLM sampling extensions. `top_k` 0 disables the cutoff in
+  // llama.cpp; the range still has to be a bounded non-negative integer.
+  topK: { min: 0, max: 1024 },
+  minP: { min: 0, max: 1 },
+  repetitionPenalty: { min: 0.1, max: 10 },
   timeoutMs: { min: 1_000, max: 1_800_000, default: 120_000 },
 } as const;
 
@@ -71,6 +76,28 @@ export function parseInferenceParams(raw: unknown): ParsedParams {
   const frequencyRaw = toFiniteNumber(source.frequencyPenalty);
   const presenceRaw = toFiniteNumber(source.presencePenalty);
 
+  const topKRaw = toFiniteNumber(source.topK);
+  const topK = topKRaw === undefined
+    ? undefined
+    : Math.trunc(clamp(topKRaw, LIMITS.topK.min, LIMITS.topK.max));
+  if (topKRaw !== undefined && topK !== topKRaw) {
+    issues.push(`top_k was clamped to ${topK}.`);
+  }
+
+  const minPRaw = toFiniteNumber(source.minP);
+  const minP = minPRaw === undefined ? undefined : clamp(minPRaw, LIMITS.minP.min, LIMITS.minP.max);
+  if (minPRaw !== undefined && minP !== minPRaw) {
+    issues.push(`min_p was clamped to ${minP}.`);
+  }
+
+  const repetitionRaw = toFiniteNumber(source.repetitionPenalty);
+  const repetitionPenalty = repetitionRaw === undefined
+    ? undefined
+    : clamp(repetitionRaw, LIMITS.repetitionPenalty.min, LIMITS.repetitionPenalty.max);
+  if (repetitionRaw !== undefined && repetitionPenalty !== repetitionRaw) {
+    issues.push(`repetition_penalty was clamped to ${repetitionPenalty}.`);
+  }
+
   const reasoningRaw = source.reasoningEffort;
   let reasoningEffort: ReasoningEffort | null = null;
   if (typeof reasoningRaw === 'string' && reasoningRaw.length > 0) {
@@ -88,6 +115,9 @@ export function parseInferenceParams(raw: unknown): ParsedParams {
       topP,
       frequencyPenalty: frequencyRaw === undefined ? undefined : clamp(frequencyRaw, LIMITS.frequencyPenalty.min, LIMITS.frequencyPenalty.max),
       presencePenalty: presenceRaw === undefined ? undefined : clamp(presenceRaw, LIMITS.presencePenalty.min, LIMITS.presencePenalty.max),
+      topK,
+      minP,
+      repetitionPenalty,
       reasoningEffort,
       stream: source.stream === true,
     },

@@ -56,6 +56,30 @@ describe('the browser gateway', () => {
     expect(result.finishReason).toBe('stop');
   });
 
+  it('keeps vLLM-style streamed reasoning separate from the final content (Raon/Qwen on vLLM)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        eventStream(
+          [
+            'data: {"choices":[{"delta":{"reasoning":"thin"}}]}\n\n',
+            'data: {"choices":[{"delta":{"reasoning":"king","content":"Ans"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"wer"},"finish_reason":"stop"}]}\n\n',
+            'data: [DONE]\n\n',
+          ],
+          { close: true },
+        ),
+      ),
+    );
+
+    const result = await gateway.chat(REQUEST);
+
+    expect(result.streamed).toBe(true);
+    expect(result.content).toBe('Answer');
+    expect(result.reasoning).toBe('thinking');
+    expect(result.finishReason).toBe('stop');
+  });
+
   it('reports a cancelled stream as cancelled and not as a finished answer', async () => {
     vi.stubGlobal(
       'fetch',

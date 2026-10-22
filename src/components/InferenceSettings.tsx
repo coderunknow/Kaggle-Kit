@@ -24,6 +24,14 @@ import {
   resolveProfileCredential,
 } from '../../shared/connection';
 import type { ApiProfile } from '../../shared/domain';
+import {
+  applyRecommendedParams,
+  catalogEntryById,
+  findCatalogEntryByModelId,
+  MODEL_CATALOG,
+  RAON_CATALOG_ID,
+  type InferenceUseCase,
+} from '../../shared/model-catalog/catalog';
 import { gateway } from '../lib/gateway';
 import { useApp } from '../state/AppProvider';
 import { Badge, Icon } from './ui';
@@ -44,6 +52,9 @@ function sameParams(left: InferenceParams, right: InferenceParams): boolean {
     left.topP === right.topP &&
     left.frequencyPenalty === right.frequencyPenalty &&
     left.presencePenalty === right.presencePenalty &&
+    left.topK === right.topK &&
+    left.minP === right.minP &&
+    left.repetitionPenalty === right.repetitionPenalty &&
     left.reasoningEffort === right.reasoningEffort &&
     left.stream === right.stream
   );
@@ -57,6 +68,8 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
   const [probeResult, setProbeResult] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [draftProfileId, setDraftProfileId] = useState(profile?.id);
+  const [paramsUseCase, setParamsUseCase] = useState<InferenceUseCase>('general');
+  const [paramsCatalogId, setParamsCatalogId] = useState('');
 
   // Start a new draft when another profile is selected.
   if (profile?.id !== draftProfileId) {
@@ -111,6 +124,9 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
       topP: LIMITS.topP.default,
       frequencyPenalty: undefined,
       presencePenalty: undefined,
+      topK: undefined,
+      minP: undefined,
+      repetitionPenalty: undefined,
       reasoningEffort: null,
       stream: false,
     });
@@ -148,8 +164,74 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
     }
   };
 
+  const recognizedEntry = findCatalogEntryByModelId(profile.modelId);
+  const paramsEntry = catalogEntryById(paramsCatalogId) ?? recognizedEntry;
+  const applyCatalogParams = () => {
+    if (!paramsEntry) return;
+    setSaved(false);
+    setDraft((current) => (current ? applyRecommendedParams(current, paramsEntry, paramsUseCase) : current));
+  };
+
   return (
     <div className="settings-stack">
+      <section className="card card--quiet">
+        <h3 className="card__title">Model-specific sampling defaults</h3>
+        <p className="card__description">
+          Recommended values come from the model catalog and apply to <strong>this profile only</strong>.
+          Applying them changes the fields below; nothing is sent or saved until you save. Maximum output
+          tokens, streaming and reasoning effort are never changed by this action.
+        </p>
+        <div className="field">
+          <label className="field__label" htmlFor="params-catalog-model">
+            Catalog model
+          </label>
+          <select
+            id="params-catalog-model"
+            value={paramsEntry?.id ?? ''}
+            onChange={(event) => setParamsCatalogId(event.target.value)}
+          >
+            <option value="">(none recognized for this profile's model ID)</option>
+            {MODEL_CATALOG.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.displayName}
+              </option>
+            ))}
+          </select>
+          <span className="field__hint">
+            {recognizedEntry
+              ? `The profile's model ID is recognized as ${recognizedEntry.displayName}.`
+              : 'The profile\'s model ID is not recognized as a catalog model; choose one explicitly only when this profile really serves it.'}
+          </span>
+        </div>
+        {paramsEntry ? (
+          <>
+            {paramsEntry.id === RAON_CATALOG_ID ? (
+              <div className="field">
+                <label className="field__label" htmlFor="params-use-case">
+                  Use case (Raon presence penalty differs)
+                </label>
+                <select
+                  id="params-use-case"
+                  value={paramsUseCase}
+                  onChange={(event) => setParamsUseCase(event.target.value as InferenceUseCase)}
+                >
+                  <option value="general">General chat / summarization / agentic (presence penalty 1.5)</option>
+                  <option value="coding_math">Coding / math (presence penalty 0)</option>
+                </select>
+              </div>
+            ) : null}
+            <div className="row" style={{ marginTop: 8 }}>
+              <button type="button" className="button button--small" onClick={applyCatalogParams}>
+                Apply {paramsEntry.displayName} recommended sampling
+              </button>
+            </div>
+            {paramsEntry.recommendedParamsSource ? (
+              <span className="field__hint">{paramsEntry.recommendedParamsSource}</span>
+            ) : null}
+          </>
+        ) : null}
+      </section>
+
       <section className="card">
         <h3 className="card__title">Request parameters</h3>
         <p className="card__description">
@@ -313,6 +395,99 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
                     LIMITS.presencePenalty.max,
                     draft.presencePenalty ?? 0,
                   ),
+                )
+              }
+            />
+          ) : null}
+        </div>
+        <div className="field">
+          <label className="checkbox" htmlFor="top-k-enabled">
+            <input
+              id="top-k-enabled"
+              type="checkbox"
+              checked={draft.topK !== undefined}
+              onChange={(event) => update('topK', event.target.checked ? 20 : undefined)}
+            />
+            <span>
+              Send top-k (llama.cpp/vLLM extension)
+              <span className="field__hint" style={{ display: 'block' }}>
+                Left out of the request entirely when disabled. Enable it only for endpoints that
+                understand it (for example the Raon deployments).
+              </span>
+            </span>
+          </label>
+          {draft.topK !== undefined ? (
+            <input
+              type="number"
+              aria-label="Top-k value"
+              min={LIMITS.topK.min}
+              max={LIMITS.topK.max}
+              step={1}
+              value={draft.topK}
+              onChange={(event) =>
+                update('topK', Math.trunc(clamp(Number(event.target.value), LIMITS.topK.min, LIMITS.topK.max, draft.topK ?? 20)))
+              }
+            />
+          ) : null}
+        </div>
+
+        <div className="field">
+          <label className="checkbox" htmlFor="min-p-enabled">
+            <input
+              id="min-p-enabled"
+              type="checkbox"
+              checked={draft.minP !== undefined}
+              onChange={(event) => update('minP', event.target.checked ? 0 : undefined)}
+            />
+            <span>
+              Send min-p (llama.cpp/vLLM extension)
+              <span className="field__hint" style={{ display: 'block' }}>
+                Minimum relative probability cutoff. Left out when disabled.
+              </span>
+            </span>
+          </label>
+          {draft.minP !== undefined ? (
+            <input
+              type="number"
+              aria-label="Min-p value"
+              min={LIMITS.minP.min}
+              max={LIMITS.minP.max}
+              step={0.01}
+              value={draft.minP}
+              onChange={(event) =>
+                update('minP', clamp(Number(event.target.value), LIMITS.minP.min, LIMITS.minP.max, draft.minP ?? 0))
+              }
+            />
+          ) : null}
+        </div>
+
+        <div className="field">
+          <label className="checkbox" htmlFor="repetition-penalty-enabled">
+            <input
+              id="repetition-penalty-enabled"
+              type="checkbox"
+              checked={draft.repetitionPenalty !== undefined}
+              onChange={(event) => update('repetitionPenalty', event.target.checked ? 1 : undefined)}
+            />
+            <span>
+              Send a repetition penalty (llama.cpp/vLLM extension)
+              <span className="field__hint" style={{ display: 'block' }}>
+                1.0 means no penalty. Left out when disabled.
+              </span>
+            </span>
+          </label>
+          {draft.repetitionPenalty !== undefined ? (
+            <input
+              type="number"
+              aria-label="Repetition penalty value"
+              min={LIMITS.repetitionPenalty.min}
+              max={LIMITS.repetitionPenalty.max}
+              step={0.05}
+              value={draft.repetitionPenalty}
+              onChange={(event) =>
+                update(
+                  'repetitionPenalty',
+                  clamp(Number(event.target.value), LIMITS.repetitionPenalty.min, LIMITS.repetitionPenalty.max, draft.repetitionPenalty ?? 1),
                 )
               }
             />

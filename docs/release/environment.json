@@ -1,26 +1,28 @@
 {
   "tested": [
-    "Arena sandbox: Linux x86_64, Node.js v22.22.3, npm 10.9.8, Python 3.11 with the requests package installed; npm ci reported 0 vulnerabilities",
-    "npm run typecheck: TypeScript client and server typecheck passed",
-    "npm run lint: ESLint passed",
-    "npm test: Vitest 44 files, 398 tests passed (tool-loop bounded recovery, selection recovery, catalog budget, benchmark core, notebook-driven policy and all prior suites)",
-    "npm run build: production Vite client and bundled standalone Node backend built",
-    "npm run check:integration: 29/29 checks against the built bundle and a loopback mock upstream, including the native tool-calling probe, streamed fragment assembly, an automatic calculator loop, a denied single-use code-execution approval, and one bounded corrective round after a protocol-violating model turn",
-    "python3 -m unittest discover -s notebooks -p 'test_*.py': 46 passed, 0 skipped (requests installed), including the LLAMA_API_KEY env fallback, the refusal of unauthenticated builds and the pinned cloudflared digest",
-    "python3 -m unittest discover -s tools -p 'test_*.py': 25 passed, including the release-workflow security regression tests",
-    "tools/model-benchmark.mjs smoke run against the local mock upstream: 6/6 model-mode cases passed with a clean report leak check (exit 0); the integration-mode skip path reported 3 skipped cases against a closed port (exit 0). This validates the script mechanics, not a real model",
-    "npm audit --json: 0 vulnerabilities",
-    "git diff --check: passed on the release candidate",
-    "tools/release-dry-run.sh 0.1.0-dev6 v0.1.0-dev6: staged archives, manifest, checksums and verification report validated, including the simulated downloaded-asset check"
+    "Arena sandbox Linux x86_64; Node.js v22.22.3, npm 10.9.8, Python 3.11.2; requests installed with pip --break-system-packages; npm ci reported 0 vulnerabilities",
+    "npm run typecheck and npm run lint: exit 0 on the dev7 candidate head",
+    "npm test: exit 0; 47 files / 449 tests passed, including the catalog manual-model-ID preservation and no-false-verified-status regressions, the model catalog, the ProfileForm catalog UI, Raon sampling extension validation/request building, the streamed reasoning (delta.reasoning) and tool-call correlation/cancellation regressions, and all retained security, authorization, recovery, persistence, upload and protocol suites",
+    "npm run build: exit 0; production client (entry 310.00 kB / 94.61 kB gzip) and bundled standalone backend built; no new application dependency",
+    "npm run check:integration: exit 0; 33/33 deterministic checks against the built application and local mock upstream, including vLLM-style streamed/non-streamed reasoning separation, the native tool-calling probe with streamed fragment assembly, an automatic calculator loop, one bounded corrective round, a denied single-use code approval with replay refusal, and contextual job cancellation",
+    "python3 -m unittest discover -s notebooks -p 'test_*.py': exit 0; 93 tests, 0 skipped - the pre-existing Qwen deployment suite plus Raon preset pinning/sizing, gated-token header-only download, KRAFTON-branch build commands, startup-arg filtering, fingerprint backward compatibility, and the TPU combination/refusal, device-truth, command (TP=8, bf16, no MTP, no key in argv), auth-enforcement and bundle tests, and the final-audit gateway tests proving vLLM's unguarded /invocations is not reachable through the public route",
+    "python3 -m unittest discover -s tools -p 'test_*.py': exit 0; 27 tests, including the release-workflow security regressions and the restored PR #15 nightly-workflow tests",
+    "tools/model-benchmark.mjs smoke run against the local mock upstream: 6/6 model-mode cases passed (handshake, selection+arguments, synthetic final answer, negative selection, streaming handshake) with the key redacted. This validates script mechanics against synthetic results only, not a real model",
+    "npm audit --json: 0 vulnerabilities (info/low/moderate/high/critical all 0); git diff --check clean",
+    "Regression discipline: the three new stream/tool tests failed against the pre-fix implementation (dropped delta.reasoning, merged conflicting tool-call identity, abort not waking a silent SSE read) and pass with the fixes; the default-Qwen deployment fingerprint is byte-identical to the pre-dev7 payload (proven in the notebook suite), so healthy Qwen servers keep being reused across the upgrade",
+    "Primary-source deployment research fetched 2026-10-22: KRAFTON model card, Hugging Face API metadata for KRAFTON/Raon-1-mini-preview-gguf (revision, file sizes, LFS SHA-256 ids) and Qwen/Qwen3.8-27B (safetensors, revision, license), GitHub API head of krafton-ai/llama.cpp@raon-1-mini-preview, PyPI vllm-tpu metadata, kaggle-cli kernels.md (TpuV5E8), SearXNG search-API documentation"
   ],
   "notTested": [
-    "Kaggle GPU runtime, actual model download/weights, deployed Qwen3.8/llama.cpp inference, live native tool-call round trip, public tunnel or public Kaggle endpoint; the live-model benchmark has not been run against a real deployed model in this environment",
-    "The LLAMA_API_KEY environment fallback and the pinned cloudflared download on live Kaggle hardware (verified against the pinned builds' published sources and unit-tested locally)",
-    "Docker sandbox runtime/isolation and the pinned Python container image; the Docker CLI was unavailable in this sandbox (the real-Docker CI job covers the execution path)",
-    "Real Brave credentials/account, retention rights, live MCP servers or configured external HTTP services; missing-credential and failure paths are covered by tests",
-    "tools/model-benchmark.mjs --mode integration against a fully configured live proxy and endpoint pair; its skip and failure paths were exercised",
-    "Playwright browser end-to-end tests locally: browser binaries are not installed and the download host is unreachable from this sandbox; the Browser end-to-end CI job covers them on the PR branch",
-    "Real-browser or assistive-technology accessibility audit; component tests use jsdom",
-    "The Hugging Face model fetch remains on the unpinned resolve/main revision; no authoritative digest was reachable from this environment"
+    "Raon-1 mini preview on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session and no approved gated Hugging Face access/HF_TOKEN existed in this environment. The pinned KRAFTON-branch build, quantization sizing, real inference through a tunnel, and live tool calling must be run with the operator procedure in docs/kaggle-deployment.md section 12",
+    "Qwen3.8-27B on Kaggle TPU v5e-8 is implemented but NOT live-verified: no TPU hardware was available here. vllm-tpu installation, XLA compilation, bf16 checkpoint load/sharding, real generation, memory/startup behaviour and tool/streaming behaviour on v5e-8 are all operator-run evidence still to collect; MTP stays refused until a fixed runtime is parity-checked live",
+    "Raon-1 mini preview on TPU v5e-8 is BLOCKED (not merely untested): no TPU runtime has raon1 kernels, the GGUF is not TPU-consumable and vendor runtimes are CUDA-only. The deployment refuses it explicitly; no CPU/GPU/hosted fallback exists",
+    "Hosted Raon API was NOT live-tested: no provider endpoint/credential was available and none is hardcoded. The generic configurable profile path (discovery, staged real-inference test, classified errors) is covered by unit/integration tests against the mock only",
+    "No live deployed model of any kind (Qwen GPU/TPU, Raon GPU/hosted) ran tool calls here; all benchmark/tool evidence is deterministic mock protocol evidence with synthetic tool results, never real external tool execution or real-model reliability",
+    "Keyless public-web search is NOT implemented and was deferred after a fresh primary-source reassessment (SearXNG public-instance authorization/format limits, DuckDuckGo has no web-search API, Marginalia shared experimentation key + CC-BY-NC-SA results license); candidate hosts are unreachable from this sandbox (SSL_ERROR_SYSCALL re-confirmed 2026-10-22). Page retrieval is not search; optional Brave still needs its own key and retention confirmation",
+    "Browser/WebAssembly Python is NOT implemented: safe origin/network/storage isolation and an authenticated browser-result bridge remain undemonstrated. Digest-pinned Docker is the only optional execution mode",
+    "Playwright browser end-to-end locally: BLOCKED - the Chromium executable is absent and the Playwright download host is unreachable from this sandbox (download failure recorded). The Browser end-to-end CI job on the PR head is the verification path; new UI logic is covered by jsdom component tests meanwhile",
+    "Docker sandbox runtime/isolation locally (docker CLI absent) and the Windows launcher on real Windows: unchanged CI jobs (docker sandbox integration, windows launcher) must pass on the final head; not reported as locally passed",
+    "No live Brave account/retention rights, external MCP server or configured external HTTP service was validated; no assistive-technology audit or other browser engines; component tests use jsdom",
+    "Qwen GGUF weights remain digest-unpinned by default unless the operator supplies the existing optional model_revision/model_sha256 configuration (no authoritative digest is baked in; Raon GGUF and Qwen TPU checkpoint revisions/digests ARE pinned from official metadata)"
   ]
 }

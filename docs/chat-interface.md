@@ -6,6 +6,31 @@ server directly: every request goes through the local proxy backend in
 problem completely and keeps the API key out of the browser when the profile
 uses the "local proxy secret store".
 
+## Guided setup and Basic/Advanced modes (dev7 candidate)
+
+Open Settings → Add profile. The form guides you through endpoint type, model
+API address, optional model credential, model discovery/manual entry, a real
+inference test, and saving. This page’s proxy address is not the upstream model
+address. Discovery and proxy health alone never mean Connected. A connected
+active profile offers **Start chatting**.
+
+Basic mode hides advanced prompt, timeout and integration controls without
+resetting their values. **Advanced mode** restores them; inference, preferences
+and data tabs remain accessible. Mode is a view choice, not permission.
+
+In Tools & approvals, **Allow reviewed keyless built-ins**, then **Save tool
+settings**, explicitly grants calculator/conversion, conversation files,
+endpoint diagnostics and public-page opening. These need no tool-provider
+account. The model endpoint may require its own key. Verify native tool calling
+for the exact endpoint/model before use; ordinary chat works without it.
+
+The preset menu **only narrows current permissions**. It does not add tools,
+grant MCP/HTTP, enable Python or change budgets. Web research currently means
+page retrieval only: **keyless public-web search is not implemented** in this
+candidate. Brave remains optional in Advanced and requires its provider key.
+Browser Python is unavailable; Docker remains optional Advanced functionality.
+See [the audit and concrete blockers](dev7-audit.md).
+
 ## Connection profiles
 
 A profile describes one OpenAI-compatible endpoint.
@@ -98,6 +123,42 @@ settings drawer, the context bar and the sidebar show `Not tested` or
 values is shown only inside the editor and never changes the saved profile's
 status.
 
+## Model catalog (dev7)
+
+The profile editor has a **Known models (catalog)** browser next to the
+model ID: Qwen3.8-27B, Raon-1 mini preview, and custom OpenAI-compatible
+endpoints. The catalog (`shared/model-catalog/catalog.ts`) is metadata -
+architecture, parameter counts, access requirements (Raon's weights are
+gated; its hosted API has separate provider terms), recommended sampling,
+and the per-combination deployment status with its evidence (Verified /
+Implemented - not live-verified / Blocked, see
+[kaggle-deployment.md](kaggle-deployment.md#8-model-x-accelerator-matrix-dev7)).
+
+It is deliberately *not* a model manager:
+
+* Selecting an entry only edits the draft. For Raon it fills the served
+  model ID our deployments use (`Raon-1-mini-preview`); for Qwen and custom
+  endpoints the served ID is decided by the server, so a hand-typed ID is
+  never overwritten. Nothing is installed, downloaded, started or switched
+  on any server, and the saved profile changes only on Save.
+* The entry is compared with what the endpoint actually reported: when
+  discovery ran and the model is absent from `/v1/models`, the form says
+  so and points at launching the matching deployment - the app never
+  claims a server changed models. A hand-typed ID remains possible and is
+  then this profile's explicit manual ID.
+* "Apply recommended sampling" writes the catalog values into the draft
+  (for Raon also a coding/math variant). Applying Qwen values clears the
+  sampling extensions again, so Raon settings can never leak into a Qwen
+  profile. Maximum output tokens, streaming and reasoning effort are never
+  touched by the action.
+
+A **hosted Raon API** is just another profile: create a separate
+connection with the base URL and credential your provider issued (nothing
+is hardcoded and no endpoint is invented), then Discover models and Test
+connection. Only a real inference answer marks it Connected; provider
+access errors, wrong credentials and unknown model IDs surface as the
+usual classified connection stages.
+
 ## Inference settings
 
 The **Inference** tab edits the request time parameters of the active profile.
@@ -109,6 +170,9 @@ The **Inference** tab edits the request time parameters of the active profile.
 | Top-p | `top_p` | 0 – 1. |
 | Send a frequency penalty | `frequency_penalty` | Only sent when the switch is on, otherwise the parameter is left out entirely. |
 | Send a presence penalty | `presence_penalty` | Same behaviour. |
+| Send top-k | `top_k` | Sampling extension (llama.cpp/vLLM). Integer 0-1024, only sent when the switch is on. |
+| Send min-p | `min_p` | Sampling extension, 0-1, only sent when the switch is on. `0` is a real sent value, distinct from off. |
+| Send a repetition penalty | `repetition_penalty` | Sampling extension, 0.1-10 (`1.0` = no penalty), only sent when the switch is on. |
 | Effort sent with the request | `reasoning_effort` | Only sent when the connected server advertises the option. In `llama.cpp` reasoning effort is a **start-up** flag (`--reasoning-effort medium`), so the value is normally not sent per request. |
 | Stream the answer | `stream` | Disabled until a streaming probe against this endpoint succeeded. |
 
@@ -118,7 +182,28 @@ The interface shows them in a separate card and never pretends that a browser
 setting could change them. The notebook writes them to `runtime.json`.
 
 **Reset to defaults** restores `max_tokens: 1024`, `temperature: 0.7`,
-`top_p: 0.95`, no penalties, no reasoning effort and no streaming.
+`top_p: 0.95`, no penalties, no sampling extensions, no reasoning effort
+and no streaming.
+
+**Model-specific defaults.** The Inference tab opens with the catalog
+defaults for the recognized (or explicitly chosen) catalog model. Raon's
+documented baseline is temperature 1.0, top-p 0.95, top-k 20, min-p 0.0,
+repetition penalty 1.0, frequency penalty 0, and presence penalty 1.5 for
+general chat/summarization/agentic use or 0 for coding/math - pick the use
+case before applying. These values live in the profile like any other
+parameter: the browser, the proxy validation (`shared/api/validation.ts`)
+and the request builder all share the same bounds, unset extensions are
+omitted (and named in the "What is sent" summary), and old profiles
+without the new fields load unchanged. Raon's *thinking* behaviour is a
+server/chat-template property (`--reasoning on`,
+`truncate_history_thinking=false` in the deployment), not a per-request
+field this client sends.
+
+Chain-of-thought stays separate from the answer in both transports:
+non-streamed `reasoning_content`/`reasoning` and streamed
+`delta.reasoning_content`/`delta.reasoning` (the vLLM spelling used by
+Raon/Qwen on vLLM) are shown as reasoning, never merged into the final
+content, and a cancelled or truncated stream is never marked complete.
 
 ## Streaming
 

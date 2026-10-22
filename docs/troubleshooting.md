@@ -98,6 +98,71 @@ See [kaggle-deployment.md](kaggle-deployment.md#4-keep-the-model-for-the-next-se
 save the file as a Kaggle Dataset or as a Notebook Output and attach it. The
 script looks in `/kaggle/input` first.
 
+### Raon: "access-gated ... no Hugging Face token is available"
+
+The Raon GGUF repository requires approved access. Request it on
+`KRAFTON/Raon-1-mini-preview-gguf` with your own account, then provide a
+token without pasting it into the cell: Kaggle Secrets / environment
+variable `HF_TOKEN`, or `hf auth login`. The message means neither was
+found; nothing was downloaded. Do not paste the token into the notebook
+source, a URL, or this repository.
+
+### Raon: the model does not fit / CUDA out of memory on T4 x2
+
+The cell logs the selected quantization and its sizing rule (per-device
+share <= 70%, Q4_K_M on T4). If a session still runs out of memory, pin
+the smaller file explicitly: `main(raon_deployment_config(quantization="IQ4_XS"))`,
+or lower `ctx_size`. Do not "fix" it by offloading layers to CPU - the
+deployment never pretends a CPU-assisted run is the T4 x2 deployment, and
+`runtime.json` always reports the quantization that actually ran.
+
+### TPU: "0 TPU device(s) were detected"
+
+The session is not running on TPU hardware (Kaggle can provision CPU-only
+containers, e.g. for unverified accounts, or the accelerator was changed
+without a new session). Start a session with **TPU v5e-8**
+(CLI id `TpuV5E8`). The cell aborts on purpose: there is no CPU fallback,
+and exercise of the refusal is itself a useful check.
+
+### TPU: vLLM takes very long to become healthy
+
+First-run XLA compilation of a 27B model plus the ~55 GB checkpoint
+download dominate startup. The wait is bounded (`startup_timeout_s`,
+default 3600) and the progress is in `vllm-server.log` under
+`/kaggle/working/qwen38_tpu_api`. A dead server exits the wait early and
+prints the log tail; it is never reported as running without the
+real-inference smoke test.
+
+### TPU: MTP / "speculative decoding" questions
+
+MTP is forced off on TPU: with `vllm-tpu==0.28.0` rejected draft tokens
+advance the gated-DeltaNet state and corrupt answers. `enable_mtp=True`
+is refused with that reason. Revisit only with a fixed runtime *and* a
+live greedy-parity check against the non-speculative server.
+
+### "Raon-1 mini preview on Kaggle TPU v5e-8 is blocked"
+
+Expected and final for this release: no TPU runtime has kernels for the
+`raon1` architecture, the GGUF is not TPU-consumable, and the vendor
+runtimes are CUDA-only (details: [kaggle-deployment.md](kaggle-deployment.md#11-raon-1-mini-preview-on-tpu-v5e-8-blocked)).
+Use Raon on GPU T4 x2 or as a hosted profile.
+
+### The catalog model is "not in this endpoint's /v1/models list"
+
+Selecting a catalog entry never switches a remote server. Either point
+the profile at the endpoint that serves the model (each deployment prints
+its base URL and served model ID), launch the matching Kaggle deployment,
+or keep the typed ID as this profile's explicit manual model ID and let
+**Test connection** (real inference) decide.
+
+### Raon answers look wrong with Qwen sampling (or vice versa)
+
+Raon's documented baseline (temperature 1.0, top_k 20, min_p 0.0,
+presence penalty 1.5 general / 0 coding-math) is profile-scoped. Apply it
+from the catalog in the profile editor or the Inference tab, save, and
+re-test. Qwen profiles keep their own defaults; applying Qwen defaults
+clears the sampling extensions again.
+
 ## Chat interface
 
 ### The backend answers "The origin ... is not allowed to call this proxy"
