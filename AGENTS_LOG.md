@@ -1207,3 +1207,37 @@ follow-up log entry.
   (no runner picked it up) and could not be re-run from this
   integration ("cannot be rerun" / HTTP 403). It is **not** counted as
   passed. This entry's commit retriggers CI on a new head.
+
+
+## 2026-10-22 - Post-merge record: PR #17 merged, PR #16 closed
+
+* Final PR head `a758fc267e61403867f7e003500c294684097dc1` (code verified
+  locally at `0de6418`; later commits are append-only log entries). CI on
+  that head: PR run 39802852894 and push run 39802844193, both **success**,
+  every job and step successful. GitHub reported CLEAN / MERGEABLE.
+* Third-party review bots produced no findings: Kilo Code Review
+  `action_required` ("Insufficient credits"), Copilot reviewer "unable to
+  review ... quota limit", Qodo "trial has ended". `main` has no required
+  checks or reviews (unprotected, no rulesets), matching the precedent of
+  PRs #13/#14.
+* PR #17 marked ready, then merged with `gh pr merge 17 --merge
+  --match-head-commit a758fc2...` at 2026-10-22T15:31:15Z: merge commit
+  **`21e16c7bfb7c6759353c23ff64ad34f8a5d2cb3e`** (parents `2b73983`,
+  `a758fc2`); the `main` tree equals the verified head.
+* Post-merge CI run **39805611738** on `21e16c7`: **success** (all five
+  jobs).
+* PR #16 closed (not merged) only after the merge was confirmed, with a
+  comment linking #17 and the merge commit; its commits are ancestors of
+  `main`. Branch left in place.
+* PR #15 untouched (merged 2026-10-21). Pre-existing, out of scope: its
+  scheduled Nightly Release run 39683892374 on the previous `main`
+  `2b73983` failed at "Resolve nightly metadata" (exit 2) with the publish
+  job skipped, so nothing was published. That workflow is PR #15's
+  automation and runs on its own schedule.
+* No `v0.1.0-dev7` tag, no release, no auto-merge (tags/releases still end
+  at dev6).
+* Limitations unchanged: Raon/T4 x2, Qwen/TPU v5e-8, hosted Raon -
+  implemented, not live-verified; Raon/TPU - blocked; Qwen/T4 - pre-existing,
+  not re-verified live; no live-model tool calls; local Playwright blocked.
+* This entry is committed on `arena/948908bc-kaggle-kit` after the merge;
+  it reaches `main` only through a follow-up PR.
