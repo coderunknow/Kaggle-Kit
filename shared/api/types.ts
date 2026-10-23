@@ -107,6 +107,12 @@ export interface ServerProps {
   total_slots?: number;
   model_path?: string;
   chat_template?: string;
+  /**
+   * llama.cpp's analysis of the loaded template (`/props`). It is produced by
+   * rendering the template, so `supports_reasoning_effort` is evidence that
+   * the template consumes the variable, not a guess from the model family.
+   */
+  chat_template_caps?: Record<string, unknown>;
   build_info?: string;
   [key: string]: unknown;
 }

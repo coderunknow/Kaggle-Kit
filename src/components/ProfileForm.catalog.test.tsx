@@ -134,4 +134,48 @@ describe('ProfileForm model catalog', () => {
     expect(screen.getByText(/is not in this endpoint's \/v1\/models list/)).toBeTruthy();
     expect(screen.getByText(/does not switch a remote server/)).toBeTruthy();
   });
+
+  it('selecting Spark fills only an empty model ID, shows honest statuses and applies official sampling on Save', async () => {
+    const user = userEvent.setup();
+    const { onSaved } = renderForm(baseProfile);
+
+    await user.selectOptions(screen.getByLabelText('Known models (catalog)'), 'spark-x2.6-4b');
+
+    expect(screen.getByLabelText(/^Model ID$/)).toHaveValue('Spark-X2.6-4B');
+    expect(screen.getAllByText(/Apache-2.0/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Implemented — not live-verified/)).toBeTruthy();
+    expect(screen.getByText(/Blocked/)).toBeTruthy();
+    expect(screen.getByText(/No discovery result for this endpoint yet/)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Apply recommended sampling' }));
+    expect(screen.getByText(/is in the draft\. Save the profile to keep it/)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+
+    const [saved] = JSON.parse(window.localStorage.getItem('kaggle-kit.profiles.v1') ?? '[]') as ApiProfile[];
+    expect(saved?.modelId).toBe('Spark-X2.6-4B');
+    expect(saved?.defaultParams.temperature).toBe(1.0);
+    expect(saved?.defaultParams.topP).toBe(0.95);
+    expect(saved?.defaultParams.topK).toBe(0);
+    expect(saved?.defaultParams.frequencyPenalty).toBeUndefined();
+    expect(saved?.defaultParams.presencePenalty).toBeUndefined();
+    // Applying sampling never changes thinking, output length or transport.
+    expect(saved?.defaultParams.reasoningEffort).toBeNull();
+    expect(saved?.defaultParams.maxTokens).toBe(DEFAULT_INFERENCE_PARAMS.maxTokens);
+    expect(saved?.defaultParams.stream).toBe(false);
+  });
+
+  it('selecting Spark never overwrites a hand-typed model ID', async () => {
+    const user = userEvent.setup();
+    renderForm({ ...baseProfile, modelId: 'spark-local-ft' });
+
+    await user.selectOptions(screen.getByLabelText('Known models (catalog)'), 'spark-x2.6-4b');
+
+    expect(screen.getByLabelText(/^Model ID$/)).toHaveValue('spark-local-ft');
+    expect(screen.getByText(/kept your model ID/i)).toBeTruthy();
+    // The explicit override is available but only changes the draft.
+    await user.click(screen.getByRole('button', { name: 'Use Spark-X2.6-4B' }));
+    expect(screen.getByLabelText(/^Model ID$/)).toHaveValue('Spark-X2.6-4B');
+  });
 });

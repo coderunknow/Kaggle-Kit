@@ -95,11 +95,25 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
   };
 
   const effectiveStream = Boolean(draft.stream && streamingEnabled);
-  const { omitted } = buildChatCompletionBody({
+  const recognizedEntry = findCatalogEntryByModelId(profile.modelId);
+  const thinkingControl = recognizedEntry?.thinking;
+  // Widened for comparison with the persisted ReasoningEffort value; the
+  // template levels are a subset of the values the API can carry.
+  const thinkingLevels: readonly ReasoningEffort[] = thinkingControl?.levels ?? [];
+  // The same policy the proxy applies, so the preview below never promises a
+  // level that the request builder would omit.
+  const reasoningPolicy = thinkingControl
+    ? {
+        allowed: thinkingControl.levels,
+        label: `${recognizedEntry?.displayName ?? profile.modelId}'s chat template`,
+      }
+    : undefined;
+  const { omitted, notes } = buildChatCompletionBody({
     model: profile.modelId || 'model',
     messages: [{ role: 'user', content: '' }],
     params: { ...draft, stream: effectiveStream },
     capabilities,
+    ...(reasoningPolicy ? { reasoningPolicy } : {}),
   });
 
   const dirty = !sameParams(
@@ -164,7 +178,6 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
     }
   };
 
-  const recognizedEntry = findCatalogEntryByModelId(profile.modelId);
   const paramsEntry = catalogEntryById(paramsCatalogId) ?? recognizedEntry;
   const applyCatalogParams = () => {
     if (!paramsEntry) return;
@@ -495,41 +508,95 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
         </div>
       </section>
 
-      <section className="card">
-        <h3 className="card__title">Reasoning effort</h3>
-        <p className="card__description">{REASONING_EFFORT_STARTUP_NOTE}</p>
+      {thinkingControl ? (
+        <section className="card">
+          <h3 className="card__title">Thinking level ({recognizedEntry?.displayName})</h3>
+          <p className="card__description">
+            The model's own chat template defines these levels. The value is sent as the OpenAI
+            <code> reasoning_effort</code> field, which the llama.cpp server passes to the template;
+            <code> none</code> disables thinking. It is only sent when the server itself reports that the
+            loaded template consumes the variable (<code>/props</code> →
+            <code> chat_template_caps.supports_reasoning_effort</code>).
+          </p>
 
-        <div className="field">
-          <label className="field__label" htmlFor="reasoning-effort">
-            Effort sent with the request
-          </label>
-          <select
-            id="reasoning-effort"
-            value={draft.reasoningEffort ?? ''}
-            onChange={(event) =>
-              update(
-                'reasoningEffort',
-                event.target.value === ''
-                  ? null
-                  : (event.target.value as ReasoningEffort),
-              )
-            }
-            disabled={!capabilities?.reasoningEffortSupported}
-          >
-            <option value="">Do not send (server startup value is used)</option>
-            {REASONING_EFFORTS.map((effort) => (
-              <option key={effort} value={effort}>
-                {effort}
+          <div className="field">
+            <label className="field__label" htmlFor="thinking-level">
+              Thinking level sent with the request
+            </label>
+            <select
+              id="thinking-level"
+              value={
+                draft.reasoningEffort && thinkingLevels.includes(draft.reasoningEffort)
+                  ? draft.reasoningEffort
+                  : ''
+              }
+              onChange={(event) =>
+                update(
+                  'reasoningEffort',
+                  event.target.value === '' ? null : (event.target.value as ReasoningEffort),
+                )
+              }
+              disabled={!capabilities?.templateReasoningEffortSupported}
+            >
+              <option value="">
+                Do not send (template default: {thinkingControl.defaultLevel})
               </option>
-            ))}
-          </select>
-          <span className="field__hint">
-            {capabilities?.reasoningEffortSupported
-              ? 'The connected server advertises a per-request reasoning_effort option.'
-              : 'The connected server did not advertise this option, so the value is not sent.'}
-          </span>
-        </div>
-      </section>
+              {thinkingControl.levels.map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+            <span className="field__hint">
+              {capabilities?.templateReasoningEffortSupported
+                ? 'The connected server reported that its loaded chat template consumes reasoning_effort.'
+                : 'This server has not reported template reasoning-effort support, so no level is sent.'}
+            </span>
+            {draft.reasoningEffort && !thinkingLevels.includes(draft.reasoningEffort) ? (
+              <span className="field__hint">
+                The stored value “{draft.reasoningEffort}” is not a level of this model and will not be sent.
+              </span>
+            ) : null}
+            <span className="field__hint">{thinkingControl.source}</span>
+          </div>
+        </section>
+      ) : (
+        <section className="card">
+          <h3 className="card__title">Reasoning effort</h3>
+          <p className="card__description">{REASONING_EFFORT_STARTUP_NOTE}</p>
+
+          <div className="field">
+            <label className="field__label" htmlFor="reasoning-effort">
+              Effort sent with the request
+            </label>
+            <select
+              id="reasoning-effort"
+              value={draft.reasoningEffort ?? ''}
+              onChange={(event) =>
+                update(
+                  'reasoningEffort',
+                  event.target.value === ''
+                    ? null
+                    : (event.target.value as ReasoningEffort),
+                )
+              }
+              disabled={!capabilities?.reasoningEffortSupported}
+            >
+              <option value="">Do not send (server startup value is used)</option>
+              {REASONING_EFFORTS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+            <span className="field__hint">
+              {capabilities?.reasoningEffortSupported
+                ? 'The connected server advertises a per-request reasoning_effort option.'
+                : 'The connected server did not advertise this option, so the value is not sent.'}
+            </span>
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <h3 className="card__title">Streaming</h3>
@@ -592,6 +659,13 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
             Not sent with the current settings: <code>{omitted.join(', ')}</code>.
           </p>
         )}
+        {notes.length ? (
+          <ul className="note-list">
+            {notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        ) : null}
         {capabilities?.notes.length ? (
           <ul className="note-list">
             {capabilities.notes.map((note) => (

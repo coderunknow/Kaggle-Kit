@@ -17,10 +17,14 @@
  *    with the evidence behind it. "Implemented — not live-verified" and
  *    "Blocked" are first-class states, not euphemisms for "supported".
  *
- * Sources (checked 2026-10-22): the KRAFTON model card and GGUF repository
+ * Sources (checked 2026-10-23): the KRAFTON model card and GGUF repository
  * metadata (`huggingface.co/KRAFTON/Raon-1-mini-preview[-gguf]`), the
- * `krafton-ai/llama.cpp` branch `raon-1-mini-preview`, Google Cloud TPU
- * inference documentation, and this repository's own deployment records.
+ * `krafton-ai/llama.cpp` branch `raon-1-mini-preview`, the XHToken
+ * Spark-X2.6 model card, GGUF repository metadata and chat template
+ * (`huggingface.co/XHToken/Spark-X2.6-4B[-GGUF]`), llama.cpp `b11719` source
+ * (`LLM_ARCH_SPARK2_5`, `tools/server/server-common.cpp`), the vLLM /
+ * tpu-inference source trees, Google Cloud TPU inference documentation, and
+ * this repository's own deployment records.
  */
 
 import type { InferenceParams } from '../api/requests';
@@ -69,6 +73,35 @@ export type ModelAccess = 'open' | 'gated_weights' | 'provider_account' | 'user_
 
 export type InferenceUseCase = 'general' | 'coding_math';
 
+/** Thinking levels a model's own chat template understands. */
+export type ThinkingLevel = 'none' | 'low' | 'high';
+
+/**
+ * A thinking-level control that the *model's chat template* defines.
+ *
+ * Only models whose template actually consumes the value get one. The
+ * mechanism is named so the request builder and the UI can keep it apart from
+ * the generic server capability flag; it is not inferred from a model family
+ * or from a model-card claim.
+ */
+export interface ThinkingControl {
+  /**
+   * `llama_cpp_reasoning_effort`: the OpenAI `reasoning_effort` request field.
+   * llama.cpp b11719 passes its value to the template variable
+   * `reasoning_effort` (`tools/server/server-common.cpp`) and maps `none` to
+   * thinking disabled; the Spark-X2.6 template reads exactly that variable
+   * and raises for anything outside `low`/`high`.
+   */
+  mechanism: 'llama_cpp_reasoning_effort';
+  /** Values the template accepts, in UI order. */
+  levels: readonly ThinkingLevel[];
+  /** What the template does when the request carries no value. */
+  defaultLevel: ThinkingLevel;
+  /** Where the contract comes from; shown next to the control. */
+  source: string;
+}
+
+
 export interface ModelCatalogEntry {
   /** Stable catalog slug, unrelated to any endpoint's model ID. */
   id: string;
@@ -103,6 +136,12 @@ export interface ModelCatalogEntry {
   codingMathParams?: Partial<InferenceParams>;
   /** Where the recommendations come from; shown next to the apply action. */
   recommendedParamsSource?: string;
+  /**
+   * Present only when the model's own chat template defines thinking levels.
+   * The request builder and the profile editor use it to expose a control
+   * that is specific to this model instead of a generic reasoning field.
+   */
+  thinking?: ThinkingControl;
   deployments: DeploymentCombination[];
 }
 
@@ -113,6 +152,7 @@ export function normalizeModelKey(modelId: string): string {
 
 export const QWEN_CATALOG_ID = 'Qwen3.8-27b';
 export const RAON_CATALOG_ID = 'raon-1-mini-preview';
+export const SPARK_CATALOG_ID = 'spark-x2.6-4b';
 export const CUSTOM_CATALOG_ID = 'custom-openai-compatible';
 
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
@@ -216,6 +256,63 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     ],
   },
   {
+    id: SPARK_CATALOG_ID,
+    displayName: 'Spark-X2.6-4B',
+    description:
+      'XHToken (SparkLLM) 4B dense on-device model: the Spark-X2.5 architecture with a stronger post-training recipe, hybrid sliding-window/full attention, a 1,048,576-token native context and three template-defined thinking levels (none, low, high). Apache-2.0 and ungated.',
+    architecture: 'Dense — hybrid sliding-window + full attention (spark2_5 in llama.cpp)',
+    totalParameters: '4B',
+    contextTokens: 1_048_576,
+    license: 'Apache-2.0',
+    access: 'open',
+    accessNote:
+      'The official GGUF repository (XHToken/Spark-X2.6-4B-GGUF) is public and ungated. The deployment downloads one pinned revision and verifies the per-file SHA-256; no Hugging Face token is required. The Transformers checkpoint needs trust_remote_code; this project does not execute it.',
+    servedModelIds: ['Spark-X2.6-4B'],
+    // A llama.cpp server normally reports the GGUF file name, so the pinned
+    // file names are recognized too. The official SGLang/vLLM examples set
+    // their own server alias (spark2.6 / spark25); a discovered alias only
+    // matches when it contains one of these fragments.
+    matchKeys: ['sparkx264b', 'sparkx26', 'spark26'],
+    recommendedParams: {
+      temperature: 1.0,
+      topP: 0.95,
+      // 0 disables llama.cpp's top-k cutoff, matching the official
+      // Transformers example (top_k=0); the SGLang example sends -1, which
+      // also disables it. The API clamps top_k to a non-negative integer.
+      topK: 0,
+      frequencyPenalty: undefined,
+      presencePenalty: undefined,
+      minP: undefined,
+      repetitionPenalty: undefined,
+    },
+    recommendedParamsSource:
+      'Official Spark-X2.6-4B quickstart: temperature 1.0, top_p 0.95, top_k 0. The official SGLang client example additionally sends neutral repetition/presence/frequency penalties (1/0/0); those equal the server defaults, so they are omitted instead of pinned per profile. Thinking levels are handled by the model-specific control below and are never changed by applying sampling.',
+    thinking: {
+      mechanism: 'llama_cpp_reasoning_effort',
+      levels: ['none', 'low', 'high'],
+      defaultLevel: 'high',
+      source:
+        'Spark-X2.6-4B chat_template.jinja (huggingface.co/XHToken/Spark-X2.6-4B, revision fe31f8d6…): enable_thinking defaults to true and reasoning_effort defaults to high; only low and high are accepted, any other value raises. llama.cpp b11719 wires the OpenAI reasoning_effort field to that exact template variable and maps "none" to thinking disabled (tools/server/server-common.cpp).',
+    },
+    deployments: [
+      {
+        accelerator: 'kaggle_t4x2',
+        status: 'implemented_not_live_verified',
+        runtime:
+          'llama.cpp CUDA b11719 (native spark2_5), GGUF Q4_K_M (3,543,441,312 B) by default or Q8_0, ctx 8192, no speculative decoding',
+        evidence:
+          'The official GGUF repository at revision fe31f8d64890302cc3a1d365d700357b4b75ba77 publishes Q4_K_M and Q8_0 with the LFS SHA-256 digests pinned in the deployment cell. llama.cpp b11719 registers LLM_ARCH_SPARK2_5 ("spark2_5") in src/llama-arch.cpp and src/models/spark2-5.cpp, and the official README states that native spark2_5 support requires b10828 or later. The cell pins the revision and digest, narrows the build list to b11719, refuses Q5_K_M/Q6_K because XHToken does not publish them, and requires --jinja so the model’s own template (and thus its thinking levels) is used. Command construction, quantization rejection, digest mismatch and per-model state isolation are unit-tested. No Kaggle GPU was available here, so no live Spark inference ran.',
+      },
+      {
+        accelerator: 'kaggle_tpu_v5e8',
+        status: 'blocked',
+        runtime: 'No TPU runtime with spark2_5 support',
+        evidence:
+          'The official Spark artifacts are GGUF (a llama.cpp format) and Transformers checkpoints that require trust_remote_code; the vendor-documented serving paths are llama.cpp, SGLang (CUDA/Ascend images) and vLLM (CUDA/Ascend plugin) — no TPU path. On 2026-10-23 a GitHub code search finds spark2_5 in sglang but zero occurrences in vllm-project/vllm and vllm-project/tpu-inference, the backend the TPU cell uses. CUDA kernels and GGUF files do not run on TPU, and no upstream TPU execution proof exists, so notebooks/tpu_deployment.py refuses this combination before installing anything.',
+      },
+    ],
+  },
+  {
     id: CUSTOM_CATALOG_ID,
     displayName: 'Custom OpenAI-compatible endpoint',
     description:
@@ -258,6 +355,15 @@ export function findCatalogEntryByModelId(modelId: string): ModelCatalogEntry | 
   if (exact) return exact;
   const key = normalizeModelKey(trimmed);
   return MODEL_CATALOG.find((entry) => entry.matchKeys.some((fragment) => key.includes(fragment)));
+}
+
+/**
+ * The thinking levels the chat template of a concrete model ID defines, or
+ * `undefined` when the catalog does not know a template-level control for it.
+ * An unrecognized model is never given one.
+ */
+export function thinkingLevelsForModelId(modelId: string): readonly ThinkingLevel[] | undefined {
+  return findCatalogEntryByModelId(modelId)?.thinking?.levels;
 }
 
 /** The recommended sampling values of an entry for a use case. */

@@ -22,7 +22,19 @@ export const LIMITS = {
   timeoutMs: { min: 1_000, max: 1_800_000, default: 120_000 },
 } as const;
 
+/**
+ * The values the generic "reasoning effort" control offers. Models whose own
+ * template defines a different set (Spark-X2.6) get a model-specific control
+ * from the catalog instead of this list.
+ */
 export const REASONING_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high'];
+
+/**
+ * Every value that may be stored on a profile. `none` is a documented level
+ * of the Spark-X2.6 template (thinking disabled); it is never offered for a
+ * model that the catalog does not declare.
+ */
+export const ALL_REASONING_EFFORTS: ReasoningEffort[] = ['none', ...REASONING_EFFORTS];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -101,7 +113,7 @@ export function parseInferenceParams(raw: unknown): ParsedParams {
   const reasoningRaw = source.reasoningEffort;
   let reasoningEffort: ReasoningEffort | null = null;
   if (typeof reasoningRaw === 'string' && reasoningRaw.length > 0) {
-    if (REASONING_EFFORTS.includes(reasoningRaw as ReasoningEffort)) {
+    if (ALL_REASONING_EFFORTS.includes(reasoningRaw as ReasoningEffort)) {
       reasoningEffort = reasoningRaw as ReasoningEffort;
     } else {
       issues.push(`reasoning_effort "${reasoningRaw}" is unknown and was ignored.`);
