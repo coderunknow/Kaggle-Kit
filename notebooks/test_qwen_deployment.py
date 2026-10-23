@@ -1671,13 +1671,13 @@ class SparkDeploymentTests(unittest.TestCase):
 class LocalAuthenticationTests(unittest.TestCase):
     """A keyed llama-server must reject anonymous and wrongly keyed requests."""
 
-    def _serve(self, require_key: str) -> tuple:
+    def _serve(self, require_key: str, open_server: bool = False) -> tuple:
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):  # noqa: N802 - http.server API
                 length = int(self.headers.get("Content-Length") or 0)
                 self.rfile.read(length)
                 header = self.headers.get("Authorization") or ""
-                if header != f"Bearer {require_key}":
+                if not open_server and header != f"Bearer {require_key}":
                     payload = b'{"error":{"message":"Invalid API Key"}}'
                     self.send_response(401)
                 else:
@@ -1717,10 +1717,20 @@ class LocalAuthenticationTests(unittest.TestCase):
     def test_a_server_that_answers_anonymous_requests_fails_the_check(self) -> None:
         if not nb.REQUESTS_AVAILABLE:
             self.skipTest("requests is not installed")
-        config, key = self._serve("ignored-key-that-never-arrives")
+        # A server that treats every request as authorized must not pass the
+        # gate, even though the correctly keyed request would also answer.
+        config, key = self._serve("spark-secret", open_server=True)
         result = nb.verify_local_authentication(nb.build_session(), config, key, "Spark-X2.6-4B")
-        self.assertFalse(result["unauthenticated_rejected"] or result["authenticated_ok"])
+        self.assertFalse(result["unauthenticated_rejected"])
+        self.assertFalse(result["wrong_key_rejected"])
+        self.assertTrue(result["authenticated_ok"])
         self.assertIn("No tunnel is started", result["detail"])
+        # The gate is a three-part conjunction, so this state cannot continue.
+        self.assertFalse(
+            result["unauthenticated_rejected"]
+            and result["wrong_key_rejected"]
+            and result["authenticated_ok"]
+        )
 
 
 if __name__ == "__main__":
