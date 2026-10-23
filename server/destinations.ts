@@ -12,11 +12,16 @@
  *    private, link local and unique local addresses. This is **off** by
  *    default because the primary use case is a `llama-server` on
  *    `127.0.0.1` or a private LAN address.
+ *  - Link-local and cloud-metadata addresses are refused **in every
+ *    configuration**, including literal spellings such as
+ *    `http://169.254.169.254/`: a model endpoint is never legitimately
+ *    served from those ranges.
  *
  * The checks here work on the host name of the URL. DNS rebinding (a name
  * that resolves differently at connect time) is handled at the socket by
  * `pinnedFetch.ts`, which validates the complete DNS answer before dialing
- * and refuses loopback/metadata answers for non-literal host names. The
+ * and refuses loopback/metadata answers; literal addresses are judged here
+ * and, as a second layer, by `pinnedFetch.ts` before the socket is opened. The
  * allow list remains the strongest control for a proxy that is reachable
  * from another machine, because it also covers intentional private LAN
  * destinations that the default policy deliberately permits.
@@ -58,12 +63,25 @@ export function hostnameMatches(pattern: string, host: string): boolean {
 
 const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
-/** Unwrap an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its IPv4 form. */
+/**
+ * Unwrap an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its IPv4 form.
+ *
+ * The WHATWG URL parser serializes a mapped literal like
+ * `http://[::ffff:169.254.169.254]/` to the hex spelling `::ffff:a9fe:a9fe`,
+ * so both spellings have to be unwrapped - otherwise the hex form slips past
+ * every IPv4 range check below.
+ */
 export function unwrapMappedAddress(address: string): string {
   const normalized = normalizeHostname(address);
   if (normalized.startsWith('::ffff:')) {
     const mapped = normalized.slice('::ffff:'.length);
     if (IPV4_PATTERN.test(mapped)) return mapped;
+    const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(mapped);
+    if (hex) {
+      const high = Number.parseInt(hex[1]!, 16);
+      const low = Number.parseInt(hex[2]!, 16);
+      return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+    }
   }
   return normalized;
 }
@@ -139,6 +157,20 @@ export function assertDestinationAllowed(baseUrl: string, policy: HostPolicy): v
   }
 
   const normalized = normalizeHostname(host);
+
+  // A model endpoint is never legitimately served from the link-local or the
+  // cloud-metadata ranges, so a *literal* address in those ranges is refused
+  // here in every configuration - symmetric to the DNS-answer policy of
+  // pinnedFetch.assertResolvedAddresses, which refuses a hostname that
+  // resolves there even when the name is on the allow list.
+  if (isLinkLocalOrMetadata(normalized)) {
+    throw new ApiError(
+      'bad_request',
+      `The host "${normalized}" is a link-local or cloud-metadata address, which this proxy refuses to reach.`,
+      { hint: 'Use the address of the real model server; link-local and cloud-metadata ranges are never model endpoints.' },
+    );
+  }
+
   const allowed = policy.allowedHosts;
 
   if (allowed && allowed.length > 0) {

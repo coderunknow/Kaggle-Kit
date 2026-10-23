@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -347,3 +348,91 @@ class NotebookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManifestConsistencyTests(unittest.TestCase):
+    """The manifest has to describe the build that really runs.
+
+    Two drifts shipped in v0.1.0-dev7: the manifest demanded "Node.js 22"
+    although package.json and the launcher enforce >=20.19, and it omitted
+    the tools unittest suite that release.yml runs through run_checks.py.
+    Both are checked here so the generated manifest stays traceable to the
+    real contracts of the repository.
+    """
+
+    def setUp(self) -> None:
+        self.work = Path(tempfile.mkdtemp(prefix="kaggle-kit-manifest-"))
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+        self.stage = self.work / "stage"
+        self.stage.mkdir()
+        (self.stage / "v0.0.0-app.zip").write_bytes(b"app")
+        self.manifest_path = self.work / "manifest.json"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "build_manifest.py"),
+                "--stage", str(self.stage),
+                "--version", "0.0.0",
+                "--tag", "v0.0.0",
+                "--source-sha", SHA,
+                "--output", str(self.manifest_path),
+                "--checksums", str(self.work / "SHA256SUMS"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+
+    def test_the_node_requirement_matches_package_json_and_the_launcher(self) -> None:
+        engines = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["engines"]["node"]
+        declared = engines.lstrip(">= ")
+        launcher = (ROOT / "tools" / "launcher.mjs").read_text(encoding="utf-8")
+        self.assertIn(f"DEFAULT_NODE_REQUIREMENT = '{declared}'", launcher)
+        application = self.manifest["requirements"]["application"]
+        self.assertIn(declared, application)
+        self.assertNotIn("Node.js 22", application)
+
+    def test_the_build_commands_cover_every_python_suite_of_the_release_workflow(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        commands = self.manifest["build"]["commands"]
+        unittest_commands = re.findall(r'--command "(python3 -m unittest[^"]+)"', workflow)
+        self.assertTrue(unittest_commands, "release.yml runs no unittest suite?")
+        for command in unittest_commands:
+            self.assertIn(command, commands)
+
+
+class EnvironmentReportConsistencyTests(unittest.TestCase):
+    """environment.json is embedded verbatim into verification-report.json.
+
+    The dev7 report carried two entries for the same notebook-test command
+    with incompatible counts (105/17-skipped and 93/0-skipped) and no way to
+    tell them apart: they came from different heads and different
+    environments. When the same command is recorded more than once, every
+    recording has to carry a distinguishing run label.
+    """
+
+    def setUp(self) -> None:
+        path = ROOT / "docs" / "release" / "environment.json"
+        self.assertTrue(path.is_file(), "docs/release/environment.json is missing")
+        self.environment = json.loads(path.read_text(encoding="utf-8"))
+
+    def test_the_report_keeps_the_schema_the_release_report_embeds(self) -> None:
+        for key in ("tested", "notTested"):
+            self.assertIn(key, self.environment)
+            self.assertIsInstance(self.environment[key], list)
+            for entry in self.environment[key]:
+                self.assertIsInstance(entry, str)
+                self.assertTrue(entry.strip())
+
+    def test_repeated_notebook_suite_entries_carry_distinguishing_run_labels(self) -> None:
+        command = "unittest discover -s notebooks"
+        entries = [entry for entry in self.environment["tested"] if command in entry]
+        if len(entries) > 1:
+            for entry in entries:
+                self.assertTrue(
+                    entry.startswith("[run "),
+                    f"ambiguous notebook-suite entry without a run label: {entry[:80]}...",
+                )
+            labels = [entry.split("]", 1)[0] for entry in entries]
+            self.assertEqual(len(set(labels)), len(labels), "two notebook-suite runs share one label")

@@ -91,7 +91,11 @@ export class OpenAIClient {
     this.maxResponseBytes = options.maxResponseBytes ?? Number.POSITIVE_INFINITY;
   }
 
-  /** The base URL without the `/v1` suffix, for display purposes. */
+  /**
+   * The base URL without the `/v1` suffix: the root of the server that hosts
+   * the OpenAI-compatible API. Used for display and to probe server-native
+   * endpoints (llama.cpp serves `GET /props` there, not under `/v1`).
+   */
   get rootUrl(): string {
     return this.baseUrl.replace(/\/v1$/i, '');
   }
@@ -127,17 +131,33 @@ export class OpenAIClient {
     return payload;
   }
 
-  /** Best effort server metadata. Returns null when the endpoint is absent. */
+  /**
+   * Best effort server metadata. Returns null when the endpoint is absent.
+   *
+   * llama.cpp serves `GET /props` at the server root - b11719 registers the
+   * route only as `/props`, never as `/v1/props` - while the OpenAI-compatible
+   * base URL always carries the `/v1` prefix. The root is therefore probed
+   * first and the prefixed path only as a fallback for servers that mount
+   * their metadata under `/v1`. Both candidates are on the same origin, so
+   * the API key rules of `request` are unchanged.
+   */
   async props(options: RequestOptions = {}): Promise<ServerProps | null> {
-    try {
-      const payload = await this.request<ServerProps>('/props', { method: 'GET' }, options);
-      return payload ?? null;
-    } catch (error) {
-      if (error instanceof ApiError && (error.kind === 'not_found' || error.kind === 'bad_request')) {
-        return null;
+    const candidates = [joinApiPath(this.rootUrl, '/props')];
+    const prefixed = joinApiPath(this.baseUrl, '/props');
+    if (prefixed !== candidates[0]) candidates.push(prefixed);
+
+    for (const url of candidates) {
+      try {
+        const payload = await this.requestUrl<ServerProps>(url, { method: 'GET' }, options);
+        return payload ?? null;
+      } catch (error) {
+        if (error instanceof ApiError && (error.kind === 'not_found' || error.kind === 'bad_request')) {
+          continue;
+        }
+        throw error;
       }
-      throw error;
     }
+    return null;
   }
 
   /**
@@ -152,7 +172,15 @@ export class OpenAIClient {
     init: { method: string; body?: string; headers?: Record<string, string> },
     options: RequestOptions = {},
   ): Promise<T> {
-    const url = joinApiPath(this.baseUrl, path);
+    return this.requestUrl<T>(joinApiPath(this.baseUrl, path), init, options);
+  }
+
+  /** `request` against an already-joined URL on the configured origin. */
+  private async requestUrl<T>(
+    url: string,
+    init: { method: string; body?: string; headers?: Record<string, string> },
+    options: RequestOptions = {},
+  ): Promise<T> {
     const headers = this.buildHeaders(init.headers);
     const timeoutMs = options.timeoutMs ?? this.timeoutMs;
 

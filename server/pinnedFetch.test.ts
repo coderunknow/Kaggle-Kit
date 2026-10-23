@@ -5,6 +5,7 @@ import type { HostPolicy } from './destinations';
 import {
   assertResolvedAddresses,
   createPinnedFetch,
+  createPinnedLookup,
   DestinationResolutionError,
   type LookupAll,
 } from './pinnedFetch';
@@ -17,9 +18,19 @@ function fakeLookup(addresses: Array<{ address: string; family: number }>): Look
 }
 
 describe('assertResolvedAddresses', () => {
-  it('passes literal IPs through (already judged by the hostname policy)', () => {
+  it('passes benign literal IPs through (already judged by the hostname policy)', () => {
     expect(assertResolvedAddresses('127.0.0.1', [], OPEN_POLICY)).toEqual([{ address: '127.0.0.1', family: 4 }]);
     expect(assertResolvedAddresses('[::1]', [], OPEN_POLICY)).toEqual([{ address: '::1', family: 6 }]);
+    expect(assertResolvedAddresses('192.168.1.50', [], OPEN_POLICY)).toEqual([{ address: '192.168.1.50', family: 4 }]);
+  });
+
+  it('refuses literal link-local and cloud-metadata addresses in every configuration', () => {
+    for (const address of ['169.254.169.254', '169.254.1.2', '100.100.100.200', '[fe80::1]', 'fd00:ec2::254', '[::ffff:169.254.169.254]', '::ffff:a9fe:a9fe']) {
+      for (const policy of [OPEN_POLICY, STRICT_POLICY]) {
+        expect(() => assertResolvedAddresses(address, [], policy), `${address} ${JSON.stringify(policy)}`)
+          .toThrow(/link-local or cloud-metadata/);
+      }
+    }
   });
 
   it('allows localhost names to resolve to loopback', () => {
@@ -101,5 +112,30 @@ describe('createPinnedFetch against a real socket', () => {
     await startServer();
     const fetchPinned = createPinnedFetch(OPEN_POLICY, fakeLookup([{ address: '169.254.169.254', family: 4 }]));
     await expect(fetchPinned(`http://metadata.example.com:${port}/latest`)).rejects.toThrow();
+  });
+
+});
+
+describe('createPinnedLookup', () => {
+  it('refuses a literal metadata address through the lookup callback', async () => {
+    // Defense in depth: undici skips the DNS lookup for IP literals, so the
+    // production refusal happens in destinations.assertDestinationAllowed
+    // before any fetch (covered in proxy.test.ts). The pinned lookup itself
+    // must still refuse the literal when it is asked to resolve one, so no
+    // transport consumer can ever dial the metadata ranges.
+    const lookup = createPinnedLookup(OPEN_POLICY, fakeLookup([]));
+    const error = await new Promise<unknown>((resolve) => {
+      lookup('169.254.169.254', { all: true } as never, (err: unknown) => resolve(err));
+    });
+    expect(error).toBeInstanceOf(DestinationResolutionError);
+    expect((error as Error).message).toMatch(/link-local or cloud-metadata/);
+  });
+
+  it('resolves a benign literal without consulting DNS', async () => {
+    const lookup = createPinnedLookup(OPEN_POLICY, fakeLookup([]));
+    const result = await new Promise<unknown>((resolve) => {
+      lookup('127.0.0.1', { all: true } as never, (err: unknown, addresses: unknown) => resolve(err ?? addresses));
+    });
+    expect(result).toEqual([{ address: '127.0.0.1', family: 4 }]);
   });
 });

@@ -1849,3 +1849,120 @@ with that evidence and no fallback.
 **Status vocabulary.** Spark on T4 x2 is `implemented_not_live_verified`;
 Spark on TPU is `blocked`. No row claims `verified`, and the tests assert
 that.
+
+## 2026-10-23 - Post-release audit remediation of v0.1.0-dev7
+
+**User Intent.** An independent release audit of the published
+`v0.1.0-dev7` (tag commit `25f11996082291bc0c2837f411c4bac216420a41`)
+confirmed two code defects and five release-metadata/documentation
+defects. The task: verify each finding against the source, fix the
+confirmed ones with regression tests that fail before the fix, keep the
+published tag and assets untouched, and land the work through a PR with
+CI evidence.
+
+**Implementation History.** Finding 1 (HIGH): the capability probe
+requested `{base}/v1/props`, but llama.cpp b11719 registers `GET /props`
+only at the server root (route table re-read from the pinned tag's
+`tools/server/server.cpp` / `server-http.cpp`; zero `/v1/props`
+occurrences). Every llama.cpp deployment therefore reported
+`templateReasoningEffortSupported: false`, permanently disabling Spark's
+thinking-level control and never sending `reasoning_effort`. Fixed in
+`shared/api/client.ts`: `props()` now probes the same-origin server root
+first (base URL minus the `/v1` suffix, preserving reverse-proxy path
+prefixes and trailing-slash normalization) and falls back to `/v1/props`
+for servers that mount the metadata under the API prefix; absent
+endpoints (404/400) stay `null`, failing servers still surface as errors
+and are never re-interpreted as "no capability". The runtime contract for
+the levels was re-verified from b11719 `tools/server/server-common.cpp`:
+`reasoning_effort:"none"` maps to `enable_thinking=false` and never
+reaches the template, `low`/`high` are passed to the template variable -
+exactly the catalog's `none|low|high` whitelist.
+
+Finding 2 (MEDIUM): `assertDestinationAllowed` only enforced
+`isPrivateAddress` behind the default-off `blockPrivateNetworks`, and
+`pinnedFetch`'s literal-IP branch short-circuited with the comment
+"destinations.ts judged it" - which, in the default configuration, it
+never did. A model proxy call with `baseUrl` `http://169.254.169.254`
+really reached the cloud metadata service (reproduced live in the audit
+sandbox; the upstream body was echoed in the error). Both module
+docstrings already promised the opposite ("refuses them even in the
+permissive local configuration" / "Refused at connect time, in every
+configuration"), so the fix enforces the documented invariant:
+link-local and cloud-metadata literals are refused in
+`assertDestinationAllowed` in every configuration (the allow list cannot
+rescue them - symmetric to the DNS-answer path, which already refused
+allow-listed hostnames resolving into those ranges), and
+`pinnedFetch.assertResolvedAddresses` / `createPinnedLookup` refuse the
+same literals as a second layer. `unwrapMappedAddress` additionally
+sees through the hex spelling (`::ffff:a9fe:a9fe`) that the WHATWG URL
+parser produces for `http://[::ffff:169.254.169.254]/`; without it, the
+mapped form slipped past every IPv4 range check. Loopback, `localhost`
+and private-LAN literals keep working in the default configuration -
+the local `llama-server` use case is untouched. Undici skips the DNS
+lookup for IP literals entirely (verified against the vendored undici),
+so `assertDestinationAllowed` is the production choke point; the
+pinned-lookup refusal is defense in depth and unit-tested at the
+callback level.
+
+Findings 3-7 (release integrity): the dev7 release notes claimed "No tag
+or release is created by this work" while serving as the body of the
+created prerelease, and linked `../dev7-audit.md`, which resolves to a
+404 from the release page (the file lives at `docs/dev7-audit.md`); both
+were corrected in `docs/release-notes/0.1.0-dev7.md` (tag-anchored
+absolute URL) and in the published release description (metadata-only
+edit; tag, target commit and all six assets untouched). README pointed
+at the dev4 release notes as "this development release", showed a dev4
+tag example and omitted Spark-X2.6-4B from the catalog and deployment
+matrix; corrected without upgrading any status vocabulary (Spark stays
+"implemented - not live-verified" on T4 x2 and "blocked" on TPU).
+`tools/build_manifest.py` demanded "Node.js 22 or newer" against the
+real contract `engines.node >= 20.19` (package.json, launcher
+`DEFAULT_NODE_REQUIREMENT`, README) and omitted the tools unittest suite
+that `release.yml` really runs; both corrected, with a new consistency
+test that reads the contract from `package.json`, `launcher.mjs` and
+`release.yml` instead of hardcoding it. `docs/release/environment.json`
+carried two unlabeled, incompatible notebook-suite results (105/17
+skipped vs 93/0 skipped); each entry now states its run date, head and
+`requests` availability, and a tools test requires a distinguishing
+`[run ...]` label whenever the same suite is recorded twice.
+
+**Decisions & Lessons.**
+
+**Decision - probe the server root, keep the prefixed fallback.** The
+root-first order matches the pinned runtime; the `/v1/props` fallback
+keeps unknown compatible servers working and costs one extra request
+only when the root route is absent. Rejected: probing only `/v1/props`
+(the shipped bug), and probing both unconditionally (a second request
+with no purpose once the root answered).
+
+**Decision - metadata/link-local is an absolute refusal, not a policy
+mode.** `blockPrivateNetworks` exists to permit `127.0.0.1`/LAN model
+servers by default; extending that permissiveness to `169.254.0.0/16`
+and the known metadata addresses contradicted both modules' documented
+contracts and the DNS path, which already refused those ranges for
+resolved hostnames regardless of the allow list. Literal and resolved
+addresses now follow one rule.
+
+**Decision - regression tests assert side effects, not strings.** The
+SSRF tests assert that the injected transport recorded *zero* outbound
+calls, and the probe tests assert the exact URL sequence; the whole set
+(21 tests) was run against the pre-fix sources and failed, then passed
+after the fix, without editing any test in between.
+
+**Lesson - a `status >= 400` assertion can hide an egress.** The audit's
+first smoke run "passed" the metadata check because the real metadata
+service answered 401 and the proxy relayed it; only reading the error
+body revealed the outbound request. Destination-policy tests must
+assert the absence of the request, not the shape of the failure.
+
+**Lesson - test stubs have to mirror the real route table.** The
+`/v1/props` bug survived a green suite because the proxy test counted
+`endsWith('/props')` and the client test answered 404 for every URL;
+stubs that replicate llama.cpp's actual routes (`/props` at the root
+only) make the wrong-path probe unrepresentable.
+
+**Limitation.** No Kaggle GPU/TPU session, real model, Docker daemon or
+Playwright browser ran here (cost/safety constraints and sandbox
+network policy); the browser e2e, Docker sandbox and Windows launcher
+jobs of the CI workflow on the PR head are the verification path for
+those layers, exactly as for the original dev7 candidate.

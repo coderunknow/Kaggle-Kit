@@ -70,7 +70,16 @@ export function assertResolvedAddresses(
 ): ResolvedAddress[] {
   const normalized = normalizeHostname(hostname);
   if (isIP(normalized)) {
-    // The user configured this exact address; destinations.ts judged it.
+    // The user configured this exact address; destinations.ts judged the
+    // private/loopback policy for it. The link-local and cloud-metadata
+    // ranges are additionally refused here in every configuration, so no
+    // caller of the pinned transport can dial them even when the hostname
+    // layer was skipped - the same rule that applies to DNS answers below.
+    if (isLinkLocalOrMetadata(normalized)) {
+      throw new DestinationResolutionError(
+        `The address "${normalized}" is a link-local or cloud-metadata address, which this proxy refuses to reach.`,
+      );
+    }
     return [{ address: normalized, family: isIP(normalized) }];
   }
   if (addresses.length === 0) {
@@ -105,6 +114,16 @@ export function createPinnedLookup(policy: HostPolicy, lookupAll: LookupAll = de
   return (hostname, options, callback) => {
     const normalized = normalizeHostname(hostname);
     if (isIP(normalized)) {
+      // Literal addresses skip DNS but not the policy: the link-local and
+      // cloud-metadata ranges are refused in every configuration, matching
+      // assertResolvedAddresses and the module contract above.
+      if (isLinkLocalOrMetadata(normalized)) {
+        const error = new DestinationResolutionError(
+          `The address "${normalized}" is a link-local or cloud-metadata address, which this proxy refuses to reach.`,
+        );
+        callback(error as NodeJS.ErrnoException, options.all ? [] : '', 0);
+        return;
+      }
       const family = isIP(normalized);
       if (options.all) callback(null, [{ address: normalized, family }]);
       else callback(null, normalized, family);

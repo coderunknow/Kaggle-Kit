@@ -188,11 +188,90 @@ describe('OpenAIClient', () => {
     expect(() => new OpenAIClient({ baseUrl: 'https://example.com', maxResponseBytes: 1.5 })).toThrow(ApiError);
   });
 
-  it('returns null from props() when the endpoint is missing', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: 'not found' }, 404));
-    const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+  describe('props endpoint discovery', () => {
+    const PROPS_PAYLOAD = {
+      default_generation_settings: { n_predict: -1 },
+      chat_template_caps: { supports_reasoning_effort: true },
+    };
 
-    await expect(client.props()).resolves.toBeNull();
+    it('probes the server-root /props like llama.cpp does and never touches /v1/props on success', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(PROPS_PAYLOAD));
+      const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+      await expect(client.props()).resolves.toEqual(PROPS_PAYLOAD);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(fetchImpl.mock.calls[0]![0]).toBe('https://example.com/props');
+    });
+
+    it('falls back to /v1/props when the root endpoint does not exist', async () => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ error: { message: 'not found' } }, 404))
+        .mockResolvedValueOnce(jsonResponse(PROPS_PAYLOAD));
+      const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+      await expect(client.props()).resolves.toEqual(PROPS_PAYLOAD);
+      expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+        'https://example.com/props',
+        'https://example.com/v1/props',
+      ]);
+    });
+
+    it('returns null from props() when neither endpoint exists', async () => {
+      // A fresh Response per call, exactly like a real transport: one
+      // Response instance cannot be read twice.
+      const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse({ error: 'not found' }, 404));
+      const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+      await expect(client.props()).resolves.toBeNull();
+      expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+        'https://example.com/props',
+        'https://example.com/v1/props',
+      ]);
+    });
+
+    it('propagates a server error instead of reporting a missing endpoint', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+      const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+      const error = await client.props().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).kind).toBe('server');
+      // A failing server is not "no /props": the fallback is only for absent
+      // endpoints, so no second request is invented.
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates a malformed JSON body as invalid_response', async () => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(new Response('not json at all', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', fetchImpl });
+
+      const error = await client.props().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).kind).toBe('invalid_response');
+    });
+
+    it('keeps a reverse-proxy path prefix and normalizes a trailing slash', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(PROPS_PAYLOAD));
+      const client = new OpenAIClient({ baseUrl: 'https://gw.example.com/llama/v1/', fetchImpl });
+
+      await expect(client.props()).resolves.toEqual(PROPS_PAYLOAD);
+      expect(fetchImpl.mock.calls[0]![0]).toBe('https://gw.example.com/llama/props');
+    });
+
+    it('sends the API key on the root probe and never contacts another host', async () => {
+      const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse({ error: 'not found' }, 404));
+      const client = new OpenAIClient({ baseUrl: 'https://example.com/v1', apiKey: API_KEY, fetchImpl });
+
+      await expect(client.props()).resolves.toBeNull();
+      for (const call of fetchImpl.mock.calls) {
+        const [url, init] = call as [string, RequestInit];
+        expect(new URL(url).origin).toBe('https://example.com');
+        expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_KEY}`);
+      }
+    });
   });
 
   it('follows a redirect to the same origin', async () => {
