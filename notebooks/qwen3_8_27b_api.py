@@ -47,15 +47,19 @@ Environment (Kaggle):
 * Accelerator: *GPU T4 x2* (Settings -> Accelerator -> GPU T4 x2)
 * Internet: on
 
-Two model deployments share this cell (dev7): Qwen3.8-27B (the default,
-behaviour unchanged) and Raon-1 mini preview, selected with
-``KAGGLE_KIT_MODEL=raon`` or ``config_for_model("raon")``. Raon keeps its own
-root directory, its own pinned KRAFTON ``llama.cpp`` branch build (the
-``raon1`` GGUF architecture is not assumed to exist in upstream prebuilt
-binaries), its own gated-download token handling, and its own startup
-sampling defaults. TPU deployments live in ``notebooks/tpu_deployment.py``:
-a GGUF/CUDA path must never be presented as a TPU path, and no path in this
-repository silently falls back to CPU inference.
+Three model deployments share this cell (dev7): Qwen3.8-27B (the default,
+behaviour unchanged), Raon-1 mini preview (``KAGGLE_KIT_MODEL=raon``) and
+Spark-X2.6-4B (``KAGGLE_KIT_MODEL=spark``). Each keeps its own root
+directory, server state/key and runtime bundle. Raon builds the pinned
+KRAFTON ``llama.cpp`` branch (the ``raon1`` architecture is not assumed to
+exist in upstream prebuilt binaries) and needs gated-download handling;
+Spark uses the already pinned upstream CUDA build b11719 (which contains the
+``spark2_5`` architecture), a public pinned GGUF with per-file SHA-256 and the
+model's own Jinja template (``--jinja`` is required). Quantization for Spark
+is selected with ``KAGGLE_KIT_QUANTIZATION`` (default ``Q4_K_M``; only
+artifacts XHToken actually publishes are accepted). TPU deployments live in
+``notebooks/tpu_deployment.py``: a GGUF/CUDA path must never be presented as a
+TPU path, and no path in this repository silently falls back to CPU inference.
 """
 
 from __future__ import annotations
@@ -141,6 +145,22 @@ class DeploymentConfig:
     # Re-select the quantization from detected GPU memory before downloading
     # (Raon only; the verified Qwen file choice never changes implicitly).
     auto_select_quantization: bool = False
+
+    # Spark-X2.6 needs the model's own Jinja chat template: its thinking
+    # levels and tool-call markup live there, and llama.cpp's built-in
+    # fallback templates do not implement them. A build without --jinja is
+    # refused instead of silently serving a different prompt format.
+    require_jinja: bool = False
+    # Minimum llama.cpp build number the architecture needs. ``None`` keeps
+    # the historical behavior (whatever build is present).
+    min_llama_cpp_build: Optional[int] = None
+    # Template-defined thinking levels of the model, reported in runtime.json.
+    # Empty for models without such a control.
+    thinking_levels: Tuple[str, ...] = ()
+    thinking_mechanism: Optional[str] = None
+    # Name of the selected quantization, reported in runtime.json. Set by the
+    # apply_* helpers; a plain DeploymentConfig keeps it None.
+    quantization: Optional[str] = None
 
     # Hardware
     mode: str = "t4x2"  # "t4x2" (verified) or "single"
@@ -404,6 +424,7 @@ def apply_raon_quantization(config: "DeploymentConfig", quantization: str) -> "D
     config.model_file = model_file
     config.min_model_bytes = size
     config.model_sha256 = digest
+    config.quantization = quantization
     return config
 
 
@@ -457,16 +478,175 @@ def raon_deployment_config(
     return apply_raon_quantization(config, chosen)
 
 
-def config_for_model(name: str) -> "DeploymentConfig":
+# --------------------------------------------------------------------------
+# Spark-X2.6-4B (Kaggle GPU T4 x2)
+# --------------------------------------------------------------------------
+#
+# Facts below were read from the official sources on 2026-10-23, not assumed:
+# * model card and GGUF repository metadata (huggingface.co/api/models/
+#   XHToken/Spark-X2.6-4B-GGUF?blobs=true): public/ungated, Apache-2.0,
+#   architecture ``spark2_5``, 1,048,576-token context, and the per-file LFS
+#   SHA-256 digests pinned below;
+# * chat template ``chat_template.jinja`` at the model repository: thinking
+#   levels ``none``/``low``/``high`` (``enable_thinking`` boolean and
+#   ``reasoning_effort`` in {high (default), low}; any other value raises);
+# * llama.cpp ``b11719`` source: ``LLM_ARCH_SPARK2_5`` / ``"spark2_5"`` in
+#   ``src/llama-arch.cpp`` and ``src/models/spark2-5.cpp``; the official
+#   README states that native ``spark2_5`` support needs ``b10828`` or later,
+#   and the already pinned CUDA build list (b11717-b11719) is newer.
+
+SPARK_GGUF_REPO = "XHToken/Spark-X2.6-4B-GGUF"
+SPARK_GGUF_REVISION = "fe31f8d64890302cc3a1d365d700357b4b75ba77"
+SPARK_SERVED_MODEL_ID = "Spark-X2.6-4B"
+
+# The first llama.cpp release with the architecture (official README:
+# "Native spark2_5 support requires llama.cpp b10828 or later").
+SPARK_MIN_LLAMA_CPP_BUILD = 10828
+SPARK_LLAMA_CPP_TAGS: Tuple[str, ...] = ("b11719",)
+
+SPARK_DEFAULT_QUANTIZATION = "Q4_K_M"
+
+# name -> (file, exact bytes, sha256). Sizes and digests are the Hugging Face
+# LFS metadata of the official GGUF repository at SPARK_GGUF_REVISION. Only
+# artifacts XHToken actually publishes are listed: a quantization that does
+# not exist cannot be selected, and nothing falls back to another file.
+SPARK_QUANTIZATIONS: Dict[str, Tuple[str, int, str]] = {
+    "Q4_K_M": (
+        "Spark-X2.6-4B-Q4_K_M.gguf",
+        3_543_441_312,
+        "91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9",
+    ),
+    "Q8_0": (
+        "Spark-X2.6-4B-Q8_0.gguf",
+        4_375_021_824,
+        "145c2aa606820663f26ad530b8fc141ed885e2e9ca29f9be7c3bfe8931d58b81",
+    ),
+}
+
+# Requested-but-unpublished quantizations get an explicit, actionable error
+# instead of a silent substitution with another file or another source.
+SPARK_UNAVAILABLE_QUANTIZATIONS: Dict[str, str] = {
+    "Q5_K_M": "XHToken publishes no Q5_K_M GGUF for Spark-X2.6-4B.",
+    "Q6_K": "XHToken publishes no Q6_K GGUF for Spark-X2.6-4B.",
+    "F16": "The full-precision file is published as Spark-X2.6-4B.gguf but is not exposed here; Q4_K_M/Q8_0 are the verified choices.",
+}
+
+# The template's own levels, in the order the model documents them.
+SPARK_THINKING_LEVELS: Tuple[str, ...] = ("none", "low", "high")
+SPARK_THINKING_MECHANISM = "llama_cpp_reasoning_effort"
+
+
+def spark_quantization_from_env(environ: Optional[Dict[str, str]] = None) -> str:
+    """
+    Read ``KAGGLE_KIT_QUANTIZATION`` for the Spark deployment.
+
+    Unset means the verified default (Q4_K_M). An unknown or unpublished value
+    raises: the deployment never falls back to a different quantization and
+    never quietly downloads an artifact that was not requested.
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get("KAGGLE_KIT_QUANTIZATION") or "").strip()
+    if not raw:
+        return SPARK_DEFAULT_QUANTIZATION
+    if raw in SPARK_QUANTIZATIONS:
+        return raw
+    if raw in SPARK_UNAVAILABLE_QUANTIZATIONS:
+        raise ValueError(
+            f"The Spark quantization {raw!r} is not published by XHToken: "
+            f"{SPARK_UNAVAILABLE_QUANTIZATIONS[raw]} Available official artifacts: "
+            f"{', '.join(SPARK_QUANTIZATIONS)}."
+        )
+    raise ValueError(
+        f"Unknown Spark quantization {raw!r}. Available official artifacts: "
+        f"{', '.join(SPARK_QUANTIZATIONS)}. Set KAGGLE_KIT_QUANTIZATION to one "
+        "of them, or unset it for the Q4_K_M default."
+    )
+
+
+def apply_spark_quantization(config: "DeploymentConfig", quantization: str) -> "DeploymentConfig":
+    """Point a config at one pinned Spark quantization (file, size, digest)."""
+    try:
+        model_file, size, digest = SPARK_QUANTIZATIONS[quantization]
+    except KeyError:
+        raise ValueError(
+            f"Unknown Spark quantization {quantization!r}; published options: "
+            f"{', '.join(SPARK_QUANTIZATIONS)}."
+        ) from None
+    config.model_file = model_file
+    config.min_model_bytes = size
+    config.model_sha256 = digest
+    config.quantization = quantization
+    return config
+
+
+def spark_deployment_config(
+    quantization: Optional[str] = None,
+    per_gpu_usable_bytes: int = T4_USABLE_BYTES,
+) -> "DeploymentConfig":
+    """
+    The Spark-X2.6-4B deployment for Kaggle GPU T4 x2.
+
+    Separate from Qwen and Raon where the three genuinely differ: own root
+    directory (own server state/key/runtime bundle), pinned official GGUF
+    with per-file SHA-256, the pinned b11719 CUDA build that contains the
+    ``spark2_5`` architecture, a required ``--jinja`` (the model's thinking
+    levels and tool-call markup are template features), and no speculative
+    decoding (the model publishes no MTP/draft head).
+
+    The context stays at the application's documented 8192 even though the
+    model natively supports 1048576: a larger context is an operator decision
+    with a real KV-cache cost, not an implicit default.
+    """
+    chosen = quantization or SPARK_DEFAULT_QUANTIZATION
+    config = DeploymentConfig(
+        repo=SPARK_GGUF_REPO,
+        model_revision=SPARK_GGUF_REVISION,
+        llama_cpp_tags=SPARK_LLAMA_CPP_TAGS,
+        deployment_name="Spark",
+        status_title="SPARK API STATUS",
+        profile_name="Kaggle T4 x2 - Spark",
+        log_prefix="[spark]",
+        model_alias=SPARK_SERVED_MODEL_ID,
+        requires_hf_token=False,
+        auto_select_quantization=False,
+        enable_mtp=False,
+        require_jinja=True,
+        min_llama_cpp_build=SPARK_MIN_LLAMA_CPP_BUILD,
+        # The template's own default, so a request that carries no level
+        # behaves exactly as the model card documents.
+        reasoning_effort="high",
+        thinking_levels=SPARK_THINKING_LEVELS,
+        thinking_mechanism=SPARK_THINKING_MECHANISM,
+        root=Path("/kaggle/working/spark_x2_6_api"),
+    )
+    apply_spark_quantization(config, chosen)
+    # Memory guard: the conservative per-device weight share must not exceed
+    # 70% of a device, leaving room for the KV cache, compute buffers and the
+    # CUDA context. Both published files fit two T4s comfortably; the guard
+    # exists so a future quantization cannot be added without a size check.
+    weight_share = estimate_per_device_bytes(config.min_model_bytes, gpu_count=2)
+    if weight_share > int(per_gpu_usable_bytes * 0.70):
+        raise RuntimeError(
+            f"The Spark {chosen} file ({config.min_model_bytes / 1e9:.2f} GB) needs "
+            f"about {weight_share / 1e9:.2f} GB per device, which exceeds 70% of the "
+            f"available {per_gpu_usable_bytes / 1e9:.1f} GB. Use a larger accelerator; "
+            "CPU offload is never substituted silently."
+        )
+    return config
+
+
+def config_for_model(name: str, environ: Optional[Dict[str, str]] = None) -> "DeploymentConfig":
     """Resolve ``KAGGLE_KIT_MODEL``/a cell argument to a deployment config."""
     normalized = (name or "qwen").strip().lower()
     if normalized in ("qwen", "qwen3.8-27b", "qwen3.8", ""):
         return DeploymentConfig()
     if normalized in ("raon", "raon-1", "raon-1-mini-preview", "raon1"):
         return raon_deployment_config()
+    if normalized in ("spark", "spark-x2.6-4b", "spark-x2.6", "sparkx26", "sparkx2.6"):
+        return spark_deployment_config(spark_quantization_from_env(environ))
     raise ValueError(
-        f"Unknown model deployment {name!r}; available: 'qwen' (default) and 'raon'. "
-        "TPU deployments are separate (notebooks/tpu_deployment.py)."
+        f"Unknown model deployment {name!r}; available: 'qwen' (default), 'raon' and "
+        "'spark'. TPU deployments are separate (notebooks/tpu_deployment.py)."
     )
 
 
@@ -769,8 +949,32 @@ def server_flags(help_text: str) -> set:
     return set(re.findall(r"(--[a-z0-9][a-z0-9-]*)", help_text))
 
 
-def find_working_server(root: Path) -> Optional[Path]:
-    """An already downloaded ``llama-server`` that starts."""
+def parse_llama_cpp_build(version_text: str) -> Optional[int]:
+    """
+    The build number from ``llama-server --version`` output, or ``None``.
+
+    The pinned binaries print ``version: b11719 (build 11719, commit ...)``.
+    Both the explicit ``build N`` field and a leading ``bN`` are accepted so a
+    different but still identifiable build can be judged; unparsable output
+    stays ``None`` and is never treated as "new enough".
+    """
+    match = re.search(r"\bbuild\s+(\d+)\b", version_text)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\bb(\d{4,})\b", version_text)
+    return int(match.group(1)) if match else None
+
+
+def build_supports_minimum(version_text: str, minimum: Optional[int]) -> bool:
+    """True when the build is known to be at least ``minimum``."""
+    if minimum is None:
+        return True
+    build = parse_llama_cpp_build(version_text)
+    return build is not None and build >= minimum
+
+
+def find_working_server(root: Path, min_build: Optional[int] = None) -> Optional[Path]:
+    """An already downloaded ``llama-server`` that starts and is new enough."""
     for binary in sorted(root.rglob("llama-server")):
         if not binary.is_file():
             continue
@@ -785,9 +989,16 @@ def find_working_server(root: Path) -> Optional[Path]:
             )
         except Exception:  # noqa: BLE001
             continue
-        if result.returncode == 0:
-            log(f"Reusing llama-server: {binary}")
-            return binary
+        if result.returncode != 0:
+            continue
+        if not build_supports_minimum(result.stdout + result.stderr, min_build):
+            warn(
+                f"Ignoring {binary}: its build is older than the required "
+                f"b{min_build} (version output: {(result.stdout or result.stderr).strip()[:160]!r})."
+            )
+            continue
+        log(f"Reusing llama-server: {binary}")
+        return binary
     return None
 
 
@@ -806,7 +1017,7 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
     if config.llama_cpp_source != "release":
         raise RuntimeError(f"Unknown llama.cpp source {config.llama_cpp_source!r}.")
 
-    existing = find_working_server(config.bin_root)
+    existing = find_working_server(config.bin_root, config.min_llama_cpp_build)
     if existing:
         return existing
 
@@ -867,9 +1078,16 @@ def get_server_binary(session: requests.Session, config: DeploymentConfig) -> Pa
                 timeout=30,
                 env=env,
             )
-            if check.returncode == 0:
+            if check.returncode == 0 and build_supports_minimum(
+                check.stdout + check.stderr, config.min_llama_cpp_build
+            ):
                 log(f"llama.cpp is ready: {check.stdout.strip()}")
                 return binary
+            if check.returncode == 0:
+                warn(
+                    f"The build {tag} reports an older version than the required "
+                    f"b{config.min_llama_cpp_build}; it is not used."
+                )
             warn("The downloaded binary does not start:")
             warn((check.stderr or check.stdout)[-2000:])
 
@@ -1148,6 +1366,16 @@ def build_server_command(
     if "--jinja" in supported:
         command.append("--jinja")
         applied["jinja"] = True
+    elif config.require_jinja:
+        # Fail closed: without Jinja the server would substitute its built-in
+        # template, silently dropping the model's thinking levels and tool-call
+        # markup. Serving a different prompt format is worse than not starting.
+        raise RuntimeError(
+            "This deployment requires the model's Jinja chat template (thinking "
+            "levels and tool calling are template features), but the installed "
+            "llama-server build has no --jinja option. Refusing to start with a "
+            "substituted template. Use the pinned b11719 build."
+        )
 
     # Reasoning effort is a start-up flag in llama.cpp.
     if variant.get("reasoning"):
@@ -1808,6 +2036,64 @@ def smoke_test(
     return (choices[0].get("message", {}) or {}).get("content", "")
 
 
+def verify_local_authentication(
+    session: requests.Session, config: DeploymentConfig, api_key: str, model_id: str
+) -> Dict[str, Any]:
+    """
+    Prove that the local server is keyed, not just that it answers.
+
+    Three requests that differ only in their ``Authorization`` header decide
+    the result: no header and a wrong key must both be rejected with 401/403,
+    and the right key must produce a real completion. A server that accepts an
+    unauthenticated chat completion is reported as failed, and the deployment
+    does not proceed to a public tunnel. The key only ever travels in the
+    header; no URL or error message contains it.
+    """
+    url = f"{config.local_api_url}/chat/completions"
+    payload = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "max_tokens": 8,
+        "temperature": 0,
+        "stream": False,
+    }
+
+    def status(headers: Dict[str, str]) -> Optional[int]:
+        try:
+            response = session.post(url, headers=headers, json=payload, timeout=(5, 60))
+            return response.status_code
+        except requests.RequestException:
+            return None
+
+    anonymous = status({})
+    wrong = status({"Authorization": "Bearer kaggle-kit-invalid-key-for-probe"})
+    authorized = status(
+        {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    )
+
+    unauthenticated_rejected = anonymous in (401, 403)
+    wrong_key_rejected = wrong in (401, 403)
+    authenticated_ok = authorized == 200
+    if unauthenticated_rejected and wrong_key_rejected and authenticated_ok:
+        detail = (
+            "The server rejected an unauthenticated and a wrongly keyed chat "
+            "completion (401/403) and answered a real completion with the key."
+        )
+    else:
+        detail = (
+            f"Authentication status is not what this deployment requires "
+            f"(anonymous={anonymous}, wrong key={wrong}, correct key={authorized}); "
+            "anonymous and wrong-key requests must be 401/403 and the correct "
+            "key must answer 200. No tunnel is started in this state."
+        )
+    return {
+        "unauthenticated_rejected": unauthenticated_rejected,
+        "wrong_key_rejected": wrong_key_rejected,
+        "authenticated_ok": authenticated_ok,
+        "detail": detail,
+    }
+
+
 def probe_local_streaming(
     session: requests.Session, config: DeploymentConfig, api_key: str, model_id: str
 ) -> bool:
@@ -2119,6 +2405,7 @@ def write_runtime_bundle(
     binary: Path,
     *,
     local_streaming: Optional[bool] = None,
+    authentication: Optional[Dict[str, Any]] = None,
     public_status: Optional[Dict[str, Any]] = None,
     reused: bool = False,
     server_pid: Optional[int] = None,
@@ -2149,6 +2436,10 @@ def write_runtime_bundle(
         "llama_cpp_source": config.llama_cpp_source,
         "model_file": str(model_path),
         "model_bytes": model_path.stat().st_size if model_path.exists() else None,
+        "quantization": config.quantization,
+        "model_sha256": config.model_sha256,
+        "thinking_levels": list(config.thinking_levels),
+        "thinking_mechanism": config.thinking_mechanism,
         "context_size": applied.get("ctx"),
         "reasoning_effort": applied.get("reasoning_effort"),
         "reasoning_applied": bool(applied.get("reasoning")),
@@ -2164,6 +2455,11 @@ def write_runtime_bundle(
         "local_base_url": config.local_api_url,
         "public_base_url": f"{public_url}/v1" if public_url else None,
         "local_streaming_supported": local_streaming,
+        "authentication_enforced": bool((authentication or {}).get("authenticated_ok")),
+        "unauthenticated_requests_rejected": bool(
+            (authentication or {}).get("unauthenticated_rejected")
+        ),
+        "authentication_detail": (authentication or {}).get("detail"),
         "public_endpoint_verified": bool(public.get("inference_ok")),
         "public_verification": public.get("detail"),
         "public_streaming_supported": public.get("streaming_supported"),
@@ -2298,6 +2594,19 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
         )
         server_pid = (read_server_state(config) or {}).get("pid")
 
+    authentication = verify_local_authentication(session, config, api_key, model_id)
+    log(authentication["detail"])
+    if not (
+        authentication["unauthenticated_rejected"]
+        and authentication["wrong_key_rejected"]
+        and authentication["authenticated_ok"]
+    ):
+        # Fail closed before any tunnel exists: an unprotected server is the
+        # one failure mode a public route would turn into an incident.
+        raise RuntimeError(
+            "Refusing to continue: " + str(authentication["detail"])
+        )
+
     local_streaming = probe_local_streaming(session, config, api_key, model_id)
     log(f"Local streaming supported: {local_streaming}")
 
@@ -2342,6 +2651,7 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
         public_url,
         binary,
         local_streaming=local_streaming,
+        authentication=authentication,
         public_status=public_status,
         reused=reused,
         server_pid=server_pid,
@@ -2358,7 +2668,15 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
     if applied.get("extra_args"):
         print(f"Startup defaults: {', '.join(applied['extra_args'])}")
     print(f"Model file:       {model_path}")
+    if config.quantization:
+        print(f"Quantization:     {config.quantization} (pinned file, SHA-256 verified)")
     print(f"Context size:     {applied.get('ctx')}")
+    if config.thinking_levels:
+        print(
+            "Thinking levels:  "
+            + ", ".join(config.thinking_levels)
+            + " (request-time template values; none disables thinking)"
+        )
     if applied.get("reasoning"):
         print(f"Reasoning effort: {applied.get('reasoning_effort')} (start-up flag)")
     else:
@@ -2380,6 +2698,7 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
         + ("reused from a previous run" if reused else "started in this run")
     )
     print("Local inference:  verified with a real chat completion")
+    print("Authentication:   verified enforced (unauthenticated request rejected)")
     print(f"Local streaming:  {'supported' if local_streaming else 'not supported'}")
     print(f"Public endpoint:  {f'{public_url}/v1' if public_url else 'unavailable'}")
     if public_url:
@@ -2426,8 +2745,10 @@ def main(config: Optional[DeploymentConfig] = None) -> Dict[str, Any]:
 if __name__ == "__main__":
     try:
         # Default stays the verified Qwen deployment. Set
-        # KAGGLE_KIT_MODEL=raon in the notebook environment (or call
-        # main(raon_deployment_config())) for the Raon T4 x2 deployment.
+        # KAGGLE_KIT_MODEL=raon or KAGGLE_KIT_MODEL=spark in the notebook
+        # environment (or call main(raon_deployment_config()) /
+        # main(spark_deployment_config())) for those T4 x2 deployments.
+        # KAGGLE_KIT_QUANTIZATION selects a Spark artifact (Q4_K_M default).
         main(config_for_model(os.environ.get("KAGGLE_KIT_MODEL", "qwen")))
     except Exception as error:  # noqa: BLE001
         fail(f"{type(error).__name__}: {error}")
