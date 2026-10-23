@@ -38,6 +38,16 @@ function createFetchStub() {
       });
     }
 
+    // llama.cpp (b11719) serves GET /props at the server root only - never
+    // under the OpenAI-compatible /v1 prefix - so the stub mirrors the real
+    // route table instead of answering every path.
+    if (new URL(url).pathname === '/props') {
+      return new Response(JSON.stringify({
+        default_generation_settings: { n_predict: -1 },
+        chat_template_caps: { supports_reasoning_effort: true },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
     return new Response('{"error":"not found"}', { status: 404 });
   });
 
@@ -422,5 +432,171 @@ describe('the capability cache of the proxy', () => {
     const embeddedResult = await proxy.probeToolCalling({ baseUrl: BASE_URL }, { model: 'mock-model', timeoutMs: 5_000, force: true });
     expect(embeddedResult.status).toBe('supported_verified');
     expect(embeddedResult.roundTripVerified).toBe(true);
+  });
+});
+
+describe('the /props capability probe against a llama.cpp-style route table', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubRoutes(routes: Record<string, { status: number; body: unknown }>) {
+    const calls: string[] = [];
+    const stub = vi.fn(async (input: unknown) => {
+      const url = typeof input === 'string' ? input : String(input);
+      calls.push(url);
+      const route = routes[new URL(url).pathname];
+      if (!route) return new Response('{"error":"not found"}', { status: 404 });
+      return new Response(JSON.stringify(route.body), {
+        status: route.status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', stub);
+    return { stub, calls };
+  }
+
+  const LLAMA_PROPS = {
+    default_generation_settings: { n_predict: -1 },
+    chat_template_caps: { supports_reasoning_effort: true },
+  };
+
+  it('detects the template capability of a b11719-style server that only serves the root /props', async () => {
+    const proxy = createProxy();
+    const { calls } = stubRoutes({ '/props': { status: 200, body: LLAMA_PROPS } });
+
+    const capabilities = await proxy.detectCapabilities(BASE_URL, undefined, 5_000);
+
+    expect(capabilities.templateReasoningEffortSupported).toBe(true);
+    // The root probe answered, so no /v1/props request was invented.
+    expect(calls).toEqual(['http://127.0.0.1:9999/props']);
+  });
+
+  it('falls back to /v1/props for a server that mounts the metadata under the API prefix', async () => {
+    const proxy = createProxy();
+    const { calls } = stubRoutes({ '/v1/props': { status: 200, body: LLAMA_PROPS } });
+
+    const capabilities = await proxy.detectCapabilities(BASE_URL, undefined, 5_000);
+
+    expect(capabilities.templateReasoningEffortSupported).toBe(true);
+    expect(calls).toEqual(['http://127.0.0.1:9999/props', 'http://127.0.0.1:9999/v1/props']);
+  });
+
+  it('reports the honest missing-endpoint note when neither /props route exists', async () => {
+    const proxy = createProxy();
+    const { calls } = stubRoutes({});
+
+    const capabilities = await proxy.detectCapabilities(BASE_URL, undefined, 5_000);
+
+    expect(capabilities.templateReasoningEffortSupported).toBe(false);
+    expect(capabilities.reasoningEffortSupported).toBe(false);
+    expect(capabilities.notes.join('\n')).toMatch(/does not expose \/props/);
+    expect(calls).toEqual(['http://127.0.0.1:9999/props', 'http://127.0.0.1:9999/v1/props']);
+  });
+
+  it('never claims a capability from a malformed or failing props response', async () => {
+    const proxy = createProxy();
+    const broken = vi.fn(async () => new Response('<html>not json</html>', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', broken);
+
+    const capabilities = await proxy.detectCapabilities(BASE_URL, undefined, 5_000);
+
+    expect(capabilities.templateReasoningEffortSupported).toBe(false);
+    expect(capabilities.notes.join('\n')).toMatch(/Capability detection failed/);
+  });
+
+  it('sends the thinking level end to end once the root probe confirmed the template', async () => {
+    const proxy = createProxy();
+    stubRoutes({ '/props': { status: 200, body: LLAMA_PROPS } });
+
+    const capabilities = await proxy.detectCapabilities(BASE_URL, undefined, 5_000);
+    expect(capabilities.templateReasoningEffortSupported).toBe(true);
+
+    // The catalog entry of the concrete model supplies the level whitelist;
+    // buildUpstreamBody is the code path a chat request really takes.
+    const params = { maxTokens: 64, temperature: 1.0, topP: 0.95, stream: false };
+    for (const level of ['none', 'low', 'high'] as const) {
+      const body = proxy.buildUpstreamBody(
+        'Spark-X2.6-4B',
+        [{ role: 'user', content: 'hi' }],
+        { ...params, reasoningEffort: level },
+        capabilities,
+      );
+      expect(body.reasoning_effort).toBe(level);
+    }
+    const rejected = proxy.buildUpstreamBody(
+      'Spark-X2.6-4B',
+      [{ role: 'user', content: 'hi' }],
+      { ...params, reasoningEffort: 'medium' },
+      capabilities,
+    );
+    expect(rejected.reasoning_effort).toBeUndefined();
+  });
+});
+
+describe('the destination policy of the proxy against literal addresses', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const REFUSED_BASE_URLS = [
+    'http://169.254.169.254',
+    'http://169.254.169.254/v1',
+    'http://169.254.1.2/v1',
+    'http://100.100.100.200/v1',
+    'http://[::ffff:169.254.169.254]/v1',
+    'http://[::ffff:a9fe:a9fe]/v1',
+    'http://[fe80::1]/v1',
+    'http://[fd00:ec2::254]/v1',
+  ];
+
+  it.each(REFUSED_BASE_URLS)('refuses %s before any outbound request in the default configuration', async (baseUrl) => {
+    const proxy = createProxy();
+    const { calls } = createFetchStub();
+
+    const error = await proxy.listModels({ baseUrl }, 2_000).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/link-local or cloud-metadata/);
+    // The security assertion is the missing side effect: no request left.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a literal metadata address even when it is on the allow list', async () => {
+    const config = loadServerConfig({ KAGGLE_KIT_ALLOWED_HOSTS: '169.254.169.254' }, process.cwd());
+    const store = new SecretStore(path.join(os.tmpdir(), `kaggle-kit-proxy-allow-${Date.now()}.json`));
+    const logger = createLogger({ sink: () => undefined });
+    const calls: string[] = [];
+    const stub = vi.fn(async (input: unknown) => {
+      calls.push(String(input));
+      return new Response('{"data":[]}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', stub);
+    const proxy = new ProxyService(config, store, logger, (input, init) => globalThis.fetch(input, init));
+
+    const error = await proxy.listModels({ baseUrl: 'http://169.254.169.254/v1' }, 2_000).catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toMatch(/link-local or cloud-metadata/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps a literal loopback endpoint working in the default configuration', async () => {
+    const proxy = createProxy();
+    const { calls } = createFetchStub();
+
+    const error = await proxy.listModels({ baseUrl: 'http://127.0.0.1:9999/v1' }, 2_000).catch((caught: unknown) => caught);
+
+    // The stub answers 404 to /v1/models; the point is that the policy let
+    // the loopback destination through to the transport.
+    expect((error as Error).message).toMatch(/not found/i);
+    expect(calls).toEqual(['http://127.0.0.1:9999/v1/models']);
   });
 });

@@ -64,6 +64,47 @@ describe('private address detection', () => {
 });
 
 describe('destination policy', () => {
+  it('refuses literal link-local and cloud-metadata addresses in every configuration', () => {
+    const refused = [
+      'http://169.254.169.254/v1',
+      'http://169.254.1.2:8080/v1',
+      'http://100.100.100.200/v1',
+      'http://[fd00:ec2::254]/v1',
+      'http://[fe80::1]/v1',
+      'http://[::ffff:169.254.169.254]/v1',
+      // The WHATWG URL parser serializes mapped literals to the hex spelling;
+      // the policy has to see through it.
+      'http://[::ffff:a9fe:a9fe]/v1',
+    ];
+    for (const policy of [
+      { allowedHosts: null, blockPrivateNetworks: false },
+      { allowedHosts: null, blockPrivateNetworks: true },
+    ]) {
+      for (const baseUrl of refused) {
+        expect(() => assertDestinationAllowed(baseUrl, policy), `${baseUrl} ${JSON.stringify(policy)}`)
+          .toThrowError(/link-local or cloud-metadata/);
+      }
+    }
+  });
+
+  it('refuses a literal metadata address even when the allow list names it', () => {
+    expect(() =>
+      assertDestinationAllowed('http://169.254.169.254/v1', {
+        allowedHosts: ['169.254.169.254'],
+        blockPrivateNetworks: false,
+      }),
+    ).toThrowError(/link-local or cloud-metadata/);
+  });
+
+  it('still allows the local and LAN endpoints the default configuration exists for', () => {
+    for (const baseUrl of ['http://127.0.0.1:8080/v1', 'http://localhost:8080/v1', 'http://192.168.1.50/v1', 'http://10.0.0.5:9999/v1', 'http://[::1]:8080/v1']) {
+      expect(() =>
+        assertDestinationAllowed(baseUrl, { allowedHosts: null, blockPrivateNetworks: false }),
+        baseUrl,
+      ).not.toThrow();
+    }
+  });
+
   it('allows every host when no allow list is configured', () => {
     expect(() =>
       assertDestinationAllowed('https://api.example.com/v1', {

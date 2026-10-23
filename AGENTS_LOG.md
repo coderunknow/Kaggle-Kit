@@ -1243,3 +1243,88 @@ follow-up log entry.
   is "implemented - not live-verified"; nothing here proves model output,
   speed, memory, or that b11719 parses Spark's tool-call format - native
   tool calling stays disabled until the real probe passes.
+
+## 2026-10-23 - Post-release audit remediation of v0.1.0-dev7 (this branch)
+
+**Context.** An independent adversarial audit of the published
+`v0.1.0-dev7` (tag commit `25f11996082291bc0c2837f411c4bac216420a41`,
+release identity and all six asset digests verified; `notebook.ipynb` and
+`source.zip` byte-reproduced) confirmed seven defects. This session
+re-verified every finding against the source, fixed the code defects with
+regression tests, corrected the release documentation and edited the
+published release description (metadata only - tag, target commit and all
+six assets untouched). The DESIGN_LOG entry of the same date carries the
+decisions and rejected alternatives.
+
+**Findings re-verified and fixed here.**
+* HIGH - the `/props` capability probe requested `{base}/v1/props`;
+  llama.cpp b11719 registers `GET /props` only at the server root
+  (re-checked in the pinned tag's `tools/server/server.cpp` and
+  `server-http.cpp`: zero `/v1/props` occurrences). Consequence: Spark's
+  thinking-level control stayed permanently disabled and
+  `reasoning_effort` was never sent on any llama.cpp deployment. Fixed in
+  `shared/api/client.ts` (root-first probe, `/v1/props` fallback, absent
+  endpoint stays `null`, failing server stays an error). The b11719
+  contract for the levels was re-read from `tools/server/server-common.cpp`:
+  `none` maps to `enable_thinking=false` (never reaches the template),
+  `low`/`high` go to the template variable.
+* MEDIUM - the model proxy reached cloud metadata through literal IPs in
+  the default configuration (`http://169.254.169.254` really egressed in
+  the audit sandbox; upstream body echoed in the error). Root cause:
+  `assertDestinationAllowed` enforced nothing by default and the
+  `pinnedFetch` literal branch trusted a judgement that never happened.
+  Fixed in `server/destinations.ts` (link-local/metadata literals refused
+  in every configuration, allow list included) and `server/pinnedFetch.ts`
+  (second layer in `assertResolvedAddresses` and `createPinnedLookup`),
+  plus hex-mapped IPv6 unwrapping (`::ffff:a9fe:a9fe`, the spelling the
+  WHATWG URL parser produces). Verified that undici skips the lookup for
+  IP literals, so `assertDestinationAllowed` is the production choke
+  point; every proxy route goes through `resolveTarget` first. Loopback
+  and LAN literals keep working by default (tests included).
+* Release integrity - the dev7 notes' "No tag or release is created by
+  this work" and the `../dev7-audit.md` link (404 from the release page;
+  the file is `docs/dev7-audit.md`) were corrected in
+  `docs/release-notes/0.1.0-dev7.md` (tag-anchored URL, `{{SOURCE_SHA}}`
+  placeholder kept) and in the published release description. README
+  dev4 remnants fixed and Spark-X2.6-4B added to the catalog/matrix text
+  with the unchanged honest statuses. `tools/build_manifest.py` now
+  states the real Node floor (20.19, matching `engines` and the
+  launcher) and lists the tools unittest suite that `release.yml` runs;
+  `docs/release/environment.json` labels its two notebook-suite runs
+  (2026-10-22 final-audit head with `requests` = 93/0; 2026-10-23 dev7
+  head without `requests` = 105/17-skipped).
+
+**Local verification (real outputs of this session, sandbox Linux x86_64,
+Node v22.22.3, Python 3.11.2, venv with requests 2.34.2).**
+* Before-fix proof: with only the three source files reverted (`git
+  checkout` + re-apply of the saved patch, tests unchanged), 21 of the
+  new Vitest regressions failed and 3 of the 4 new tools-suite tests
+  failed; after re-applying the fixes all passed. No test was weakened.
+* `npm run typecheck`: exit 0. `npm run lint`: exit 0.
+* `npx vitest run`: 48 files / 493 tests passed, 0 failed (baseline 466;
+  +27 new: client props-contract 7 new tests absorbing the old
+  missing-endpoint test (net +6), destinations literal-policy 3,
+  pinnedFetch literal-policy 3, proxy probe-sequence 5 incl. the
+  end-to-end `reasoning_effort` body check, proxy literal-address
+  refusals 10 asserting zero outbound calls, plus stub hardening).
+* `npm run build`: exit 0. `npm run check:integration`: 33/33.
+* `python3 -m unittest discover -s notebooks -p "test_*.py"`: Ran 105
+  tests, OK, 0 skipped. `... -s tools ...`: Ran 31 tests, OK (baseline
+  27; +4 consistency tests).
+* `tools/release-dry-run.sh 0.1.0-dev7 v0.1.0-dev7`: recorded in the PR
+  conversation (runs after the commit so `git archive` sees this head).
+* NOT run locally (environment, unchanged from the dev7 cycle):
+  Playwright browser e2e (Chromium download blocked), Docker sandbox
+  integration (no docker CLI), Windows launcher (no Windows), anything
+  against real Kaggle GPU/TPU hardware, real models or real tunnels. The
+  CI workflow's browser/docker/windows jobs on the PR head are the
+  verification path, as documented in `docs/release/environment.json`.
+
+**Untouched by design.** The published tag `v0.1.0-dev7`, its target
+commit and all six release assets; the historical README inside
+`v0.1.0-dev7-app.zip` (only a future release asset can replace it);
+`notebooks/`, `src/`, tool-calling, streaming and secret-store code (no
+defect found there by the audit); the KRAFTON-codeload and
+Qwen-GGUF-default digest-pin risks stay documented open risks - both are
+deliberate, disclosed product decisions whose change needs live-download
+evidence this session must not produce.

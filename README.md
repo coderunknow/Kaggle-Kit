@@ -2,18 +2,18 @@
 
 [![CI](https://github.com/coderunknow/Kaggle-Kit/actions/workflows/ci.yml/badge.svg)](https://github.com/coderunknow/Kaggle-Kit/actions/workflows/ci.yml)
 
-Deploy large language models on Kaggle - Qwen3.8-27B and Raon-1 mini preview
-on Tesla T4 x2, Qwen3.8-27B on TPU v5e-8 - expose them through an
-OpenAI-compatible API, and talk to them from a polished browser chat
-interface that also works with any other OpenAI-compatible endpoint
+Deploy large language models on Kaggle - Qwen3.8-27B, Raon-1 mini preview
+and Spark-X2.6-4B on Tesla T4 x2, Qwen3.8-27B on TPU v5e-8 - expose them
+through an OpenAI-compatible API, and talk to them from a polished browser
+chat interface that also works with any other OpenAI-compatible endpoint
 (including a hosted Raon API you configure yourself).
 
 The repository contains two halves that work together:
 
 | Part | Location | What it does |
 | --- | --- | --- |
-| Kaggle deployment (GPU) | [`notebooks/qwen3_8_27b_api.py`](notebooks/qwen3_8_27b_api.py) | Downloads the model and a CUDA `llama-server`, starts it with the verified configuration, smoke tests it with a real chat completion and (optionally) publishes it through a Cloudflare Quick Tunnel. `KAGGLE_KIT_MODEL=raon` selects the Raon-1 mini preview deployment (KRAFTON llama.cpp branch build, gated pinned GGUF). |
-| Kaggle deployment (TPU) | [`notebooks/tpu_deployment.py`](notebooks/tpu_deployment.py) | Serves Qwen3.8-27B bf16 through the pinned vLLM TPU backend on TPU v5e-8 with the same key/smoke-test/tunnel discipline. Raon x TPU is explicitly blocked (no TPU kernels upstream) - never a silent CPU/GPU fallback. |
+| Kaggle deployment (GPU) | [`notebooks/qwen3_8_27b_api.py`](notebooks/qwen3_8_27b_api.py) | Downloads the model and a CUDA `llama-server`, starts it with the verified configuration, smoke tests it with a real chat completion and (optionally) publishes it through a Cloudflare Quick Tunnel. `KAGGLE_KIT_MODEL=raon` selects the Raon-1 mini preview deployment (KRAFTON llama.cpp branch build, gated pinned GGUF); `KAGGLE_KIT_MODEL=spark` selects Spark-X2.6-4B (official pinned GGUF, llama.cpp b11719, required `--jinja`). |
+| Kaggle deployment (TPU) | [`notebooks/tpu_deployment.py`](notebooks/tpu_deployment.py) | Serves Qwen3.8-27B bf16 through the pinned vLLM TPU backend on TPU v5e-8 with the same key/smoke-test/tunnel discipline. Raon x TPU and Spark x TPU are explicitly blocked (no TPU kernels upstream; no TPU runtime consumes GGUF) - never a silent CPU/GPU fallback. |
 | Chat interface | [`src/`](src) + [`server/`](server) | A React chat client and a small local proxy backend that talk to any OpenAI-compatible endpoint. |
 
 ```
@@ -28,8 +28,11 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
 
 Guided connection setup, Basic/Advanced settings, an explicit reviewed
 keyless built-in grant, a **model catalog** (Qwen3.8-27B, Raon-1 mini
-preview, custom endpoints) with honest per-combination verification
-statuses, and model-specific sampling defaults are available. Calculator/
+preview, Spark-X2.6-4B, custom endpoints) with honest per-combination
+verification statuses, and model-specific sampling defaults are available.
+Spark's template-defined thinking levels (none/low/high) ride the
+per-request `reasoning_effort` field and are only sent when the connected
+server's `/props` confirm its loaded chat template consumes it. Calculator/
 conversion, uploaded-file tools, endpoint diagnostics and opening public
 pages need no separate tool subscription. Native tool calling still
 requires verification and explicit profile permissions; the model server
@@ -38,11 +41,12 @@ may require its own credential.
 **Deployment matrix:** Qwen on T4 x2 is the pre-existing deployment, preserved
 unchanged (derived from an operator-verified cell; this script itself has not
 been re-run on live Kaggle hardware in the development environments).
-Raon on T4 x2 and Qwen on TPU v5e-8 are implemented with pinned
-checkpoints/runtimes and unit tests but are **not live-verified** yet - no
-Kaggle GPU/TPU or gated Raon access existed in the development
-environment. Raon on TPU is **blocked** with evidence (no upstream TPU
-kernels for its architecture) and refuses explicitly instead of falling
+Raon on T4 x2, Spark-X2.6-4B on T4 x2 and Qwen on TPU v5e-8 are implemented
+with pinned checkpoints/runtimes and unit tests but are **not live-verified**
+yet - no Kaggle GPU/TPU or gated Raon access existed in the development
+environment. Raon on TPU and Spark on TPU are **blocked** with evidence (no
+upstream TPU kernels for Raon's architecture; no TPU runtime consumes Spark's
+GGUF/`trust_remote_code` artifacts) and refuse explicitly instead of falling
 back. A hosted Raon API works as an ordinary configurable profile; no
 provider endpoint or token is built in.
 
@@ -210,7 +214,7 @@ Provider availability, account terms and fees are separate from the local
 checks.
 
 See [docs/chat-interface.md](docs/chat-interface.md) and [docs/security.md](docs/security.md)
-for details, and [docs/release-notes/0.1.0-dev4.md](docs/release-notes/0.1.0-dev4.md)
+for details, and [docs/release-notes/0.1.0-dev7.md](docs/release-notes/0.1.0-dev7.md)
 for this development release's changes and verification limits.
 
 ## Security model
@@ -283,7 +287,7 @@ stages the assets, validates them and uploads them to a prerelease of the same
 tag. Nothing is uploaded by hand.
 
 ```bash
-git tag v0.1.0-dev4 <commit> && git push origin v0.1.0-dev4
+git tag v0.1.0-dev7 <commit> && git push origin v0.1.0-dev7
 ```
 
 The version of `package.json` has to match the tag and the release notes have

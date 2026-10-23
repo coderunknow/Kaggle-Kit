@@ -29,6 +29,7 @@ BUILD_COMMANDS = [
     "npm run build",
     "npm run check:integration",
     "python3 -m unittest discover -s notebooks -p 'test_*.py'",
+    "python3 -m unittest discover -s tools -p 'test_*.py'",
 ]
 
 
@@ -95,7 +96,11 @@ def main() -> int:
             "python": platform.python_version(),
         },
         "requirements": {
-            "application": "Node.js 22 or newer, the application bundle has no runtime dependencies.",
+            # The minimum has to match the contract the application actually
+            # enforces: package.json engines.node and the launcher's
+            # DEFAULT_NODE_REQUIREMENT (tools/launcher.mjs). test_release_tools
+            # fails when the strings drift apart.
+            "application": "Node.js 20.19 or newer, the application bundle has no runtime dependencies.",
             "notebook": "Kaggle GPU runtime, Python 3.11 and the requests package.",
             "platform": "Linux x64 for the release artifacts.",
         },
