@@ -1801,3 +1801,51 @@ in-process (a kernel thread), so script mode keeps serving until Ctrl+C.
 live evidence of this repository's code. The preserved Qwen/T4 path gets
 its own status rather than inheriting the operator-verified origin cell's
 evidence.
+
+## 2026-10-23 - Spark-X2.6-4B: decisions and rejected alternatives
+
+**Decision - official artifacts only.** The published repository has
+`Q4_K_M`, `Q8_0` and the full-precision file; it has no `Q5_K_M`/`Q6_K`.
+Rather than map a requested quant to the nearest available file (the
+pattern Raon's auto-selection uses), Spark's selector fails closed: the
+name, size and SHA-256 of the requested artifact must exist in
+`SPARK_QUANTIZATIONS`, or the run stops before downloading. Rejected:
+falling back to `Q8_0`/third-party quants (silently changes the artifact
+and the supply chain), exposing the 8 GB F16 file (not needed for T4 and
+not requested).
+
+**Decision - thinking levels ride `reasoning_effort`, gated on the
+template.** The template accepts only `high`/`low` and raises otherwise,
+while b11719 passes arbitrary strings through. The app therefore exposes
+`none|low|high`, sends the field only when
+`/props.chat_template_caps.supports_reasoning_effort === true`, and omits
+it with a note when the endpoint has not confirmed support. Rejected:
+`chat_template_kwargs` transport (a non-OpenAI extension the app does not
+model, and per-request `enable_thinking` alone cannot express `low` vs
+`high`); a blind `low|medium|high` mapping (every `medium` request would
+fail in the template); startup-only control (the product requirement is a
+per-profile setting).
+
+**Decision - reuse the existing cell.** Spark gets a `DeploymentConfig`
+branch (`KAGGLE_KIT_MODEL=spark`) rather than a second notebook: the
+ownership/reuse/restart/conflict rules, key handling, tunnel and runtime
+bundle are already tested there. Spark differs only where the evidence
+requires it: pinned repository/revision/digests, the b11719 build check,
+`--jinja`, no MTP, and its own root/state/key. Qwen's default config and
+fingerprint are untouched (tested).
+
+**Decision - prove auth before exposure.** The GPU cell previously relied
+on `start_server`'s authenticated smoke test. Spark adds a three-request
+gate (anonymous, wrong key, correct key) because the model is the first
+public/ungated deployment whose key middleware was read directly; the
+gate is a real HTTP server in tests and fails closed before a tunnel.
+
+**Decision - TPU blocked.** No TPU runtime consumes GGUF or the
+`trust_remote_code` checkpoint, vendor paths are CUDA/Ascend, and code
+search found zero `spark2_5` in vLLM/tpu-inference. A separate Spark
+notebook would have no runtime; the TPU cell now refuses the combination
+with that evidence and no fallback.
+
+**Status vocabulary.** Spark on T4 x2 is `implemented_not_live_verified`;
+Spark on TPU is `blocked`. No row claims `verified`, and the tests assert
+that.

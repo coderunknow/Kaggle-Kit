@@ -173,7 +173,7 @@ The **Inference** tab edits the request time parameters of the active profile.
 | Send top-k | `top_k` | Sampling extension (llama.cpp/vLLM). Integer 0-1024, only sent when the switch is on. |
 | Send min-p | `min_p` | Sampling extension, 0-1, only sent when the switch is on. `0` is a real sent value, distinct from off. |
 | Send a repetition penalty | `repetition_penalty` | Sampling extension, 0.1-10 (`1.0` = no penalty), only sent when the switch is on. |
-| Effort sent with the request | `reasoning_effort` | Only sent when the connected server advertises the option. In `llama.cpp` reasoning effort is a **start-up** flag (`--reasoning-effort medium`), so the value is normally not sent per request. |
+| Effort sent with the request | `reasoning_effort` | Only sent when the connected server advertises the option. Recent `llama.cpp` (b11719) accepts the OpenAI field per request and maps `none` to thinking-off and other strings to the template's `reasoning_effort`; older builds only have the start-up flag, which is why the app trusts the server's `/props` report rather than assuming. |
 | Stream the answer | `stream` | Disabled until a streaming probe against this endpoint succeeded. |
 
 **Start-up options are not request options.** Context size, the GPU layer
@@ -184,6 +184,20 @@ setting could change them. The notebook writes them to `runtime.json`.
 **Reset to defaults** restores `max_tokens: 1024`, `temperature: 0.7`,
 `top_p: 0.95`, no penalties, no sampling extensions, no reasoning effort
 and no streaming.
+
+**Model-specific thinking levels.** A model whose *template* defines thinking
+levels gets its own selector instead of the generic effort control, and only
+when the endpoint reports
+`/props.chat_template_caps.supports_reasoning_effort === true` (llama.cpp
+computes that flag by rendering the loaded template). Spark-X2.6-4B is the
+first such entry: **none / low / high**. `none` is sent as
+`reasoning_effort: "none"` (thinking disabled), `low` and `high` are the only
+values its template accepts, and `high` is its documented default. A stored
+value such as `medium` is shown as not a level of this model and is omitted
+from the request rather than sent to the template's `raise_exception`. Until
+the endpoint confirms template support, the control is disabled and the
+request builder omits the field with a note in "What is sent". Models without
+a template-level control keep the generic card unchanged.
 
 **Model-specific defaults.** The Inference tab opens with the catalog
 defaults for the recognized (or explicitly chosen) catalog model. Raon's

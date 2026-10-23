@@ -226,8 +226,10 @@ another port in DeploymentConfig, and rerun the cell.
 | --- | --- | --- | --- |
 | Qwen3.8-27B | GPU T4 x2 | **Pre-existing — not re-verified live** (preserved unchanged; derived from an operator-verified cell) | CUDA `llama.cpp` (pinned b11717-b11719), GGUF IQ3_S, ctx 8192, MTP when supported |
 | Raon-1 mini preview | GPU T4 x2 | **Implemented - not live-verified** | KRAFTON `llama.cpp` branch `raon-1-mini-preview` @ `fb895662...`, GGUF Q4_K_M on T4 |
+| Spark-X2.6-4B | GPU T4 x2 | **Implemented - not live-verified** | upstream CUDA `llama.cpp` b11719, official GGUF Q4_K_M (or Q8_0) @ `fe31f8d6...`, `--jinja` required, no speculative decoding |
 | Qwen3.8-27B | TPU v5e-8 | **Implemented - not live-verified** | `vllm-tpu==0.28.0`, `Qwen/Qwen3.8-27B` bf16 @ `1d4bf0f2...`, tensor parallel 8, MTP off |
 | Raon-1 mini preview | TPU v5e-8 | **Blocked** (evidence in section 11) | none - no TPU kernels for the `raon1` architecture |
+| Spark-X2.6-4B | TPU v5e-8 | **Blocked** (evidence in section 11) | none - `spark2_5` has no TPU runtime (0 hits in vLLM/tpu-inference) |
 | Raon-1 mini preview | Hosted API | **Implemented - not live-verified** | ordinary connection profile with the endpoint/credential your provider issued |
 
 "Implemented - not live-verified" means the code path, its pins, its failure
@@ -286,6 +288,63 @@ key. In the chat interface, use the **model catalog** entry
 top_p 0.95, top_k 20, min_p 0.0, repetition_penalty 1.0,
 frequency_penalty 0, presence_penalty 1.5 general / 0 coding-math).
 
+## 9.1 Spark-X2.6-4B on GPU T4 x2
+
+Spark-X2.6-4B is XHToken's (SparkLLM) 4B dense on-device model: the
+`spark2_5` architecture with hybrid sliding-window/full attention, a
+1,048,576-token native context and template-defined thinking levels. It is
+Apache-2.0 and **ungated**, served from
+`XHToken/Spark-X2.6-4B-GGUF`. It uses the **same cell** as Qwen
+(`notebooks/qwen3_8_27b_api.py`); Qwen stays the default and is unchanged.
+
+1. Set the accelerator to **GPU T4 x2**, Internet on, and select Spark:
+   environment `KAGGLE_KIT_MODEL=spark`, or call
+   `main(spark_deployment_config())` after pasting the cell.
+2. Choose the quantization with `KAGGLE_KIT_QUANTIZATION`:
+   **`Q4_K_M` (default)** or **`Q8_0`**. These are the only two quantized
+   files XHToken publishes for this model; the repository also contains the
+   full-precision `Spark-X2.6-4B.gguf`. `Q5_K_M` and `Q6_K` **do not exist**
+   upstream, so asking for them fails with an error that names the available
+   files - there is no silent substitution and no third-party source.
+3. The cell then, in order: checks the two T4s; uses the already pinned
+   upstream CUDA build **b11719** (it contains the `spark2_5` architecture;
+   the official model card requires b10828 or newer) and refuses a binary
+   whose `--version` does not parse as at least that build; downloads the
+   exact GGUF file at revision `fe31f8d6...` and verifies its SHA-256 from
+   the official repository metadata; starts `llama-server` with `--jinja`
+   (**required**: the model's thinking levels and tool-call markup are
+   template features, and a build without it is refused); then proves a real
+   authenticated chat completion *and* that anonymous and wrongly keyed
+   requests are rejected with 401/403 before any tunnel is started.
+
+**Think levels are request-time values, not start-up flags.** The loaded
+template defines `enable_thinking` (boolean, default true) and
+`reasoning_effort` with exactly `high` (default) and `low`; `none` is
+`enable_thinking: false`, and any other value makes the template raise.
+llama.cpp reads the OpenAI `reasoning_effort` field per request and maps
+`none` to thinking off and other strings to the template's
+`reasoning_effort`. The chat interface therefore offers **none / low /
+high** for Spark only when `/props.chat_template_caps.supports_reasoning_effort`
+is `true` (llama.cpp computes that by rendering the template), and omits
+the field with an explanation otherwise. `medium` is never sent for Spark
+because the template would reject it. The start-up default stays `high`, the
+model card's documented default, so a request without a level behaves as
+documented.
+
+**Sampling** comes from the model card: temperature 1.0, top_p 0.95,
+top_k -1 (sent as `0`, which disables top-k in llama.cpp's API),
+repetition_penalty 1.0, presence_penalty 0, frequency_penalty 0. Neutral
+penalties are omitted rather than pinned. Applying the catalog defaults
+never changes output length, streaming or the thinking level.
+
+Context stays at the application's documented 8192 although the model
+supports 1048576; raising it is an operator decision with a real KV-cache
+cost. Spark uses its own directory (`/kaggle/working/spark_x2_6_api`), its
+own key/state, the same reuse/restart/conflict rules, and no MTP flags (the
+model publishes no draft head). Native tool calling stays disabled until
+the tool-capability probe passes for the Spark endpoint; the probe's exact
+failure reason is reported and never replaced by a claim.
+
 ## 10. Qwen3.8-27B on TPU v5e-8
 
 The GGUF/CUDA path cannot run on a TPU, so this is a separate script:
@@ -330,9 +389,10 @@ through the vLLM TPU backend, sharded tensor-parallel 8.
    script does not measure them - measure with
    `tools/model-benchmark.mjs` against your live endpoint instead.
 
-## 11. Raon-1 mini preview on TPU v5e-8: blocked
+## 11. Raon-1 mini preview and Spark-X2.6-4B on TPU v5e-8: blocked
 
-Requesting this combination (`KAGGLE_KIT_MODEL=raon` in the TPU cell)
+Requesting either combination (`KAGGLE_KIT_MODEL=raon` or `spark` in the TPU
+cell)
 raises `UnsupportedDeploymentError` before anything is installed. The
 evidence, checked against the vendor and runtime documentation:
 
@@ -345,10 +405,23 @@ evidence, checked against the vendor and runtime documentation:
 * a checkpoint merely loading somewhere would prove neither generation
   nor Kaggle v5e-8 support, and no such execution proof exists upstream.
 
-There is deliberately no CPU, GPU, remote, or hosted fallback behind this
-refusal. Revisit when a TPU backend publishes `raon1` support; the first
-steps would be the minimal proof (checkpoint load, short generation,
-correct decoding) on v5e-8 before any serving work.
+**Spark is blocked for equivalent, checked reasons:**
+
+* its official artifacts are GGUF (llama.cpp) and a `trust_remote_code`
+  Transformers checkpoint - no TPU runtime consumes the first, and the
+  vendor documents no TPU/PyTorch-XLA support for the second;
+* its documented serving paths are llama.cpp, SGLang (NVIDIA/Ascend images)
+  and vLLM (CUDA image plus an Ascend plugin), not TPU;
+* GitHub code search on 2026-10-23 finds `spark2_5` in SGLang but **zero**
+  occurrences in `vllm-project/vllm` and `vllm-project/tpu-inference`, the
+  backend this cell uses;
+* a checkpoint merely loading would prove neither generation nor v5e-8
+  support, and no TPU hardware was available to verify anything here.
+
+There is deliberately no CPU, GPU, remote, or hosted fallback behind these
+refusals. Revisit when a TPU backend publishes `raon1`/`spark2_5` support;
+the first steps would be the minimal proof (checkpoint load, short
+generation, correct decoding) on v5e-8 before any serving work.
 
 ## 12. Live verification procedure (operator)
 
@@ -366,6 +439,19 @@ must *reuse* the server with the same key. Then, locally:
 evidence), plus one ordinary chat and one tool-probe verification from the
 interface (Tools settings -> Verify native tool calling). Record the
 tokens/sec *from the server log/benchmark*, not from expectations.
+
+**Spark-X2.6-4B / T4 x2**: `KAGGLE_KIT_MODEL=spark` in the GPU cell.
+Expect `SPARK API STATUS`, model `Spark-X2.6-4B`, the quantization line,
+`Local inference: verified with a real chat completion`, `Authentication:
+verified enforced`, and a verified public route. Rerun the cell: it must
+*reuse* the server with the same key. Negative checks: an unauthenticated
+`/v1/chat/completions` must answer 401/403, `KAGGLE_KIT_QUANTIZATION=Q5_K_M`
+must fail before any download, and `KAGGLE_KIT_MODEL=spark` in the TPU cell
+must print the blocked analysis without installing anything. In the
+interface, choose the **Spark-X2.6-4B** catalog entry, apply its sampling,
+and confirm the thinking control only appears when the endpoint reports
+template support. Record tokens/sec from the server log or
+`tools/model-benchmark.mjs`, never from expectations.
 
 **Qwen / TPU v5e-8**: run the TPU cell in a `TpuV5E8` session. Expect
 "8 TPU device(s) detected", the inference test, the auth-enforcement line,
