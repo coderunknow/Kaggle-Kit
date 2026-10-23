@@ -21,7 +21,8 @@ import { OpenAIClient } from '../shared/api/client';
 import { CONNECTION_STAGE_ORDER } from '../shared/connection';
 import { extractDelta, parseSseStream, ToolCallAccumulator } from '../shared/api/stream';
 import { buildChatCompletionBody } from '../shared/api/requests';
-import type { InferenceParams, ServerCapabilities } from '../shared/api/requests';
+import type { InferenceParams, ReasoningPolicy, ServerCapabilities } from '../shared/api/requests';
+import { findCatalogEntryByModelId } from '../shared/model-catalog/catalog';
 import { neutralizeToolClaimsForOrdinaryChat } from '../shared/prompts/qwen';
 import type { ToolCallingCapability } from '../shared/tools/types';
 import { joinApiPath, normalizeBaseUrlDetailed, UrlValidationError } from '../shared/api/url';
@@ -55,6 +56,7 @@ interface CapabilityCacheEntry {
   streamingVerified: boolean;
   streamingCheckedAt: number;
   reasoningEffortSupported: boolean;
+  templateReasoningEffortSupported: boolean;
   propsCheckedAt: number;
 }
 
@@ -688,12 +690,14 @@ export class ProxyService {
       return {
         streamingVerified: cached.streamingVerified,
         reasoningEffortSupported: cached.reasoningEffortSupported,
+        templateReasoningEffortSupported: cached.templateReasoningEffortSupported,
         notes: [],
         ...(validToolCapability ? { toolCalling: validToolCapability } : {}),
       };
     }
 
     let reasoningEffortSupported = false;
+    let templateReasoningEffortSupported = false;
     const notes: string[] = [];
 
     try {
@@ -701,9 +705,15 @@ export class ProxyService {
       const props = await client.props();
       if (props) {
         reasoningEffortSupported = propsMentionReasoningEffort(props);
+        templateReasoningEffortSupported = propsReportTemplateReasoningEffort(props);
         if (!reasoningEffortSupported) {
           notes.push(
             'The server did not advertise a per-request reasoning_effort option. Reasoning effort stays a server startup setting.',
+          );
+        }
+        if (!templateReasoningEffortSupported) {
+          notes.push(
+            'The server did not report that its chat template consumes reasoning_effort, so model-specific thinking levels are not sent.',
           );
         }
       } else {
@@ -717,12 +727,14 @@ export class ProxyService {
       streamingVerified: cached?.streamingVerified ?? false,
       streamingCheckedAt: cached?.streamingCheckedAt ?? 0,
       reasoningEffortSupported,
+      templateReasoningEffortSupported,
       propsCheckedAt: now,
     });
 
     return {
       streamingVerified: cached?.streamingVerified ?? false,
       reasoningEffortSupported,
+      templateReasoningEffortSupported,
       notes,
       ...(validToolCapability ? { toolCalling: validToolCapability } : {}),
     };
@@ -889,6 +901,7 @@ export class ProxyService {
       streamingVerified: false,
       streamingCheckedAt: 0,
       reasoningEffortSupported: false,
+      templateReasoningEffortSupported: false,
       propsCheckedAt: 0,
     };
     // Bounded cache: an editor can change the key many times in one session.
@@ -916,7 +929,23 @@ export class ProxyService {
         ? { ...message, content: neutralizeToolClaimsForOrdinaryChat(message.content ?? '') }
         : message,
     );
-    const { body } = buildChatCompletionBody({ model, messages: truthfulMessages, params, capabilities });
+    // Model-specific thinking levels: the catalog entry of the concrete model
+    // ID decides which values its template accepts. An unrecognized model
+    // gets no policy and therefore keeps the previous behavior.
+    const entry = findCatalogEntryByModelId(model);
+    const reasoningPolicy: ReasoningPolicy | undefined = entry?.thinking
+      ? {
+          allowed: entry.thinking.levels,
+          label: `${entry.displayName}'s chat template`,
+        }
+      : undefined;
+    const { body } = buildChatCompletionBody({
+      model,
+      messages: truthfulMessages,
+      params,
+      capabilities,
+      ...(reasoningPolicy ? { reasoningPolicy } : {}),
+    });
     return body;
   }
 }
@@ -951,6 +980,17 @@ function propsMentionReasoningEffort(props: ServerProps): boolean {
   const defaults = props.default_generation_settings;
   if (defaults && typeof defaults === 'object' && 'reasoning_effort' in defaults) return true;
   return false;
+}
+
+/**
+ * llama.cpp computes `chat_template_caps` by actually rendering the template.
+ * `supports_reasoning_effort === true` therefore means that the loaded
+ * template read the variable; it is the only signal the app trusts for the
+ * model-specific thinking-level control.
+ */
+function propsReportTemplateReasoningEffort(props: ServerProps): boolean {
+  const caps = props.chat_template_caps;
+  return !!caps && typeof caps === 'object' && caps.supports_reasoning_effort === true;
 }
 
 /** Normalize any thrown value into an ApiError. */

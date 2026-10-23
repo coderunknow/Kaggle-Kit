@@ -371,3 +371,26 @@ See [dev7 audit](dev7-audit.md) for the deferred isolation and bridge requiremen
   keep hosted and local credentials apart under the existing credential
   modes, and the weights' Apache-2.0 license is never presented as API
   access rights.
+* **Spark-X2.6-4B is public, pinned and fail-closed.** The GGUF repository
+  is ungated, so no token is involved; the revision
+  (`fe31f8d6...`) and the per-file SHA-256 digests come from the official
+  Hugging Face metadata, and only the two quantizations XHToken really
+  publishes are selectable (`Q4_K_M`, `Q8_0`). A requested `Q5_K_M`/`Q6_K`
+  or an unknown value raises before any download - there is no fallback to
+  another quantization, a third-party conversion or a different
+  accelerator. The upstream CUDA `llama.cpp` build is b11719 (already the
+  Qwen pin) and its `--version` must parse as at least b10828; a build
+  without `--jinja` is refused because serving a substituted template would
+  silently change the prompt format.
+* **Spark authentication is proven before exposure.** llama.cpp's middleware
+  (`tools/server/server-http.cpp`) leaves only `/health`, `/v1/health` and
+  the embedded UI public, so the cell sends an anonymous and a wrongly keyed
+  `POST /v1/chat/completions` (both must be 401/403) plus a correctly keyed
+  real completion (200) before any tunnel is started; a server that answers
+  anonymous inference aborts the run. The key is generated at runtime,
+  stored at mode `0600`, and handed to the server as `--api-key-file` (never
+  argv, never a URL).
+* **Spark on TPU stays blocked.** Its artifacts are GGUF and a
+  `trust_remote_code` checkpoint, its documented runtimes are CUDA/Ascend,
+  and `spark2_5` has no occurrence in vLLM or tpu-inference (code search
+  2026-10-23). The TPU cell refuses it before installing anything.

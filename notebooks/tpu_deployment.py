@@ -23,12 +23,17 @@ Hard rules, shared with the GPU deployment and enforced rather than assumed:
 * **MTP stays off on TPU.** Stock vllm-tpu 0.28.0 corrupts Qwen3.8 outputs
   with its MTP draft head (rejected draft tokens advance the gated-DeltaNet
   recurrent state). Enabling it in the config is refused, not ignored.
-* **Raon on TPU is blocked, explicitly.** Raon's ``raon1`` architecture
-  (Raon Delta Attention, Gated MLA, SiTU-GLU, Raon-mHC) has no kernels in
-  any documented TPU serving stack; KRAFTON ships CUDA paths only and a
-  GGUF file is not consumable by a TPU runtime. Requesting it raises
-  :class:`UnsupportedDeploymentError` with those reasons instead of
-  falling back to anything else.
+* **Raon and Spark on TPU are blocked, explicitly.** Raon's ``raon1``
+  architecture (Raon Delta Attention, Gated MLA, SiTU-GLU, Raon-mHC) has no
+  kernels in any documented TPU serving stack; KRAFTON ships CUDA paths only
+  and a GGUF file is not consumable by a TPU runtime. Spark-X2.6-4B is the
+  same kind of dead end: its official artifacts are GGUF (llama.cpp) and a
+  ``trust_remote_code`` Transformers checkpoint, its documented serving paths
+  are llama.cpp, SGLang (CUDA/Ascend) and vLLM (CUDA/Ascend plugin), and
+  ``spark2_5`` does not appear in vllm-project/vllm or
+  vllm-project/tpu-inference. Requesting either raises
+  :class:`UnsupportedDeploymentError` with those reasons instead of falling
+  back to anything else.
 * **Real inference before success.** The endpoint must answer an
   authenticated chat completion (and must reject an unauthenticated one)
   before the deployment reports itself as running. No speedup, memory, or
@@ -101,6 +106,18 @@ CLOUDFLARED_SHA256 = "35fbdd2beb378436c7da377d7358cea8e33f9c94a6705d1d8036bf9b0d
 
 STATE_FILE_NAME = "server-state.json"
 KEY_FILE_NAME = "api_key.txt"
+
+SPARK_TPU_BLOCKED_REASONS: Tuple[str, ...] = (
+    "The official Spark-X2.6-4B GGUF files are llama.cpp artifacts; no TPU runtime consumes GGUF.",
+    "The Transformers checkpoint requires trust_remote_code (a custom Spark2_5ForCausalLM), "
+    "and the vendor documents no TPU/PyTorch-XLA support for that code.",
+    "The documented Spark serving paths are llama.cpp, SGLang (NVIDIA/Ascend container images) "
+    "and vLLM (CUDA image plus an Ascend plugin) - there is no TPU path.",
+    "GitHub code search on 2026-10-23 finds spark2_5 in sglang but zero occurrences in "
+    "vllm-project/vllm and vllm-project/tpu-inference, the backend this cell uses.",
+    "A checkpoint merely loading would not prove generation works, no upstream TPU execution "
+    "proof exists, and no TPU hardware was available to verify anything here.",
+)
 
 RAON_TPU_BLOCKED_REASONS: Tuple[str, ...] = (
     "The published Raon GGUF file is a llama.cpp artifact; no TPU runtime consumes GGUF.",
@@ -213,10 +230,23 @@ def ensure_supported_combination(config: TpuDeploymentConfig) -> None:
             "with KAGGLE_KIT_MODEL=raon) or a hosted Raon profile instead. "
             "Revisit this combination when a TPU backend publishes raon1 support."
         )
+    if model in ("spark", "spark-x2.6-4b", "spark-x2.6", "sparkx26", "sparkx2.6"):
+        reasons = "\n".join(f"  - {reason}" for reason in SPARK_TPU_BLOCKED_REASONS)
+        raise UnsupportedDeploymentError(
+            "Spark-X2.6-4B on Kaggle TPU v5e-8 is blocked; there is no genuine "
+            "TPU runtime path for it today:\n"
+            f"{reasons}\n"
+            "Nothing was installed or started, and no CPU/GPU/hosted fallback "
+            "was substituted. Use Spark on GPU T4 x2 (notebooks/qwen3_8_27b_api.py "
+            "with KAGGLE_KIT_MODEL=spark and KAGGLE_KIT_QUANTIZATION=Q4_K_M or "
+            "Q8_0) instead. Revisit this combination when a TPU backend "
+            "publishes spark2_5 support."
+        )
     if model not in ("qwen", "qwen3.8-27b", "qwen3.8"):
         raise UnsupportedDeploymentError(
             f"Unknown TPU deployment model {config.model!r}; implemented: 'qwen'. "
-            "'raon' is explicitly blocked (see RAON_TPU_BLOCKED_REASONS)."
+            "'raon' and 'spark' are explicitly blocked (see "
+            "RAON_TPU_BLOCKED_REASONS and SPARK_TPU_BLOCKED_REASONS)."
         )
     if config.enable_mtp:
         raise UnsupportedDeploymentError(
@@ -1142,8 +1172,13 @@ def config_for_model(name: str) -> TpuDeploymentConfig:
         # Returned (not raised here) so main() reports the full blocked
         # analysis through ensure_supported_combination.
         return TpuDeploymentConfig(model="raon")
+    if normalized in ("spark", "spark-x2.6-4b", "spark-x2.6", "sparkx26", "sparkx2.6"):
+        # Same contract as Raon: main() raises UnsupportedDeploymentError with
+        # the full evidence before anything is installed.
+        return TpuDeploymentConfig(model="spark")
     raise ValueError(
-        f"Unknown TPU deployment model {name!r}; implemented: 'qwen'. 'raon' is blocked."
+        f"Unknown TPU deployment model {name!r}; implemented: 'qwen'. "
+        "'raon' and 'spark' are blocked."
     )
 
 

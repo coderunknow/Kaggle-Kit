@@ -372,3 +372,66 @@ still lists exactly the pinned files/sizes/LFS SHA-256 values (the repo's
 pin is still the intended bytes); `vllm-tpu==0.28.0` exists on PyPI
 (latest is 0.32.0; the pin is kept deliberately until a live parity run);
 kaggle-cli documents `TpuV5E8`; `VLLM_API_KEY` is the documented env alias.
+
+## Spark-X2.6-4B integration - 2026-10-23
+
+Scope: add a real GPU T4 x2 deployment path for `Spark-X2.6-4B`
+(XHToken/SparkLLM) at dev7 without changing the Qwen/Raon behavior or
+advertising any unexecuted capability.
+
+**Primary sources read on 2026-10-23** (not inferred): the official
+`XHToken/Spark-X2.6` repository at `X2.6` (`ec963733…`, Apache-2.0, README
+only for deployment), the Hugging Face API metadata for
+`XHToken/Spark-X2.6-4B-GGUF` at revision `fe31f8d6…` (ungated, arch
+`spark2_5`, context 1048576, exact file names/sizes/LFS SHA-256), the
+repository's `chat_template.jinja`, and the `llama.cpp` source at tag
+`b11719` (`LLM_ARCH_SPARK2_5`, `src/models/spark2-5.cpp`,
+`common/arg.cpp`, `common/chat.cpp`, `common/jinja/caps.cpp`,
+`tools/server/server-common.cpp`, `tools/server/server-http.cpp`).
+
+**Findings that changed the design**
+
+1. **Only two quantized artifacts exist.** The official repository lists
+   `Spark-X2.6-4B-Q4_K_M.gguf` (3,543,441,312 B, sha256 `91cb2811…cbd9`),
+   `Spark-X2.6-4B-Q8_0.gguf` (4,375,021,824 B, sha256 `145c2aa6…8b81`),
+   and the full-precision `Spark-X2.6-4B.gguf` (8,229,921,024 B). There is
+   no Q5_K_M or Q6_K. The requested "optional Q5_K_M/Q6_K only if verified"
+   therefore resolves to: those options do not exist and are rejected with
+   an actionable error; nothing is silently substituted.
+2. **Thinking is a template contract, not a free-form field.** The template
+   defaults `enable_thinking` to true and accepts `reasoning_effort` only
+   as `high` (default) or `low`; any other value calls `raise_exception`.
+   `llama.cpp` b11719 maps the OpenAI `reasoning_effort` field per request:
+   `none` sets thinking off, other strings are passed to the template
+   unvalidated. A blind `low|medium|high` mapping would therefore fail
+   every `medium` request, so the app sends only `none|low|high`, only when
+   `/props.chat_template_caps.supports_reasoning_effort` is true, and
+   otherwise omits the field with a note.
+3. **The pinned runtime already supports the architecture.** `b11719` is
+   the existing Qwen pin; its source registers `spark2_5` and the official
+   model card requires b10828 or newer. The cell nevertheless parses
+   `llama-server --version` and refuses an older/unparsable build instead
+   of assuming.
+4. **`--jinja` must be required.** The thinking levels and tool-call markup
+   live in the model's template; llama.cpp's built-in templates do not
+   implement them. A build without `--jinja` is refused rather than
+   silently serving a different prompt format.
+5. **Authentication can be proven locally.** llama.cpp's key middleware
+   protects every route except `/health`, `/v1/health` and the embedded UI,
+   so the cell now sends an anonymous and a wrongly keyed chat completion
+   (both must be 401/403) and a correctly keyed real completion (200)
+   before any tunnel is started. This is a new negative-auth gate for the
+   GPU cell, exercised by a real HTTP server in the test suite.
+6. **TPU is blocked, not deferred.** `spark2_5` appears in SGLang but has
+   zero hits in `vllm-project/vllm` and `vllm-project/tpu-inference`
+   (GitHub code search 2026-10-23); the vendor's serving paths are
+   CUDA/Ascend. The TPU cell refuses the combination with that evidence
+   before installing anything.
+
+**Honesty boundary.** Nothing here ran on Kaggle hardware: the GPU path is
+"implemented - not live-verified", the TPU path is "blocked", the catalog
+never claims `verified`, and the notebook/tool evidence consists of unit
+tests plus a local HTTP server for the auth gate - never a model output.
+Tool calling remains disabled for Spark until the existing probe passes on
+a real endpoint; no claim is made that b11719 parses Spark's
+`<tool_call><arg_key>` format.

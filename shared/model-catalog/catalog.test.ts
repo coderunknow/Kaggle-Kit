@@ -12,18 +12,22 @@ import {
   normalizeModelKey,
   QWEN_CATALOG_ID,
   RAON_CATALOG_ID,
+  SPARK_CATALOG_ID,
   recommendedParamsFor,
+  thinkingLevelsForModelId,
 } from './catalog';
 
 const qwen = catalogEntryById(QWEN_CATALOG_ID)!;
 const raon = catalogEntryById(RAON_CATALOG_ID)!;
+const spark = catalogEntryById(SPARK_CATALOG_ID)!;
 const custom = catalogEntryById(CUSTOM_CATALOG_ID)!;
 
 describe('model catalog', () => {
-  it('contains Qwen, Raon and the custom endpoint entry', () => {
+  it('contains Qwen, Raon, Spark and the custom endpoint entry', () => {
     expect(MODEL_CATALOG.map((entry) => entry.id)).toEqual([
       QWEN_CATALOG_ID,
       RAON_CATALOG_ID,
+      SPARK_CATALOG_ID,
       CUSTOM_CATALOG_ID,
     ]);
     expect(raon.access).toBe('gated_weights');
@@ -109,10 +113,79 @@ describe('model catalog', () => {
     expect(row('Raon-1 mini preview', 'Kaggle GPU T4 x2')?.status).toBe('implemented_not_live_verified');
     expect(row('Raon-1 mini preview', 'Kaggle TPU v5e-8')?.status).toBe('blocked');
     expect(row('Raon-1 mini preview', 'Hosted API')?.status).toBe('implemented_not_live_verified');
+    expect(row('Spark-X2.6-4B', 'Kaggle GPU T4 x2')?.status).toBe('implemented_not_live_verified');
+    expect(row('Spark-X2.6-4B', 'Kaggle TPU v5e-8')?.status).toBe('blocked');
     // Every row carries evidence; a status without evidence would be a claim.
     for (const entry of matrix) {
       expect(entry.evidence.length).toBeGreaterThan(40);
       expect(entry.statusLabel.length).toBeGreaterThan(0);
     }
+  });
+
+  it('describes Spark-X2.6-4B with sourced metadata, not invented values', () => {
+    expect(spark.displayName).toBe('Spark-X2.6-4B');
+    expect(spark.license).toBe('Apache-2.0');
+    expect(spark.access).toBe('open');
+    expect(spark.contextTokens).toBe(1_048_576);
+    expect(spark.totalParameters).toBe('4B');
+    expect(spark.servedModelIds).toEqual(['Spark-X2.6-4B']);
+    // The deployment is pinned to one repository revision and one digest per
+    // quantization; the catalog itself never claims a file is installed.
+    expect(spark.deployments.every((deployment) => deployment.evidence.length > 100)).toBe(true);
+  });
+
+  it('recognizes Spark served IDs and GGUF file names but never guesses unknown ones', () => {
+    expect(findCatalogEntryByModelId('Spark-X2.6-4B')?.id).toBe(SPARK_CATALOG_ID);
+    expect(findCatalogEntryByModelId('Spark-X2.6-4B-Q4_K_M.gguf')?.id).toBe(SPARK_CATALOG_ID);
+    expect(findCatalogEntryByModelId('/models/spark2.6')?.id).toBe(SPARK_CATALOG_ID);
+    // The vLLM example alias "spark25" is not a documented match key here.
+    expect(findCatalogEntryByModelId('spark25')).toBeUndefined();
+    expect(findCatalogEntryByModelId('spark-x1-9b')).toBeUndefined();
+  });
+
+  it('exposes the template-defined thinking levels only for Spark', () => {
+    expect(spark.thinking).toBeDefined();
+    expect(spark.thinking?.mechanism).toBe('llama_cpp_reasoning_effort');
+    expect(spark.thinking?.levels).toEqual(['none', 'low', 'high']);
+    expect(spark.thinking?.defaultLevel).toBe('high');
+    expect(thinkingLevelsForModelId('Spark-X2.6-4B')).toEqual(['none', 'low', 'high']);
+    expect(thinkingLevelsForModelId('Raon-1-mini-preview')).toBeUndefined();
+    expect(thinkingLevelsForModelId('Qwen3.8-27B')).toBeUndefined();
+    expect(thinkingLevelsForModelId('not-a-catalog-model')).toBeUndefined();
+  });
+
+  it('carries the official Spark sampling values and never changes thinking or output length', () => {
+    expect(recommendedParamsFor(spark, 'general')).toEqual({
+      temperature: 1.0,
+      topP: 0.95,
+      topK: 0,
+      frequencyPenalty: undefined,
+      presencePenalty: undefined,
+      minP: undefined,
+      repetitionPenalty: undefined,
+    });
+
+    const current = {
+      ...DEFAULT_INFERENCE_PARAMS,
+      maxTokens: 2048,
+      stream: true,
+      reasoningEffort: 'none' as const,
+    };
+    const next = applyRecommendedParams(current, spark);
+    expect(next.temperature).toBe(1.0);
+    expect(next.topP).toBe(0.95);
+    expect(next.topK).toBe(0);
+    // Thinking level, output length and transport are untouched.
+    expect(next.reasoningEffort).toBe('none');
+    expect(next.maxTokens).toBe(2048);
+    expect(next.stream).toBe(true);
+  });
+
+  it('does not advertise a verified Spark deployment without live evidence', () => {
+    const sparkRows = deploymentMatrix().filter((entry) => entry.model === 'Spark-X2.6-4B');
+    expect(sparkRows.map((entry) => entry.status)).not.toContain('verified');
+    expect(sparkRows.find((entry) => entry.accelerator === 'Kaggle TPU v5e-8')?.evidence).toContain(
+      'tpu-inference',
+    );
   });
 });

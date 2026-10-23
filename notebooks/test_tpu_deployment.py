@@ -42,6 +42,29 @@ class CombinationSupportTests(unittest.TestCase):
         for reason in tpu.RAON_TPU_BLOCKED_REASONS:
             self.assertIn(reason, message)
 
+    def test_spark_on_tpu_is_blocked_with_evidence_and_no_fallback(self) -> None:
+        config = tpu.config_for_model("spark")
+        with self.assertRaises(tpu.UnsupportedDeploymentError) as raised:
+            tpu.ensure_supported_combination(config)
+        message = str(raised.exception)
+        self.assertIn("blocked", message)
+        self.assertIn("GGUF", message)
+        self.assertIn("trust_remote_code", message)
+        self.assertIn("tpu-inference", message)
+        self.assertIn("no CPU/GPU/hosted fallback was substituted", message)
+        self.assertIn("Q8_0", message)
+        for reason in tpu.SPARK_TPU_BLOCKED_REASONS:
+            self.assertIn(reason, message)
+        # The GPU cell remains the documented path for Spark.
+        self.assertIn("KAGGLE_KIT_MODEL=spark", message)
+
+    def test_the_spark_reason_list_is_not_reused_for_raon(self) -> None:
+        self.assertNotEqual(tpu.RAON_TPU_BLOCKED_REASONS, tpu.SPARK_TPU_BLOCKED_REASONS)
+        raon = tpu.config_for_model("raon")
+        with self.assertRaises(tpu.UnsupportedDeploymentError) as raised:
+            tpu.ensure_supported_combination(raon)
+        self.assertNotIn("trust_remote_code", str(raised.exception))
+
     def test_mtp_is_refused_not_silently_dropped(self) -> None:
         config = tpu.TpuDeploymentConfig(enable_mtp=True)
         with self.assertRaises(tpu.UnsupportedDeploymentError) as raised:

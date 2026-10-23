@@ -1207,3 +1207,39 @@ follow-up log entry.
   (no runner picked it up) and could not be re-run from this
   integration ("cannot be rerun" / HTTP 403). It is **not** counted as
   passed. This entry's commit retriggers CI on a new head.
+
+## 2026-10-23 - Spark-X2.6-4B deployment path (uncommitted work session)
+
+* **Sources verified from primary material, not memory:** official
+  `XHToken/Spark-X2.6` repo at `X2.6` (`ec963733…`, Apache-2.0,
+  deployment README only); HF API metadata for
+  `XHToken/Spark-X2.6-4B-GGUF` revision `fe31f8d6…` (ungated, arch
+  `spark2_5`, ctx 1048576; `Q4_K_M` 3,543,441,312 B sha256
+  `91cb2811…cbd9`, `Q8_0` 4,375,021,824 B sha256 `145c2aa6…8b81`,
+  full-precision 8,229,921,024 B); `chat_template.jinja`
+  (`enable_thinking` default true, `reasoning_effort` accepts only
+  `high`/`low`, tool markup `<tool_call><arg_key>/<arg_value>`);
+  llama.cpp `b11719` source (`LLM_ARCH_SPARK2_5`, `src/models/spark2-5.cpp`,
+  per-request `reasoning_effort` translation in
+  `tools/server/server-common.cpp`, `/props.chat_template_caps`, and the
+  key middleware in `tools/server/server-http.cpp`).
+* **Only Q4_K_M and Q8_0 exist upstream** - Q5_K_M/Q6_K are rejected with
+  an error naming the available files; no fallback, no third-party
+  conversion. Spark on TPU is blocked with evidence (0 `spark2_5` hits in
+  vllm/tpu-inference).
+* **Implemented:** catalog entry + thinking-level metadata; request
+  policy that sends `none|low|high` only when the server reports
+  `supports_reasoning_effort`; `KAGGLE_KIT_MODEL=spark` with pinned GGUF,
+  b11719 build check, required `--jinja`, own state/key/runtime bundle;
+  anonymous/wrong-key 401/403 gate before any tunnel; Spark TPU refusal.
+* **Tests:** catalog (Spark metadata/levels/sampling), request builder
+  (level whitelist, unsupported-template omission, unchanged other
+  models), InferenceSettings (selector enabled/disabled, stored `medium`
+  warning), ProfileForm (draft-only fill, no overwrite), notebook
+  (pins, quantization fail-closed, build-number gate, `--jinja` refusal,
+  runtime bundle, auth gate against a real HTTP server), TPU (blocked
+  reasons distinct from Raon).
+* **Not live-verified:** no Kaggle T4 session was available. The GPU path
+  is "implemented - not live-verified"; nothing here proves model output,
+  speed, memory, or that b11719 parses Spark's tool-call format - native
+  tool calling stays disabled until the real probe passes.

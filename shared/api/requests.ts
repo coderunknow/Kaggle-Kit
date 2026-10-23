@@ -9,7 +9,27 @@
 import type { ChatCompletionRequestBody, ChatMessageInput, OpenAIToolDefinition } from './types';
 import type { ToolCallingCapability } from '../tools/types';
 
-export type ReasoningEffort = 'low' | 'medium' | 'high';
+/**
+ * Request-time reasoning effort values the API can carry. `none` is only
+ * meaningful for a model whose template documents a disabled thinking level
+ * (Spark-X2.6); the generic control keeps offering low/medium/high.
+ */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high';
+
+/**
+ * Model-specific constraints for the `reasoning_effort` field.
+ *
+ * It is passed by the caller that knows the concrete model ID (the proxy and
+ * the settings UI both resolve it from the catalog). Without a policy the
+ * builder keeps the historical behavior: send the value only when the
+ * endpoint advertised a generic per-request `reasoning_effort` support.
+ */
+export interface ReasoningPolicy {
+  /** Levels this model's own chat template accepts. */
+  allowed: readonly ReasoningEffort[];
+  /** Human readable mechanism, used in the omission note. */
+  label: string;
+}
 
 export interface InferenceParams {
   /** Maximum number of tokens to generate. */
@@ -40,6 +60,13 @@ export interface ServerCapabilities {
   streamingVerified: boolean;
   /** True when the server accepts a per request `reasoning_effort`. */
   reasoningEffortSupported: boolean;
+  /**
+   * True only when the server itself reported that the loaded chat template
+   * consumes the `reasoning_effort` variable (llama.cpp /props
+   * `chat_template_caps.supports_reasoning_effort`, computed by rendering the
+   * template). Required for model-specific thinking levels.
+   */
+  templateReasoningEffortSupported?: boolean;
   /** Optional human readable note, e.g. "configured at server startup". */
   notes: string[];
   /** Independent native tool-calling probe result; never inferred from connection health. */
@@ -65,18 +92,23 @@ export interface BuildChatBodyInput {
   params: InferenceParams;
   capabilities?: ServerCapabilities;
   tools?: OpenAIToolDefinition[];
+  /** Model-specific constraint for `reasoning_effort`; absent for other models. */
+  reasoningPolicy?: ReasoningPolicy;
 }
 
 export interface BuildChatBodyResult {
   body: ChatCompletionRequestBody;
   /** Parameters that were intentionally left out. */
   omitted: string[];
+  /** Why a parameter was left out; shown next to the omission list. */
+  notes: string[];
 }
 
 export function buildChatCompletionBody(input: BuildChatBodyInput): BuildChatBodyResult {
   const { model, messages, params } = input;
   const capabilities = input.capabilities;
   const omitted: string[] = [];
+  const notes: string[] = [];
 
   const body: ChatCompletionRequestBody = {
     model,
@@ -117,7 +149,27 @@ export function buildChatCompletionBody(input: BuildChatBodyInput): BuildChatBod
   }
 
   if (params.reasoningEffort) {
-    if (capabilities?.reasoningEffortSupported) {
+    if (input.reasoningPolicy) {
+      // A model-specific control: the value has to be one the model's own
+      // template accepts *and* the server has to confirm that the template
+      // consumes it. A value the template would reject (for example
+      // "medium" on Spark-X2.6, whose template raises) is never sent.
+      if (!input.reasoningPolicy.allowed.includes(params.reasoningEffort)) {
+        omitted.push('reasoning_effort');
+        notes.push(
+          `reasoning_effort "${params.reasoningEffort}" is not a level of ${input.reasoningPolicy.label}; ` +
+            `supported: ${input.reasoningPolicy.allowed.join(', ')}. It was not sent.`,
+        );
+      } else if (!capabilities?.templateReasoningEffortSupported) {
+        omitted.push('reasoning_effort');
+        notes.push(
+          'The connected server did not confirm that the loaded chat template consumes reasoning_effort, ' +
+            'so the thinking level was not sent.',
+        );
+      } else {
+        body.reasoning_effort = params.reasoningEffort;
+      }
+    } else if (capabilities?.reasoningEffortSupported) {
       body.reasoning_effort = params.reasoningEffort;
     } else {
       omitted.push('reasoning_effort');
@@ -149,7 +201,7 @@ export function buildChatCompletionBody(input: BuildChatBodyInput): BuildChatBod
     }
   }
 
-  return { body, omitted };
+  return { body, omitted, notes };
 }
 
 /**

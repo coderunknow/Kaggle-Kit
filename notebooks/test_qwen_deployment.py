@@ -693,6 +693,15 @@ class MainFlowTests(unittest.TestCase):
             ("get_server_binary", lambda session, config: Path("/tmp/llama-server")),
             ("find_saved_model", lambda config: self.model),
             ("probe_local_streaming", lambda *args, **kwargs: True),
+            (
+                "verify_local_authentication",
+                lambda *args, **kwargs: {
+                    "unauthenticated_rejected": True,
+                    "wrong_key_rejected": True,
+                    "authenticated_ok": True,
+                    "detail": "Authentication verified by the test fixture.",
+                },
+            ),
             ("start_public_tunnel", lambda *args, **kwargs: None),
             ("owns_process", lambda state: True),
             ("stop_owned_server", self._stop),
@@ -1119,6 +1128,15 @@ class UnsupportedOptionsFreshnessTests(unittest.TestCase):
             ("get_server_binary", lambda session, config: Path("/tmp/llama-server")),
             ("find_saved_model", lambda config: self.model),
             ("probe_local_streaming", lambda *args, **kwargs: True),
+            (
+                "verify_local_authentication",
+                lambda *args, **kwargs: {
+                    "unauthenticated_rejected": True,
+                    "wrong_key_rejected": True,
+                    "authenticated_ok": True,
+                    "detail": "Authentication verified by the test fixture.",
+                },
+            ),
             ("start_public_tunnel", lambda *args, **kwargs: None),
             ("owns_process", lambda state: True),
             ("stop_owned_server", lambda config, state: True),
@@ -1480,6 +1498,239 @@ class RaonDeploymentTests(unittest.TestCase):
             self.assertNotIn("raon-secret", paths["runtime"].read_text())
             self.assertNotIn("raon-secret", paths["profile"].read_text())
 
+
+
+class SparkDeploymentTests(unittest.TestCase):
+    """Spark-X2.6-4B on T4 x2: official artifacts, pins and fail-closed rules."""
+
+    GGUF_PAYLOAD = b"GGUF" + b"7" * 4092
+
+    def test_the_spark_preset_is_pinned_to_official_artifacts_only(self) -> None:
+        config = nb.spark_deployment_config()
+        self.assertEqual(config.repo, "XHToken/Spark-X2.6-4B-GGUF")
+        self.assertEqual(config.model_revision, nb.SPARK_GGUF_REVISION)
+        self.assertEqual(len(config.model_revision), 40)
+        self.assertEqual(config.llama_cpp_tags, ("b11719",))
+        self.assertFalse(config.requires_hf_token)  # public/ungated
+        self.assertFalse(config.enable_mtp)  # no draft head for Spark
+        self.assertTrue(config.require_jinja)  # template-defined thinking/tools
+        self.assertEqual(config.min_llama_cpp_build, 10828)
+        self.assertEqual(config.model_alias, "Spark-X2.6-4B")
+        self.assertEqual(config.reasoning_effort, "high")  # template default
+        self.assertEqual(config.thinking_levels, ("none", "low", "high"))
+        self.assertEqual(config.thinking_mechanism, "llama_cpp_reasoning_effort")
+        self.assertEqual(config.quantization, "Q4_K_M")
+        self.assertNotEqual(config.root, nb.DeploymentConfig().root)
+        self.assertNotEqual(config.root, nb.raon_deployment_config().root)
+        self.assertEqual(nb.config_for_model("spark").repo, config.repo)
+
+    def test_every_exposed_quantization_is_a_pinned_official_file(self) -> None:
+        self.assertEqual(set(nb.SPARK_QUANTIZATIONS), {"Q4_K_M", "Q8_0"})
+        for name, (file_name, size, digest) in nb.SPARK_QUANTIZATIONS.items():
+            self.assertTrue(file_name.endswith(".gguf"), name)
+            self.assertTrue(file_name.startswith("Spark-X2.6-4B-"), name)
+            self.assertGreater(size, 3_000_000_000, name)
+            self.assertEqual(len(digest), 64, name)
+            int(digest, 16)  # must be hex
+        self.assertEqual(
+            nb.SPARK_QUANTIZATIONS["Q4_K_M"],
+            (
+                "Spark-X2.6-4B-Q4_K_M.gguf",
+                3_543_441_312,
+                "91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9",
+            ),
+        )
+        self.assertEqual(
+            nb.SPARK_QUANTIZATIONS["Q8_0"],
+            (
+                "Spark-X2.6-4B-Q8_0.gguf",
+                4_375_021_824,
+                "145c2aa606820663f26ad530b8fc141ed885e2e9ca29f9be7c3bfe8931d58b81",
+            ),
+        )
+
+    def test_the_quantization_comes_from_the_environment_and_fails_closed(self) -> None:
+        self.assertEqual(nb.spark_quantization_from_env({}), "Q4_K_M")
+        self.assertEqual(nb.spark_quantization_from_env({"KAGGLE_KIT_QUANTIZATION": "Q8_0"}), "Q8_0")
+        for missing in ("Q5_K_M", "Q6_K"):
+            with self.assertRaises(ValueError) as raised:
+                nb.spark_quantization_from_env({"KAGGLE_KIT_QUANTIZATION": missing})
+            # The error names the file that does not exist and the choices that do.
+            self.assertIn(missing, str(raised.exception))
+            self.assertIn("no " + missing, str(raised.exception))
+            self.assertIn("Q4_K_M, Q8_0", str(raised.exception))
+        with self.assertRaises(ValueError) as raised:
+            nb.spark_quantization_from_env({"KAGGLE_KIT_QUANTIZATION": "Q3_K_M"})
+        self.assertIn("Unknown Spark quantization", str(raised.exception))
+        self.assertIn("Q4_K_M, Q8_0", str(raised.exception))
+        with self.assertRaises(ValueError):
+            nb.apply_spark_quantization(nb.spark_deployment_config(), "Q1_0")
+        with self.assertRaises(ValueError):
+            nb.config_for_model("spark", {"KAGGLE_KIT_QUANTIZATION": "Q5_K_M"})
+        # Selecting Q8_0 really changes the pinned file, size and digest.
+        q8 = nb.spark_deployment_config("Q8_0")
+        self.assertEqual(q8.model_file, "Spark-X2.6-4B-Q8_0.gguf")
+        self.assertEqual(q8.quantization, "Q8_0")
+
+    def test_a_quantization_that_cannot_fit_two_devices_is_refused_before_download(self) -> None:
+        # 3.54 GB over two 15 GiB devices is far below the 70% guard; the guard
+        # exists for a future artifact, so a too-small device budget must raise.
+        with self.assertRaises(RuntimeError):
+            nb.spark_deployment_config("Q4_K_M", per_gpu_usable_bytes=2_000_000_000)
+
+    def test_the_build_number_is_parsed_and_old_builds_are_not_accepted(self) -> None:
+        self.assertEqual(nb.parse_llama_cpp_build("version: b11719 (build 11719, commit abc)"), 11719)
+        self.assertEqual(nb.parse_llama_cpp_build("build 10828"), 10828)
+        self.assertIsNone(nb.parse_llama_cpp_build("version: 9.9.9"))
+        self.assertTrue(nb.build_supports_minimum("version: b11719 (build 11719)", 10828))
+        self.assertFalse(nb.build_supports_minimum("version: b10827 (build 10827)", 10828))
+        # Unparsable output is never "new enough".
+        self.assertFalse(nb.build_supports_minimum("unknown", 10828))
+        self.assertTrue(nb.build_supports_minimum("unknown", None))
+
+    def test_spark_startup_requires_jinja_and_never_sends_qwen_speculation(self) -> None:
+        config = nb.spark_deployment_config()
+        supported = nb.server_flags(
+            "--api-key-file --alias --temp --top-p --top-k --jinja --reasoning-effort "
+            "--split-mode --tensor-split --cache-type-k --cache-type-v"
+        )
+        launch = nb.build_server_command(
+            config,
+            Path("/tmp/llama-server"),
+            Path("/tmp/spark.gguf"),
+            "spark-secret",
+            supported,
+            {"ctx": 8192, "mtp": False, "reasoning": True},
+            api_key_file=Path("/tmp/api_key.txt"),
+        )
+        self.assertTrue(launch.applied["jinja"])
+        self.assertIn("--jinja", launch.command)
+        self.assertEqual(launch.applied["alias"], "Spark-X2.6-4B")
+        self.assertEqual(launch.applied["reasoning_effort"], "high")
+        self.assertNotIn("medium", launch.command)
+        self.assertNotIn("--spec-type", launch.command)
+        self.assertFalse(launch.applied["mtp"])
+        self.assertNotIn("spark-secret", launch.command)
+
+        # A build without --jinja is refused instead of serving a substituted
+        # template.
+        without_jinja = nb.server_flags("--api-key-file --alias --ctx-size")
+        with self.assertRaises(RuntimeError) as raised:
+            nb.build_server_command(
+                config,
+                Path("/tmp/llama-server"),
+                Path("/tmp/spark.gguf"),
+                "spark-secret",
+                without_jinja,
+                {"ctx": 8192, "mtp": False, "reasoning": False},
+                api_key_file=Path("/tmp/api_key.txt"),
+            )
+        self.assertIn("--jinja", str(raised.exception))
+
+    def test_spark_runtime_bundle_records_the_pins_without_the_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = nb.spark_deployment_config("Q8_0")
+            config.root = Path(directory)
+            model_path = config.model_dir / config.model_file
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            model_path.write_bytes(self.GGUF_PAYLOAD)
+            paths = nb.write_runtime_bundle(
+                config,
+                "spark-secret",
+                "Spark-X2.6-4B",
+                model_path,
+                {"ctx": 8192, "mtp": False, "reasoning": True, "reasoning_effort": "high"},
+                None,
+                Path("/tmp/llama-server"),
+                authentication={"authenticated_ok": True, "unauthenticated_rejected": True,
+                                "detail": "verified in test"},
+            )
+            runtime = json.loads(paths["runtime"].read_text())
+            self.assertEqual(runtime["deployment"], "Spark")
+            self.assertEqual(runtime["model_repo"], "XHToken/Spark-X2.6-4B-GGUF")
+            self.assertEqual(runtime["model_revision"], nb.SPARK_GGUF_REVISION)
+            self.assertEqual(runtime["quantization"], "Q8_0")
+            self.assertEqual(runtime["model_sha256"], nb.SPARK_QUANTIZATIONS["Q8_0"][2])
+            self.assertEqual(runtime["thinking_levels"], ["none", "low", "high"])
+            self.assertEqual(runtime["thinking_mechanism"], "llama_cpp_reasoning_effort")
+            self.assertFalse(runtime["mtp_speculative_decoding"])
+            self.assertTrue(runtime["authentication_enforced"])
+            self.assertEqual(json.loads(paths["profile"].read_text())["model"], "Spark-X2.6-4B")
+            self.assertNotIn("spark-secret", paths["runtime"].read_text())
+            self.assertNotIn("spark-secret", paths["profile"].read_text())
+
+    def test_spark_is_distinct_in_the_deployment_fingerprint(self) -> None:
+        qwen = nb.DeploymentConfig()
+        spark = nb.spark_deployment_config()
+        self.assertNotEqual(
+            nb.deployment_fingerprint(spark, Path("/m/spark.gguf"), Path("/b/llama-server")),
+            nb.deployment_fingerprint(qwen, Path("/m/qwen.gguf"), Path("/b/llama-server")),
+        )
+
+
+class LocalAuthenticationTests(unittest.TestCase):
+    """A keyed llama-server must reject anonymous and wrongly keyed requests."""
+
+    def _serve(self, require_key: str, open_server: bool = False) -> tuple:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 - http.server API
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                header = self.headers.get("Authorization") or ""
+                if not open_server and header != f"Bearer {require_key}":
+                    payload = b'{"error":{"message":"Invalid API Key"}}'
+                    self.send_response(401)
+                else:
+                    payload = (
+                        b'{"choices":[{"message":{"role":"assistant","content":"OK"}}]}'
+                    )
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):  # noqa: D102 - silence the test server
+                return
+
+        socketserver.TCPServer.allow_reuse_address = True
+        server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address
+        config = nb.DeploymentConfig()
+        config.host = host
+        config.port = port
+        return config, "spark-secret"
+
+    def test_a_keyed_server_passes_all_three_requests(self) -> None:
+        if not nb.REQUESTS_AVAILABLE:
+            self.skipTest("requests is not installed")
+        config, key = self._serve("spark-secret")
+        result = nb.verify_local_authentication(nb.build_session(), config, key, "Spark-X2.6-4B")
+        self.assertTrue(result["unauthenticated_rejected"])
+        self.assertTrue(result["wrong_key_rejected"])
+        self.assertTrue(result["authenticated_ok"])
+        self.assertIn("401/403", result["detail"])
+
+    def test_a_server_that_answers_anonymous_requests_fails_the_check(self) -> None:
+        if not nb.REQUESTS_AVAILABLE:
+            self.skipTest("requests is not installed")
+        # A server that treats every request as authorized must not pass the
+        # gate, even though the correctly keyed request would also answer.
+        config, key = self._serve("spark-secret", open_server=True)
+        result = nb.verify_local_authentication(nb.build_session(), config, key, "Spark-X2.6-4B")
+        self.assertFalse(result["unauthenticated_rejected"])
+        self.assertFalse(result["wrong_key_rejected"])
+        self.assertTrue(result["authenticated_ok"])
+        self.assertIn("No tunnel is started", result["detail"])
+        # The gate is a three-part conjunction, so this state cannot continue.
+        self.assertFalse(
+            result["unauthenticated_rejected"]
+            and result["wrong_key_rejected"]
+            and result["authenticated_ok"]
+        )
 
 
 if __name__ == "__main__":

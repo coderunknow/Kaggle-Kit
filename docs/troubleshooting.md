@@ -163,6 +163,30 @@ from the catalog in the profile editor or the Inference tab, save, and
 re-test. Qwen profiles keep their own defaults; applying Qwen defaults
 clears the sampling extensions again.
 
+## Spark-X2.6-4B (GPU cell)
+
+* **`The Spark quantization 'Q5_K_M' is not published by XHToken`** - only
+  `Q4_K_M` and `Q8_0` exist for this model. Set
+  `KAGGLE_KIT_QUANTIZATION=Q4_K_M` (default) or `Q8_0`; do not point the
+  cell at a third-party GGUF conversion.
+* **`Refusing to start with a substituted template`** - the binary has no
+  `--jinja`. Use the pinned b11719 CUDA build; llama.cpp's built-in
+  templates do not implement Spark's thinking levels or tool-call markup.
+* **`its build is older than the required b10828`** - an old
+  `llama-server` in `/kaggle/working/spark_x2_6_api` (or in `PATH`) was
+  ignored. Remove it or let the cell download b11719.
+* **`Authentication status is not what this deployment requires`** - the
+  server answered a chat completion without a key (or rejected the correct
+  one). The cell stops before starting a tunnel. Check the server log; do
+  not expose the port manually.
+* **The thinking selector is disabled** - the endpoint did not report
+  `/props.chat_template_caps.supports_reasoning_effort: true`. Either the
+  template is not the Spark template or the build is older than b11719.
+  The request preview explains that `reasoning_effort` is omitted.
+* **`“medium” is not a level of this model`** - Spark's template accepts
+  only `high` (default) and `low`; `none` disables thinking. Pick one of
+  the offered values.
+
 ## Chat interface
 
 ### The backend answers "The origin ... is not allowed to call this proxy"

@@ -178,4 +178,91 @@ describe('buildChatCompletionBody', () => {
     expect(body.parallel_tool_calls).toBe(false);
     expect(omitted).toContain('stream (tool turns use non-streaming requests; streamed tool-call support is reported separately by the capability probe)');
   });
+
+  describe('model-specific thinking levels', () => {
+    const sparkPolicy = {
+      allowed: ['none', 'low', 'high'] as const,
+      label: "Spark-X2.6-4B's chat template",
+    };
+    const sparkCapabilities: ServerCapabilities = {
+      ...noCapabilities,
+      templateReasoningEffortSupported: true,
+    };
+    const params = (reasoningEffort: 'none' | 'low' | 'medium' | 'high') => ({
+      maxTokens: 16,
+      temperature: 1,
+      topP: 0.95,
+      reasoningEffort,
+      stream: false,
+    });
+
+    it('sends the documented low level when the server confirms the template consumes it', () => {
+      const { body, omitted, notes } = buildChatCompletionBody({
+        model: 'Spark-X2.6-4B',
+        messages: [{ role: 'user', content: 'x' }],
+        params: params('low'),
+        capabilities: sparkCapabilities,
+        reasoningPolicy: sparkPolicy,
+      });
+
+      expect(body.reasoning_effort).toBe('low');
+      expect(omitted).not.toContain('reasoning_effort');
+      expect(notes).toEqual([]);
+    });
+
+    it('sends "none" as the documented thinking-disabled level', () => {
+      const { body } = buildChatCompletionBody({
+        model: 'Spark-X2.6-4B',
+        messages: [{ role: 'user', content: 'x' }],
+        params: params('none'),
+        capabilities: sparkCapabilities,
+        reasoningPolicy: sparkPolicy,
+      });
+
+      expect(body.reasoning_effort).toBe('none');
+    });
+
+    it('never sends a level the template would reject, and says why', () => {
+      const { body, omitted, notes } = buildChatCompletionBody({
+        model: 'Spark-X2.6-4B',
+        messages: [{ role: 'user', content: 'x' }],
+        params: params('medium'),
+        capabilities: sparkCapabilities,
+        reasoningPolicy: sparkPolicy,
+      });
+
+      // The Spark template raises on "medium"; sending it would turn a
+      // setting into a failed request.
+      expect(body.reasoning_effort).toBeUndefined();
+      expect(omitted).toContain('reasoning_effort');
+      expect(notes.join(' ')).toContain('not a level of');
+      expect(notes.join(' ')).toContain('none, low, high');
+    });
+
+    it('does not send a valid level when the server has not confirmed template support', () => {
+      const { body, omitted, notes } = buildChatCompletionBody({
+        model: 'Spark-X2.6-4B',
+        messages: [{ role: 'user', content: 'x' }],
+        params: params('high'),
+        capabilities: { ...noCapabilities, reasoningEffortSupported: true },
+        reasoningPolicy: sparkPolicy,
+      });
+
+      expect(body.reasoning_effort).toBeUndefined();
+      expect(omitted).toContain('reasoning_effort');
+      expect(notes.join(' ')).toContain('did not confirm');
+    });
+
+    it('leaves models without a policy on the previous behavior', () => {
+      const { body, notes } = buildChatCompletionBody({
+        model: 'Qwen3.8-27B',
+        messages: [{ role: 'user', content: 'x' }],
+        params: params('medium'),
+        capabilities: { ...noCapabilities, reasoningEffortSupported: true },
+      });
+
+      expect(body.reasoning_effort).toBe('medium');
+      expect(notes).toEqual([]);
+    });
+  });
 });
