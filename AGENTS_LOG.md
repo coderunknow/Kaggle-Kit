@@ -1441,3 +1441,15 @@ staging, manifest/SHA256SUMS, artifact validation and simulated downloaded
 validation all passed; the rendered notes contain the candidate SHA. This did
 not create a tag or release. A further documentation-only append is pending to
 record this repeat and final branch CI remains pending.
+
+
+## 2026-10-24 - branch CI completed (PR #21)
+
+After pushing `4767acfcd7f89b5f1844547079b45505f96f64b3` and opening Draft
+PR #21, watched GitHub run `40059116874`. All five jobs passed: Browser E2E
+(48s), Docker sandbox integration (24s), notebook tests (19s), typecheck/lint/
+test/build (1m7s), Windows launcher (47s). CodeRabbit passed too. This is
+independent verification on the session branch; the already-open PR #20 run
+was not used as a substitute. Local browser still cannot launch; no live model
+or Kaggle test ran. PR #21 remains unmerged/Draft. A docs-only CI evidence
+append follows; repeat CI and release dry-run on the resulting exact head.

@@ -2109,3 +2109,17 @@ runner (typecheck, lint, Vitest 48 files / 497 tests, notebook 105 tests,
 tools 32 tests), build, 33/33 integration, stage/manifest/checksums, staged
 validation and simulated-download validation passed; rendered notes contained
 that exact SHA. This created no tag or release.
+
+
+### Addendum - candidate-branch CI results
+
+GitHub PR #21's run `40059116874` on this branch head
+`4767acfcd7f89b5f1844547079b45505f96f64b3` completed with all five CI jobs
+passing: typecheck/lint/test/build (1m7s), notebook tests (19s), Docker
+sandbox integration (24s), Windows launcher (47s), and Browser end-to-end
+(48s). CodeRabbit passed. This is evidence for this branch; PR #20's separate
+run was not substituted. Local Playwright remains blocked by missing NSS/NSPR
+libraries, so browser verification came from CI. No live model/Kaggle check was
+run. Merge/tag/release/deployment remain unauthorized. A docs-only evidence
+commit follows; its exact head still needs CI and a repeated local dry-run
+before final reporting.
