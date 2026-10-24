@@ -8,6 +8,18 @@
 
 import type { OpenAIToolCall } from './types';
 
+/**
+ * The largest number of UTF-8 bytes a single SSE event may have. An event is
+ * the text between two blank-line separators, event fields included. The
+ * parser measures the actual encoded bytes of the undelivered tail: multi
+ * byte text counts its real bytes (not code units), and one oversized
+ * network chunk of many small events is still delivered (the cap bounds one
+ * event, not a chunk). A stream that never terminates an event would
+ * otherwise buffer data without bound until the request timeout; every
+ * legitimate OpenAI-compatible delta frame is far smaller than this.
+ */
+export const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024;
+
 export interface SseEvent {
   /** Optional `event:` name. */
   event?: string;
@@ -26,8 +38,21 @@ export async function* parseSseStream(
   signal?: AbortSignal,
 ): AsyncGenerator<SseEvent> {
   const reader = stream.getReader();
+  // One streaming decoder for the whole stream, fed only complete event
+  // blocks (plus the final flush). A multi-byte character split across a
+  // chunk boundary is therefore held back by the decoder until the bytes
+  // that complete it arrive, exactly as in a raw byte stream.
   const decoder = new TextDecoder('utf-8');
-  let buffer = '';
+
+  // The undelivered tail as raw wire bytes in arrival order. Keeping bytes
+  // (instead of one ever-growing string) makes the byte cap exact and keeps
+  // the work per chunk proportional to the chunk: scanning, slicing or
+  // re-encoding the whole growing tail for every small chunk would make a
+  // never-terminated event quadratic in its size.
+  const segments: Uint8Array[] = [];
+  let firstSeg = 0; // segments[] index of the tail start
+  let segOffset = 0; // consumed bytes within segments[firstSeg]
+  let tailBytes = 0; // total raw bytes in the tail
 
   // An abort must wake a read that is still waiting for the next chunk:
   // checking the signal only at the top of the loop leaves a pending
@@ -40,28 +65,97 @@ export async function* parseSseStream(
     signal.addEventListener('abort', onAbort, { once: true });
   }
 
+  const exceedLimit = () => {
+    throw new Error('The event stream exceeded the maximum size of a single event before it terminated.');
+  };
+
+  // The last `length` bytes of the tail: the new chunk plus at most three
+  // bytes that a separator may straddle back into the previous data.
+  const tailWindow = (length: number): Uint8Array => {
+    const out = new Uint8Array(length);
+    let need = length;
+    for (let seg = segments.length - 1; need > 0 && seg >= firstSeg; seg -= 1) {
+      const piece = segments[seg]!;
+      const available = seg === firstSeg ? piece.byteLength - segOffset : piece.byteLength;
+      const take = Math.min(need, available);
+      out.set(piece.subarray(available - take, available), need - take);
+      need -= take;
+    }
+    return out;
+  };
+
+  // The first `to` bytes of the tail (one completed event block).
+  const tailPrefix = (to: number): Uint8Array => {
+    const out = new Uint8Array(to);
+    let filled = 0;
+    for (let seg = firstSeg; filled < to && seg < segments.length; seg += 1) {
+      const piece = segments[seg]!;
+      const from = seg === firstSeg ? segOffset : 0;
+      const take = Math.min(piece.byteLength - from, to - filled);
+      out.set(piece.subarray(from, from + take), filled);
+      filled += take;
+    }
+    return out;
+  };
+
+  const advanceTail = (count: number): void => {
+    segOffset += count;
+    tailBytes -= count;
+    while (firstSeg < segments.length && segOffset >= segments[firstSeg]!.byteLength) {
+      segOffset -= segments[firstSeg]!.byteLength;
+      firstSeg += 1;
+    }
+  };
+
   try {
     for (;;) {
       if (signal?.aborted) break;
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      segments.push(value);
+      tailBytes += value.byteLength;
 
-      let separator = findEventSeparator(buffer);
-      while (separator) {
-        const block = buffer.slice(0, separator.index);
-        buffer = buffer.slice(separator.index + separator.length);
-        const parsed = parseSseBlock(block);
-        if (parsed) yield parsed;
-        separator = findEventSeparator(buffer);
+      // A separator is pure ASCII (LF, CRLF, CR) and UTF-8 multi-byte
+      // sequences never contain 0x0A/0x0D, so searching raw bytes is exact.
+      // A separator can only appear inside the new chunk or straddle its
+      // start by at most three bytes, so only that window is scanned: the
+      // per-chunk work stays O(chunk) no matter how large the pending tail
+      // is.
+      const windowStart = Math.max(0, tailBytes - value.byteLength - 3);
+      const window = tailWindow(tailBytes - windowStart);
+      let scan = 0;
+      let consumed = 0;
+      for (;;) {
+        const separator = findSeparator(window, windowStart, scan);
+        if (!separator) break;
+        const blockEnd = separator.absStart + separator.length;
+        const block = tailPrefix(separator.absStart - consumed);
+        advanceTail(blockEnd - consumed);
+        consumed = blockEnd;
+        const parsed = parseSseBlock(decoder.decode(block, { stream: true }));
+        if (parsed) {
+          if (block.byteLength > MAX_SSE_EVENT_BYTES) exceedLimit();
+          yield parsed;
+        }
+        // Every remaining separator must also touch the new chunk (the tail
+        // had none before this chunk), so the copied window still covers it.
+        scan = blockEnd - windowStart;
       }
+
+      // After the split the tail holds exactly one unterminated event, so
+      // this bounds a single event, not the size of one network chunk: a
+      // chunk full of small complete events passes the check above.
+      if (tailBytes > MAX_SSE_EVENT_BYTES) exceedLimit();
     }
 
     // A cancelled stream must not deliver a trailing partial event after the
     // cancellation: the caller has already decided the answer is incomplete.
-    if (!signal?.aborted) {
-      buffer += decoder.decode();
-      const trailing = parseSseBlock(buffer);
+    if (!signal?.aborted && tailBytes > 0) {
+      // The final flush decodes the tail plus the bytes the decoder held
+      // back; only here can an event cross the limit at the very end.
+      const rest = tailPrefix(tailBytes);
+      if (rest.byteLength > MAX_SSE_EVENT_BYTES) exceedLimit();
+      const trailing = parseSseBlock(decoder.decode(rest));
       if (trailing) yield trailing;
     }
   } finally {
@@ -77,16 +171,29 @@ export async function* parseSseStream(
   }
 }
 
+const LF = 0x0a;
+const CR = 0x0d;
+
 /**
- * Find the end of the first event in the buffer.
+ * Find the end of the first event at or after `from` within `window` (a
+ * byte-range copy of the tail, starting at tail offset `windowStart`).
  *
- * The SSE specification allows LF, CRLF and CR as line ends. A server that
- * answers with CRLF would otherwise be read as one single event.
+ * The SSE specification allows LF, CRLF and CR as line ends, so a server
+ * that answers with CRLF would otherwise be read as one single event. The
+ * byte scan matches the leftmost-first behavior of the old regex
+ * (`\r\n\r\n|\n\n|\r\r`) exactly.
  */
-function findEventSeparator(buffer: string): { index: number; length: number } | null {
-  const match = /\r\n\r\n|\n\n|\r\r/.exec(buffer);
-  if (!match) return null;
-  return { index: match.index, length: match[0].length };
+function findSeparator(window: Uint8Array, windowStart: number, from: number): { absStart: number; length: number } | null {
+  for (let i = from; i + 2 <= window.byteLength; i += 1) {
+    const a = window[i]!;
+    const b = window[i + 1]!;
+    if (a === LF && b === LF) return { absStart: windowStart + i, length: 2 };
+    if (a === CR && b === CR) return { absStart: windowStart + i, length: 2 };
+    if (a === CR && b === LF && i + 4 <= window.byteLength && window[i + 2] === CR && window[i + 3] === LF) {
+      return { absStart: windowStart + i, length: 4 };
+    }
+  }
+  return null;
 }
 
 function parseSseBlock(block: string): SseEvent | null {

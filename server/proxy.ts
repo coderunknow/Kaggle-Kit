@@ -63,6 +63,14 @@ interface CapabilityCacheEntry {
 const STREAM_PROBE_TTL_MS = 10 * 60 * 1000;
 const TOOL_PROBE_TTL_MS = 10 * 60 * 1000;
 const MAX_TOOL_PROBE_RESPONSE_BYTES = 16_384;
+/**
+ * Non-streaming upstream responses are buffered in memory, so a compromised
+ * or broken endpoint must not be able to stream gigabytes into the proxy
+ * while the (up to 30 minute) request timeout runs. 8 MiB is far above any
+ * legitimate completion (max_tokens is hard-capped at 32,768 tokens) while
+ * bounding the worst case of a misbehaving endpoint.
+ */
+const MAX_CHAT_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 export class ProxyService {
   private readonly capabilities = new Map<string, CapabilityCacheEntry>();
@@ -156,7 +164,12 @@ export class ProxyService {
       apiKey,
       timeoutMs,
       fetchImpl: this.pinnedFetch,
-      ...(maxResponseBytes !== undefined ? { maxResponseBytes } : {}),
+      // Callers may tighten the limit (the capability probe uses 16 KiB);
+      // they may never remove or raise it. The Math.min enforces the hard
+      // maximum at this single factory instead of trusting every caller:
+      // a value above it (up to Number.MAX_SAFE_INTEGER) would otherwise
+      // disable the cap silently.
+      maxResponseBytes: Math.min(maxResponseBytes ?? MAX_CHAT_RESPONSE_BYTES, MAX_CHAT_RESPONSE_BYTES),
       validateRedirect: (target) => this.isRedirectAllowed(target),
     });
   }

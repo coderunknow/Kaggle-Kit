@@ -600,3 +600,104 @@ describe('the destination policy of the proxy against literal addresses', () => 
     expect(calls).toEqual(['http://127.0.0.1:9999/v1/models']);
   });
 });
+
+describe('the proxy caps non-streaming upstream responses', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function proxyWithCompletionBody(bodyText: string) {
+    const config = loadServerConfig({}, process.cwd());
+    const store = new SecretStore(path.join(os.tmpdir(), `kaggle-kit-proxy-${Date.now()}.json`));
+    const logger = createLogger({ sink: () => undefined });
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/chat/completions')) {
+        return new Response(bodyText, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+    return new ProxyService(config, store, logger, (input, init) => globalThis.fetch(input, init));
+  }
+
+  const OVERSIZED_9MIB = JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(9 * 1024 * 1024) } }] });
+
+  it('rejects a non-streaming completion whose body exceeds the response limit instead of buffering it without bound', async () => {
+    const proxy = proxyWithCompletionBody(OVERSIZED_9MIB);
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000);
+
+    const error = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((caught: unknown) => caught);
+
+    expect((error as { kind?: string }).kind).toBe('invalid_response');
+    expect((error as Error).message).toMatch(/exceeded the .*response limit/i);
+  });
+
+  it('still delivers a large-but-legal completion below the limit', async () => {
+    // 4 MiB of content is far below the 8 MiB limit and must pass through.
+    const big = JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(4 * 1024 * 1024) } }] });
+    const proxy = proxyWithCompletionBody(big);
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000);
+
+    const result = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+    expect(result.choices?.[0]?.message?.content).toHaveLength(4 * 1024 * 1024);
+  });
+
+  it('clamps a caller-provided limit above the hard maximum instead of removing it', async () => {
+    // The documented contract: callers may tighten the limit, never remove or
+    // raise it. A "limit" of MAX_SAFE_INTEGER must not disable the cap.
+    const proxy = proxyWithCompletionBody(OVERSIZED_9MIB);
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000, Number.MAX_SAFE_INTEGER);
+
+    const error = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((caught: unknown) => caught);
+
+    expect((error as { kind?: string }).kind).toBe('invalid_response');
+    expect((error as Error).message).toMatch(/exceeded the .*response limit/i);
+  });
+
+  it('still lets callers tighten the limit below the hard maximum', async () => {
+    // A 1 MiB caller limit must reject a 2 MiB body (tightening preserved)…
+    const big = JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(2 * 1024 * 1024) } }] });
+    const proxy = proxyWithCompletionBody(big);
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000, 1024 * 1024);
+    const error = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((caught: unknown) => caught);
+    expect((error as { kind?: string }).kind).toBe('invalid_response');
+
+    // …while a 512 KiB body still passes the same 1 MiB limit.
+    const small = JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(512 * 1024) } }] });
+    const proxy2 = proxyWithCompletionBody(small);
+    const client2 = proxy2.createClient('http://127.0.0.1:9999/v1', 'k', 30_000, 1024 * 1024);
+    const result = await client2.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+    expect(result.choices?.[0]?.message?.content).toHaveLength(512 * 1024);
+  });
+
+  it('treats the hard maximum as inclusive: exactly 8 MiB passes, one byte more is rejected', async () => {
+    // The JSON wrapper around the content has a fixed overhead; measure it
+    // instead of hard-coding it.
+    const wrapper = (content: string) => JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] });
+    const overhead = wrapper('').length;
+
+    const exactly = proxyWithCompletionBody(wrapper('x'.repeat(8 * 1024 * 1024 - overhead)));
+    const clientExactly = exactly.createClient('http://127.0.0.1:9999/v1', 'k', 30_000);
+    const ok = await clientExactly.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+    expect(ok.choices?.[0]?.message?.content).toHaveLength(8 * 1024 * 1024 - overhead);
+
+    const beyond = proxyWithCompletionBody(wrapper('x'.repeat(8 * 1024 * 1024 - overhead + 1)));
+    const clientBeyond = beyond.createClient('http://127.0.0.1:9999/v1', 'k', 30_000);
+    const error = await clientBeyond.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((caught: unknown) => caught);
+    expect((error as { kind?: string }).kind).toBe('invalid_response');
+  });
+
+  it('applies the hard maximum when the limit argument is null (runtime, not just undefined)', async () => {
+    const proxy = proxyWithCompletionBody(OVERSIZED_9MIB);
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000, null as unknown as number);
+
+    const error = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((caught: unknown) => caught);
+
+    expect((error as { kind?: string }).kind).toBe('invalid_response');
+  });
+});

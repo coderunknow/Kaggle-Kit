@@ -2556,3 +2556,135 @@ merge, verify the resulting merge commit and `main`; only then compare PR #20's
 full diff against updated `main` and close #20 if no unique useful changes are
 lost. No tag, release, publication, workflow dispatch, deployment, or bypass is
 authorized.
+
+## 2026-10-24T09:23:00Z - Response-bound design decisions for the beta1 release candidate
+
+### Scope and evidence
+
+Deep red-team pass over the beta1 candidate (started at
+`fc6893dc2315e744a8c4109fc6e9358132f2de70`). Three defects were confirmed
+by reproduction and repaired: the known calculator prototype-key lookup
+(RT-001) and two resource-exhaustion paths discovered in this pass. This
+entry records the design rationale for each change; the operational
+evidence (commands, counts, before/after test runs) is in the same-dated
+`AGENTS_LOG.md` entry.
+
+### RT-001 — own-property guard for the calculator function table
+
+`FUNCTIONS` stays a plain object literal (keeps the table readable and the
+diff minimal); the single lookup site now requires an own property
+(`Object.prototype.hasOwnProperty.call`) before treating a name as a
+calculator function. Inherited names therefore fail with the same controlled
+"Unknown constant or function" validation error as any other unsupported
+name, instead of invoking `Object.prototype` (raw `TypeError`) or silently
+resolving to inherited values. The alternative — `Object.create(null)` at
+definition — was considered and rejected as a larger structural change for
+a single lookup site; the guard matches the pattern already established in
+`server/tools/http.ts` (`applyResponsePointer`), so the codebase keeps one
+idiom for prototype-safe lookups.
+
+### RT-007 — non-streaming upstream responses are capped at 8 MiB
+
+`OpenAIClient` already supported `maxResponseBytes`; the defect was that the
+proxy never set it for the main clients, leaving `response.text()`
+unbounded while request timeouts allow up to 30 minutes. The fix is in the
+`ProxyService` client factory: every client now defaults to
+`MAX_CHAT_RESPONSE_BYTES = 8 * 1024 * 1024`, and callers may only tighten
+the limit (the capability probe keeps its explicit 16 KiB), never remove
+it. Rationale for the value: `max_tokens` is hard-clamped at 32,768, so a
+legitimate completion (content plus reasoning plus JSON overhead) stays far
+below 1 MiB even with multi-byte worst-case encoding; 8 MiB leaves a wide
+safety margin for legitimate traffic while bounding the worst case of a
+compromised or broken endpoint to a few MB per request in the proxy
+process. Error classification is unchanged: an oversized body is an
+`invalid_response` `ApiError` with a message that names the limit.
+
+### RT-008 — SSE single-event buffer capped at 4 MiB
+
+`parseSseStream` now throws once the accumulated-but-unterminated event
+exceeds `MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024`. This bounds the memory a
+stream can hold while waiting for its blank-line separator, on every
+consumer (proxy capability probe, proxy streaming probe, browser chat
+reader). All consumers already treat a throwing generator as a failed
+stream — the probes report `supported: false` and the browser surfaces an
+`inference` error while keeping the partial answer — so the cap is
+fail-closed without new error plumbing. 4 MiB is far above any legitimate
+OpenAI-compatible delta frame and below the new non-streaming cap, keeping
+the two bounds consistent. The cap is exported so tests and future call
+sites share the constant instead of re-deriving it.
+
+### What was deliberately not changed
+
+No public interfaces, configuration keys, persistence formats, or security
+policies were altered. The Docker sandbox, tool-approval, SSRF, upload, and
+secret-store designs were re-audited in this pass and left untouched; the
+regression tests added for the three fixes live in the existing suites
+(`server/tools/calculator.test.ts`, `server/proxy.test.ts`,
+`shared/api/stream.test.ts`) and were each proven to fail on the unfixed
+source before the fix landed.
+
+## 2026-10-24T10:40:00Z - Cycle-2 design decisions: enforced response caps and byte-exact SSE accounting
+
+### RT-009 - the 8 MiB cap is enforced at the factory, not by caller honesty
+
+`ProxyService.createClient()` is the only sanctioned way server code
+builds an upstream client, so the hard maximum is now enforced there with
+`Math.min(maxResponseBytes ?? MAX_CHAT_RESPONSE_BYTES, MAX_CHAT_RESPONSE_BYTES)`.
+Design choice: clamp instead of reject. A caller passing an out-of-range
+"limit" most likely meant "no limit", and silently disabling the cap was
+the defect; rejecting the construction would turn a configuration
+mistake into an unavailable feature. Clamping keeps the feature working
+and the invariant (`callers may tighten, never remove or raise`)
+machine-checked at one site. The public API shape is unchanged; the
+client's own validation (rejecting non-positive, non-integer, and
+non-finite values) still applies before the clamp.
+
+### RT-010 - the SSE cap counts wire bytes of ONE event, and the parser is O(total)
+
+Three semantic decisions:
+
+1. **Bytes, not code units, and not chunk size.** An event is the text
+   between two blank-line separators, event fields included, measured in
+   UTF-8 wire bytes. The cap bounds one unterminated event (and, before
+   delivery, one completed block) - never the size of a network chunk, so
+   an intermediary that coalesces many small events into one large chunk
+   does not trip it.
+2. **Three check points.** After each chunk (unterminated tail), before
+   delivering a completed block, and after the final decoder flush (an
+   incomplete character at EOF is the only case that can cross the limit
+   at the very end). Inclusive: exactly `MAX_SSE_EVENT_BYTES` passes,
+   one byte more rejects - the same semantics as the non-streaming cap.
+3. **Raw-byte tail, windowed separator scan.** The undelivered tail is
+   kept as raw wire bytes in arrival-ordered segments instead of one
+   growing string. This was forced by measurement, not taste: V8
+   flattens rope strings per regex exec and per slice (~2.4 ms for a
+   2M-unit buffer, measured), so any design that keeps a growing string
+   and re-examines it per chunk is quadratic; with realistic 512-byte
+   chunks the unfixed parser spent ~9.2 s on one 4.5 MiB CJK event
+   versus 58 ms for the fixed one. Separators are pure ASCII (LF, CRLF,
+   CR) and UTF-8 multi-byte sequences never contain 0x0A/0x0D, so a
+   byte-level scan is exactly equivalent to the old string regex
+   (leftmost-first order preserved) and only the new chunk plus a
+   3-byte straddle window is scanned per chunk.
+
+The single streaming `TextDecoder` is fed completed blocks only (plus the
+final flush), which reproduces the original split-character behavior for
+valid UTF-8 and stays fail-safe (replacement characters) for invalid
+input. Peak allocation is bounded by the cap plus one chunk; every byte
+is copied at most a constant number of times, so total work is
+O(total stream bytes).
+
+What this deliberately does NOT do: it does not cap the size of a single
+network chunk (that is the transport's allocation, not the parser's), and
+it does not try to bound the *number* of events (that is the
+`500-event` probe limit and the request timeout's job).
+
+### Request-side JSON boundary regression pins
+
+`readJsonBody`'s boundary (incremental 413 strictly above
+`maxBodyBytes`, inclusive at the limit, 400 for empty/array/invalid
+bodies, including bodies that only fail at parser depth) had no direct
+test coverage; `server/http.test.ts` pins it. Behavior was already
+correct - the tests are regression guards, and the deep-bracket case
+guards against a future parser change turning a bad body into a process
+crash.
