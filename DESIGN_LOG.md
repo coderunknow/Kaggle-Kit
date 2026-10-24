@@ -2097,3 +2097,15 @@ Notation correction for the F1 line above: the literal workflow source had
 two backslash characters total, one before each embedded quote; the inline
 example's Markdown escaping rendered four. The finding and reproduction use
 the actual workflow text, which the exact-line regression now reads directly.
+
+
+### Addendum - final-documented candidate dry-run
+
+After recording the first dry-run, repeated
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1` on committed HEAD
+`a4eb464ecfe0bec96bb558b8755703847cbd3774`. It again exited 0: check
+runner (typecheck, lint, Vitest 48 files / 497 tests, notebook 105 tests,
+tools 32 tests), build, 33/33 integration, stage/manifest/checksums, staged
+validation and simulated-download validation passed; rendered notes contained
+that exact SHA. This created no tag or release.

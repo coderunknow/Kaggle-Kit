@@ -1428,3 +1428,16 @@ shows four backslashes because of the string literal used to append it. The
 original workflow line contained two literal backslash characters (one before
 each inner quote), reproduced from the actual file. The test executes actual
 workflow text and is unaffected.
+
+
+## 2026-10-24 - final-documented candidate dry-run repeated
+
+Repeated the full command on committed candidate
+`a4eb464ecfe0bec96bb558b8755703847cbd3774` after appending the earlier result:
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1` exited 0. Check runner (typecheck/lint, 497 Vitest,
+105 notebook, 32 tools), build, 33/33 built-bundle integration checks, archive
+staging, manifest/SHA256SUMS, artifact validation and simulated downloaded
+validation all passed; the rendered notes contain the candidate SHA. This did
+not create a tag or release. A further documentation-only append is pending to
+record this repeat and final branch CI remains pending.
