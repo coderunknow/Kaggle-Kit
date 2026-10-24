@@ -963,6 +963,15 @@ function appendBoundedFailureTraces(
   failureKind: ToolFailureKind,
 ): void {
   const detailLimit = MAX_TOOL_CALLS_PER_ROUND;
+  if (examples.length === 0) {
+    session.trace.push(makeFailureTrace(
+      randomUUID(),
+      { function: { name: 'tool_call_batch' } },
+      error,
+      { failureKind },
+    ));
+    return;
+  }
   for (const call of examples.slice(0, detailLimit)) {
     session.trace.push(makeFailureTrace(randomUUID(), call, error, { failureKind }));
   }

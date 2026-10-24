@@ -294,7 +294,7 @@ requires the explicit `publish_nightly: true` dispatch input (default:
 `false`). Neither CI nor a local release dry-run publishes anything.
 
 ```bash
-git tag v0.1.0-dev7 <commit> && git push origin v0.1.0-dev7
+git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1
 ```
 
 The version of `package.json` has to match the tag and the release notes have

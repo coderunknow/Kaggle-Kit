@@ -30,7 +30,7 @@ on:
         description: 'Existing tag to build the release from'
         required: true
       publish_release:
-        description: 'Publish the validated release (defaults to validation only)'
+        description: 'Publish the validated release; manual dispatch requires publish_release: true (default false)'
         required: false
         type: boolean
         default: false

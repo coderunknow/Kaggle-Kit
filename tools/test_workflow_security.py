@@ -32,14 +32,19 @@ PUBLISH_COMMAND = re.compile(
 )
 
 
-def mapping_block(text: str, key: str, indent: int) -> str:
-    """Return a simple YAML mapping block, identified by key and indentation."""
-    lines = text.splitlines()
+def mapping_block_span(text: str, key: str, indent: int) -> tuple[str, int, int]:
+    """Return a simple YAML mapping block and its [start, end) source offsets."""
+    lines = text.splitlines(keepends=True)
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
     start = next(
         (
             index
             for index, line in enumerate(lines)
-            if re.fullmatch(rf" {{0,{indent}}}{re.escape(key)}:\s*", line)
+            if re.fullmatch(rf" {{0,{indent}}}{re.escape(key)}:\s*", line.rstrip("\r\n"))
             and len(line) - len(line.lstrip(" ")) == indent
         ),
         None,
@@ -55,7 +60,14 @@ def mapping_block(text: str, key: str, indent: int) -> str:
         if current_indent <= indent:
             end = index
             break
-    return "\n".join(lines[start:end])
+    start_offset = offsets[start]
+    end_offset = offsets[end] if end < len(lines) else len(text)
+    return text[start_offset:end_offset], start_offset, end_offset
+
+
+def mapping_block(text: str, key: str, indent: int) -> str:
+    """Return a simple YAML mapping block, identified by key and indentation."""
+    return mapping_block_span(text, key, indent)[0]
 
 
 def without_yaml_comments(text: str) -> str:
@@ -95,9 +107,14 @@ def run_blocks(text: str) -> list[str]:
     return blocks
 
 
+def workflow_job_span(text: str, name: str) -> tuple[str, int, int]:
+    jobs, jobs_start, _jobs_end = mapping_block_span(text, "jobs", 0)
+    job, relative_start, relative_end = mapping_block_span(jobs, name, 2)
+    return job, jobs_start + relative_start, jobs_start + relative_end
+
+
 def workflow_job(text: str, name: str) -> str:
-    jobs = mapping_block(text, "jobs", 0)
-    return mapping_block(jobs, name, 2)
+    return workflow_job_span(text, name)[0]
 
 
 def workflow_dispatch_input(text: str, name: str) -> str:
@@ -327,6 +344,35 @@ class WorkflowSecurityAndPublicationGates(unittest.TestCase):
                     expected,
                 )
 
+    def test_release_manual_dispatch_description_matches_its_gate(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        description = workflow_dispatch_input(text, "publish_release")
+        self.assertIn("publish_release: true", description)
+        self.assertNotRegex(description, r"(?i)validation only")
+
+    def test_beta1_release_example_matches_the_candidate_package_version(self) -> None:
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1", text)
+        self.assertNotIn("git tag v0.1.0-dev7", text)
+
+    def test_publication_command_spans_distinguish_duplicate_commands_outside_the_guard(self) -> None:
+        text = """jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - run: gh release create v1
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create v2
+"""
+        _job, start, end = workflow_job_span(text, "publish")
+        matches = list(PUBLISH_COMMAND.finditer(text))
+        self.assertEqual(len(matches), 2)
+        inside = [match for match in matches if start <= match.start() < end]
+        self.assertEqual(len(inside), 1)
+        self.assertEqual(inside[0].group(), "gh release")
+
     def test_all_publication_commands_are_inside_the_guarded_publisher_job(self) -> None:
         expected_jobs = {
             "nightly-release.yml": "publish",
@@ -338,11 +384,14 @@ class WorkflowSecurityAndPublicationGates(unittest.TestCase):
             if not matches:
                 continue
             self.assertIn(workflow.name, expected_jobs, f"unexpected workflow has publisher command: {workflow.name}")
-            guarded_job = workflow_job(text, expected_jobs[workflow.name])
+            _guarded_job, job_start, job_end = workflow_job_span(text, expected_jobs[workflow.name])
             self.assertTrue(job_condition(text, expected_jobs[workflow.name]))
             for match in matches:
                 command = match.group(0)
-                self.assertIn(command, guarded_job, f"publication command escaped guarded job: {command}")
+                self.assertTrue(
+                    job_start <= match.start() < job_end,
+                    f"publication command escaped guarded job at offset {match.start()}: {command}",
+                )
         nightly = without_yaml_comments((ROOT / ".github" / "workflows" / "nightly-release.yml").read_text(encoding="utf-8"))
         self.assertIsNone(PUBLISH_COMMAND.search(workflow_job(nightly, "verify")))
 

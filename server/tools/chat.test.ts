@@ -364,19 +364,27 @@ describe('bounded server-side tool chat', () => {
     expect(test.fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects finish_reason tool_calls when the payload has no calls', async () => {
-    const emptyBatch = {
+  it.each([
+    ['an empty array', []],
+    ['null', null],
+    ['a missing payload', undefined],
+  ])('records an accurate failure for finish_reason tool_calls with %s', async (_label, payload) => {
+    const message: Record<string, unknown> = { role: 'assistant', content: null };
+    if (payload !== undefined) message.tool_calls = payload;
+    const malformed = {
       model: 'mock-model',
-      choices: [{ message: { role: 'assistant', content: null, tool_calls: [] }, finish_reason: 'tool_calls' }],
+      choices: [{ message, finish_reason: 'tool_calls' }],
     } as unknown as Completion;
-    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [emptyBatch, answer('The empty batch ran nothing.')]);
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [malformed, answer('The empty batch ran nothing.')]);
     const execute = vi.spyOn(test.executor, 'execute');
 
     const result = await test.start();
 
     expect(result.content).toBe('The empty batch ran nothing.');
     expect(result.toolTrace).toHaveLength(1);
+    expect(result.toolTrace[0]).toMatchObject({ toolName: 'tool_call_batch', status: 'failed' });
     expect(result.toolTrace[0]?.error).toContain('malformed tool-call protocol');
+    expect(result.toolTrace[0]?.error).not.toMatch(/additional tool call/i);
     expect(execute).not.toHaveBeenCalled();
     expect(test.fetchMock).toHaveBeenCalledTimes(2);
   });
