@@ -2227,3 +2227,41 @@ release dry-run and its own CI jobs; the browser job must be independently
 confirmed. The historical PR #20 checks are not a substitute. Live Kaggle,
 model, hosted provider, tunnel, Windows runtime, Docker isolation and external
 MCP/HTTP behavior remain unverified/out of scope for this offline pass.
+
+### Addendum - committed-head release dry-run and branch CI
+
+On committed implementation head `f1671d7dde24fea095fb8b50379fd3fc61341ee3`,
+ran `PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1`: exit 0. The check runner passed typecheck, lint,
+**48 Vitest files / 500 tests**, **105 notebook tests** and **32 release-tool
+tests**; production build and **33/33** built-app/mock integration checks
+passed. Both staged-release validation and simulated downloaded-asset
+validation said `The release v0.1.0-beta1 is valid.` Nothing was tagged or
+published. Manifest evidence for this commit:
+
+| Artifact | Size | SHA-256 |
+|---|---:|---|
+| `v0.1.0-beta1-app.zip` | 2,198,591 B | `b2702be647a93650907b04fdd75038d84bd94f4ef46fa026104f9e0539413ad1` |
+| `v0.1.0-beta1-notebook.ipynb` | 136,634 B | `cfc40f90c6a3ffa474436dc036e5b04e5f982f2e8f57f06c283e6ee0b7bf133a` |
+| `v0.1.0-beta1-source.zip` | 1,003,383 B | `a9cd493a467345ddc519d86c50c1a0529299bc984390a32fb5ed634e814da90d` |
+
+`manifest.json`, `SHA256SUMS` and `verification-report.json` also validated;
+the manifest itself was 1,974 B and its SHA-256 was
+`42af1500dda5536d11af164844e470418c0196467ed254828547e0206013ea8b`. These
+are local generated-artifact hashes, not published GitHub asset digests.
+
+GitHub CI run `40060535716` on this exact PR #21 head completed successfully:
+all five jobs passed — notebook/release-tool tests (35s), Docker sandbox
+integration (25s), Browser E2E (52s), Windows launcher (52s), and
+typecheck/lint/test/build/integration (1m9s). Thus browser, Docker and Windows
+were verified on hosted runners despite the local browser/Docker/Windows
+limitations. The runner emitted informational Node.js 20 deprecation and
+`ubuntu-latest` migration annotations; no job failed. This run is for
+`f1671d7` on PR #21, not the overlapping PR #20.
+
+**State after this addendum.** PR #21 remains open and draft. The post-fix
+scheduled Nightly Release workflow has not run; it was not manually dispatched
+because of its possible publication side effect. No tag, release, deployment,
+merge or third-party request occurred. The exact documentation-only head that
+records this addendum is rechecked after commit; its final dry-run/CI results
+are reported separately and are not claimed here in advance.

@@ -1480,3 +1480,18 @@ append follows; repeat CI and release dry-run on the resulting exact head.
   rerun and all live deployment/provider/Docker/Windows environments are
   unverified. No external call, live model, Kaggle deployment, tag, release,
   merge, or publication occurred. Full detailed evidence is in `DESIGN_LOG.md`.
+
+### beta1 audit: committed-head dry-run and CI
+
+- `f1671d7dde24fea095fb8b50379fd3fc61341ee3` release dry-run exited 0:
+  typecheck/lint; 48 files / 500 Vitest tests; notebook 105; tools 32; build;
+  integration 33/33; staged and simulated-download artifact validation both
+  valid. No tag/release. Manifest artifact SHA-256 values and sizes are recorded
+  in `DESIGN_LOG.md`; they are local hashes, not published asset digests.
+- GitHub run `40060535716` on that exact PR #21 commit: all five jobs passed,
+  including hosted Browser E2E, real-Docker sandbox, Windows launcher, notebook
+  suite and typecheck/lint/test/build/integration. Informational Node 20 and
+  `ubuntu-latest` migration annotations only. PR #20 remains distinct.
+- PR #21 stays open/draft. The scheduled post-fix Nightly Release run is still
+  outstanding and was not triggered; no publication, merge, tag or deployment.
+  Final documentation-only head gets its own CI/dry-run check after commit.
