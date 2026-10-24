@@ -220,3 +220,69 @@ describe('ToolCallAccumulator', () => {
     expect(accumulator.finish().calls).toHaveLength(0);
   });
 });
+
+describe('parseSseStream event-size and encoding boundaries', () => {
+  function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+  }
+
+  it('rejects a single event that grows past the limit without terminating', async () => {
+    // No blank-line separator: the buffer would otherwise grow for the whole
+    // request timeout. Just over MAX_SSE_EVENT_BYTES (4 MiB) must reject.
+    const stream = streamOf(['data: ', 'x'.repeat(4 * 1024 * 1024 + 100)]);
+    let events = 0;
+    const consume = async () => {
+      for await (const frame of parseSseStream(stream)) events += frame.data.length;
+    };
+    await expect(consume()).rejects.toThrow(/maximum size of a single event/i);
+    expect(events).toBe(0);
+  });
+
+  it('delivers a large-but-terminated event below the limit', async () => {
+    // 1 MiB of payload, correctly terminated: must pass through unchanged.
+    const payload = 'x'.repeat(1024 * 1024);
+    const stream = streamOf([`data: ${payload}\n\n`]);
+    const events = [];
+    for await (const event of parseSseStream(stream)) events.push(event);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toBe(payload);
+  });
+
+  it('reads a stream that uses bare CR line ends', async () => {
+    const stream = streamOf(['data: a\r\rdata: b\r\r']);
+    const events = [];
+    for await (const event of parseSseStream(stream)) events.push(event);
+    expect(events.map((event) => event.data)).toEqual(['a', 'b']);
+  });
+
+  it('does not corrupt a multi-byte character split across chunk boundaries', async () => {
+    // "前" is 3 UTF-8 bytes at offsets 6,7,8 of this frame; split the frame
+    // after 8 bytes so the second chunk starts mid-character.
+    const bytes = new TextEncoder().encode('data: 前半\n\n');
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, 8));
+        controller.enqueue(bytes.subarray(8));
+        controller.close();
+      },
+    });
+    const events = [];
+    for await (const event of parseSseStream(stream)) events.push(event);
+    expect(events.map((event) => event.data)).toEqual(['前半']);
+  });
+
+  it('delivers a final well-formed frame that lacks a trailing blank line', async () => {
+    // On clean completion the parser flushes a terminal frame even without a
+    // trailing blank line, so the last delta is not silently dropped.
+    const stream = streamOf(['data: a\n\ndata: b']);
+    const events = [];
+    for await (const event of parseSseStream(stream)) events.push(event);
+    expect(events.map((event) => event.data)).toEqual(['a', 'b']);
+  });
+});

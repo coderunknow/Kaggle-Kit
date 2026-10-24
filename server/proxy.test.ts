@@ -600,3 +600,58 @@ describe('the destination policy of the proxy against literal addresses', () => 
     expect(calls).toEqual(['http://127.0.0.1:9999/v1/models']);
   });
 });
+
+describe('the proxy caps non-streaming upstream responses', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rejects a non-streaming completion whose body exceeds the response limit instead of buffering it without bound', async () => {
+    const config = loadServerConfig({}, process.cwd());
+    const store = new SecretStore(path.join(os.tmpdir(), `kaggle-kit-proxy-${Date.now()}.json`));
+    const logger = createLogger({ sink: () => undefined });
+
+    // Just over the 8 MiB limit the proxy applies when the caller does not
+    // pass a tighter one. max_tokens is hard-capped at 32,768, so no
+    // legitimate completion comes anywhere near this size.
+    const huge = JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(9 * 1024 * 1024) } }] });
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/chat/completions')) {
+        return new Response(huge, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    const proxy = new ProxyService(config, store, logger, (input, init) => globalThis.fetch(input, init));
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000);
+
+    const error = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] })
+      .catch((caught: unknown) => caught);
+
+    expect((error as { kind?: string }).kind).toBe('invalid_response');
+    expect((error as Error).message).toMatch(/exceeded the .*response limit/i);
+  });
+
+  it('still delivers a large-but-legal completion below the limit', async () => {
+    const config = loadServerConfig({}, process.cwd());
+    const store = new SecretStore(path.join(os.tmpdir(), `kaggle-kit-proxy-${Date.now()}.json`));
+    const logger = createLogger({ sink: () => undefined });
+
+    // 4 MiB of content is far below the 8 MiB limit and must pass through.
+    const big = JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(4 * 1024 * 1024) } }] });
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/chat/completions')) {
+        return new Response(big, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    const proxy = new ProxyService(config, store, logger, (input, init) => globalThis.fetch(input, init));
+    const client = proxy.createClient('http://127.0.0.1:9999/v1', 'k', 30_000);
+
+    const result = await client.chatCompletion({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+    expect(result.choices?.[0]?.message?.content).toHaveLength(4 * 1024 * 1024);
+  });
+});

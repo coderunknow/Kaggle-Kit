@@ -164,7 +164,12 @@ class Parser {
     if (token.kind === 'name') {
       if (token.value === 'pi') return Math.PI;
       if (token.value === 'e') return Math.E;
-      const operation = FUNCTIONS[token.value];
+      // Only own properties are calculator functions: inherited Object
+      // properties such as `__proto__` must fail validation, never be
+      // invoked (or throw an unexpected TypeError) through the lookup.
+      const operation = Object.prototype.hasOwnProperty.call(FUNCTIONS, token.value)
+        ? FUNCTIONS[token.value]
+        : undefined;
       if (!operation) throw new CalculatorInputError(`Unknown constant or function "${token.value}".`);
       if (!this.take('(')) throw new CalculatorInputError(`Function "${token.value}" must be followed by parentheses.`);
       const args: number[] = [];

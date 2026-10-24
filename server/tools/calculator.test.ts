@@ -23,6 +23,35 @@ describe('deterministic calculator tools', () => {
     expect(() => calculate('1e300 ^ 2')).toThrow(CalculatorInputError);
   });
 
+  it('never resolves or invokes inherited object properties as calculator functions (RT-001)', () => {
+    // `FUNCTIONS` is a plain object; without an own-property guard,
+    // `FUNCTIONS['__proto__']` resolves to `Object.prototype` and the call
+    // throws a raw `TypeError: operation is not a function` instead of the
+    // controlled validation error.
+    const inheritedNames = [
+      '__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty',
+      'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'prototype',
+    ];
+    for (const name of inheritedNames) {
+      for (const expression of [name, `${name}(1)`, `${name}(1, 2)`]) {
+        expect(() => calculate(expression), `${expression} must fail validation`).toThrow(CalculatorInputError);
+      }
+    }
+    // The failure must be the controlled "unknown" error, not any other type.
+    try {
+      calculate('__proto__(5)');
+      expect.unreachable('__proto__(5) must not evaluate');
+    } catch (error) {
+      expect(error).toBeInstanceOf(CalculatorInputError);
+      expect((error as Error).message).toMatch(/unknown constant or function/i);
+    }
+    // Supported names keep working after the guard (no over-rejection).
+    expect(calculate('abs(-3)').value).toBe(3);
+    expect(calculate('min(2, 1)').value).toBe(1);
+    expect(calculate('round(3.14159, 2)').value).toBe(3.14);
+    expect(calculate('pi * 2').value).toBeCloseTo(2 * Math.PI, 12);
+  });
+
   it('converts the previously reported Fahrenheit and speed examples within a relative tolerance', () => {
     // Relative tolerance: 1e-6 × max(1, |expected|), allowing floating-point rounding.
     expectRelativeClose(convert(100, '°F', '°C').value, 37.7777778);

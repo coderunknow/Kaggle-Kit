@@ -8,6 +8,14 @@
 
 import type { OpenAIToolCall } from './types';
 
+/**
+ * The largest a single SSE event may grow while waiting for its blank-line
+ * separator. A stream that never terminates an event would otherwise buffer
+ * data without bound until the request timeout; every legitimate
+ * OpenAI-compatible delta frame is far smaller than this.
+ */
+export const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024;
+
 export interface SseEvent {
   /** Optional `event:` name. */
   event?: string;
@@ -46,6 +54,13 @@ export async function* parseSseStream(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+
+      // An event that does not terminate grows this buffer instead of being
+      // delivered; without a cap a stream that omits the blank-line separator
+      // would accumulate data for the whole request timeout.
+      if (buffer.length > MAX_SSE_EVENT_BYTES) {
+        throw new Error('The event stream exceeded the maximum size of a single event before it terminated.');
+      }
 
       let separator = findEventSeparator(buffer);
       while (separator) {

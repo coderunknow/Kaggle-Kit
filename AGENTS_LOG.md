@@ -1781,3 +1781,127 @@ This is a pre-merge record, not a claim that merge has happened. The next
 operation is the ordinary GitHub merge mechanism only after the appended-log
 head's exact CI is green; no admin/bypass option is authorized. No tag, release,
 publication, workflow dispatch, deployment, or live model call occurred.
+
+## 2026-10-24T09:23:00Z - Independent deep red-team audit: RT-001 fix and two new response-bounds defects fixed (v0.1.0-beta1 release-candidate pass)
+
+This append-only entry records an independent red-team audit of the beta1
+candidate that was authorized to also repair confirmed defects. The audit
+started at `main` HEAD `fc6893dc2315e744a8c4109fc6e9358132f2de70` (clean
+worktree, 0/0 vs `origin/main`, no `v0.1.0-beta1` tag or release, PR #21
+merged, PR #20 closed unmerged — all re-verified against GitHub, not
+inherited). Prior audit results were treated as historical evidence only and
+reproduced.
+
+### Confirmed defects and fixes
+
+1. **RT-001 (known, low) — calculator prototype-key lookup.**
+   `server/tools/calculator.ts` resolved function names through a plain
+   object, so `FUNCTIONS['__proto__']` returned `Object.prototype` and
+   `__proto__(5)` threw a raw `TypeError: operation is not a function`
+   instead of the controlled `CalculatorInputError`. Reproduced against the
+   exact source before the fix. Fix: own-property guard at the single lookup
+   site (`Object.prototype.hasOwnProperty.call`), the same pattern already
+   used by `server/tools/http.ts`. Regression test added to
+   `server/tools/calculator.test.ts` ("never resolves or invokes inherited
+   object properties as calculator functions (RT-001)"): it fails with the
+   raw `TypeError` on the unfixed source and passes after the fix; supported
+   names (`abs`, `min`, `round`, `pi`) keep working.
+2. **RT-007 (new, low) — non-streaming upstream responses were buffered
+   without bound in the proxy process.** `ProxyService` created upstream
+   clients without `maxResponseBytes`, so `OpenAIClient` read non-streaming
+   bodies with `response.text()` at `Number.POSITIVE_INFINITY`. With client
+   timeouts up to 30 minutes (`readTimeout`/`boundedTimeout` clamp
+   `1_800_000` ms), a compromised or broken operator-configured endpoint
+   could stream gigabytes into the proxy. Fix: the client factory now always
+   applies `MAX_CHAT_RESPONSE_BYTES = 8 MiB` unless a caller tightens it
+   (the capability probe keeps its explicit 16 KiB). 8 MiB is far above any
+   legitimate completion (`max_tokens` is hard-clamped at 32,768).
+   Regression tests added to `server/proxy.test.ts`: a 9 MiB completion body
+   is rejected with `invalid_response` / "response limit" (fails on the
+   unfixed source), and a 4 MiB legal completion still passes.
+3. **RT-008 (new, low) — the SSE parser's inter-frame buffer was unbounded.**
+   `parseSseStream` accumulated decoded bytes until a blank-line separator;
+   a stream that never terminates an event would buffer for the whole request
+   timeout (proxy tool-chat probes and the browser's chat reader). Fix:
+   `MAX_SSE_EVENT_BYTES = 4 MiB` cap in `shared/api/stream.ts`; exceeding it
+   throws a clear error, and all three consumers are fail-closed on a
+   throwing generator (capability probe → `false`, streaming probe →
+   `supported: false`, browser gateway → `inference` error with the partial
+   answer kept). Regression tests added to `shared/api/stream.test.ts`
+   (unterminated >4 MiB event rejects — fails on the unfixed source — and a
+   1 MiB terminated event passes), plus new parser boundary tests: bare-CR
+   line ends, a multi-byte UTF-8 character split across chunks, and a final
+   frame without a trailing blank line.
+
+### Reproduction and verification evidence (this pass)
+
+- Fresh baseline in the actual working tree: `npm ci` (371 packages, RC=0);
+  the RT-001 regression test was executed against the unfixed source and
+  failed with the raw `TypeError`; the RT-007/RT-008 tests were executed
+  against the unfixed sources (temporarily restored from git) and failed;
+  all pass after the fixes, and the temporary restores were re-verified by
+  re-running green.
+- Adversarial probes (read-only harnesses, exact source): calculator
+  109/109 (inherited names, tokenizer/parser boundaries, depth 31/32,
+  unicode, numeric edges, every conversion dimension); SSE parser and
+  accumulator 31/31 (mixed line ends, chunk boundaries, UTF-8 splits,
+  conflict poisoning, announced gating, argument cap, last-write
+  finish_reason); secret store 12/12 ×3 runs (50 parallel same-key writes,
+  50 parallel distinct keys, mixed concurrent get/set/delete, 0600/0700
+  modes, `list()` returns names only).
+- Re-executed prior-audit harnesses against the fixed source: calculator
+  133/133, tool-chat protocol 42/42, HTTP surface 54/54, web/SSRF 78/78
+  (one harness-design artifact documented earlier: a relative `Location` is
+  resolved against the current host and re-validated, which is correct
+  behaviour).
+- Full repository suite on the final tree: typecheck RC=0; lint RC=0 (after
+  fixing one unused-variable lint error in the new test); vitest 48 files /
+  516 tests passed (508 pre-audit + 8 new); build RC=0;
+  `check:integration` 33/33; notebook tests `Ran 105 tests ... OK`; tools
+  tests `Ran 39 tests ... OK` (includes the 17 workflow-security tests);
+  `npm audit` 0 vulnerabilities; `git diff --check` clean.
+- `tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1`: RC=0; checks, build,
+  integration 33/33, staging (notebook + app + source zips, `SHA256SUMS`,
+  `manifest.json`), validation "The release v0.1.0-beta1 is valid.", release
+  notes contain the source commit, and the simulated published-asset
+  verification passes.
+
+### Subsystems audited with no new defect confirmed
+
+Calculator and all deterministic tools; tool-call protocol and executor
+(batch preflight, duplicate correlation IDs, one-shot approvals, per-round
+caps, loop budget); HTTP server (origin policy, JSON gate, 1 MiB body limit
+on every JSON route, static containment, uploads, routing); web retrieval
+and SSRF (three validation layers, pinned DNS, redirects); MCP (remote
+Streamable-HTTP only, public HTTPS 443, redirects refused, schema
+re-verification at call time, 1 MiB request/response caps); Docker sandbox
+(digest-pinned allowlist image, `--network=none --read-only --cap-drop=ALL
+--no-new-privileges --pids-limit --memory --cpus --user 65534`, code via
+stdin, no host fallback, forced container removal on every stop path);
+file vault (100-file global cap, 1 h TTL, 4 MiB upload, entity-expansion
+limits in DOCX parsing, `isEvalSupported: false` in PDF parsing); secrets
+store (atomic tmp+rename, serialized queue, redaction); request building
+(`reasoning_effort` fail-closed for template-restricted models); release
+and nightly workflows (boolean opt-in inputs default false, gates checked at
+the publishing job, `contents: read` default with job-scoped `write`,
+pinned action SHAs, `test_workflow_security.py` reads the real YAML);
+dependency tree (runtime imports all in `dependencies`, lockfile consistent,
+fast-uri 3.1.9); client (same-origin relative fetches only).
+
+### Unverified (environment-bound, unchanged from prior audit)
+
+Live Kaggle GPU inference, live third-party model providers, a real Windows
+desktop session, and local Playwright execution in this sandbox (CI covers
+the Docker sandbox, Windows launcher, and browser e2e jobs on hosted
+runners). Branch-protection detail endpoints remain HTTP 403 to the
+integration token.
+
+### Limitations and residual risk
+
+RT-007/RT-008 are local resource-exhaustion hardening for a compromised or
+broken operator-configured endpoint over verified TLS; they do not change
+any public interface, persistence format, or security policy. The 8 MiB /
+4 MiB limits are generous relative to legitimate traffic
+(`max_tokens` ≤ 32,768; SSE delta frames are small). No tag, release,
+merge, or publication was performed; this entry and the accompanying commit
+are the release-review evidence only.

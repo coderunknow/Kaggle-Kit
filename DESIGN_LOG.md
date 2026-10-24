@@ -2556,3 +2556,69 @@ merge, verify the resulting merge commit and `main`; only then compare PR #20's
 full diff against updated `main` and close #20 if no unique useful changes are
 lost. No tag, release, publication, workflow dispatch, deployment, or bypass is
 authorized.
+
+## 2026-10-24T09:23:00Z - Response-bound design decisions for the beta1 release candidate
+
+### Scope and evidence
+
+Deep red-team pass over the beta1 candidate (started at
+`fc6893dc2315e744a8c4109fc6e9358132f2de70`). Three defects were confirmed
+by reproduction and repaired: the known calculator prototype-key lookup
+(RT-001) and two resource-exhaustion paths discovered in this pass. This
+entry records the design rationale for each change; the operational
+evidence (commands, counts, before/after test runs) is in the same-dated
+`AGENTS_LOG.md` entry.
+
+### RT-001 — own-property guard for the calculator function table
+
+`FUNCTIONS` stays a plain object literal (keeps the table readable and the
+diff minimal); the single lookup site now requires an own property
+(`Object.prototype.hasOwnProperty.call`) before treating a name as a
+calculator function. Inherited names therefore fail with the same controlled
+"Unknown constant or function" validation error as any other unsupported
+name, instead of invoking `Object.prototype` (raw `TypeError`) or silently
+resolving to inherited values. The alternative — `Object.create(null)` at
+definition — was considered and rejected as a larger structural change for
+a single lookup site; the guard matches the pattern already established in
+`server/tools/http.ts` (`applyResponsePointer`), so the codebase keeps one
+idiom for prototype-safe lookups.
+
+### RT-007 — non-streaming upstream responses are capped at 8 MiB
+
+`OpenAIClient` already supported `maxResponseBytes`; the defect was that the
+proxy never set it for the main clients, leaving `response.text()`
+unbounded while request timeouts allow up to 30 minutes. The fix is in the
+`ProxyService` client factory: every client now defaults to
+`MAX_CHAT_RESPONSE_BYTES = 8 * 1024 * 1024`, and callers may only tighten
+the limit (the capability probe keeps its explicit 16 KiB), never remove
+it. Rationale for the value: `max_tokens` is hard-clamped at 32,768, so a
+legitimate completion (content plus reasoning plus JSON overhead) stays far
+below 1 MiB even with multi-byte worst-case encoding; 8 MiB leaves a wide
+safety margin for legitimate traffic while bounding the worst case of a
+compromised or broken endpoint to a few MB per request in the proxy
+process. Error classification is unchanged: an oversized body is an
+`invalid_response` `ApiError` with a message that names the limit.
+
+### RT-008 — SSE single-event buffer capped at 4 MiB
+
+`parseSseStream` now throws once the accumulated-but-unterminated event
+exceeds `MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024`. This bounds the memory a
+stream can hold while waiting for its blank-line separator, on every
+consumer (proxy capability probe, proxy streaming probe, browser chat
+reader). All consumers already treat a throwing generator as a failed
+stream — the probes report `supported: false` and the browser surfaces an
+`inference` error while keeping the partial answer — so the cap is
+fail-closed without new error plumbing. 4 MiB is far above any legitimate
+OpenAI-compatible delta frame and below the new non-streaming cap, keeping
+the two bounds consistent. The cap is exported so tests and future call
+sites share the constant instead of re-deriving it.
+
+### What was deliberately not changed
+
+No public interfaces, configuration keys, persistence formats, or security
+policies were altered. The Docker sandbox, tool-approval, SSRF, upload, and
+secret-store designs were re-audited in this pass and left untouched; the
+regression tests added for the three fixes live in the existing suites
+(`server/tools/calculator.test.ts`, `server/proxy.test.ts`,
+`shared/api/stream.test.ts`) and were each proven to fail on the unfixed
+source before the fix landed.
