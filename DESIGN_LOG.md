@@ -2265,3 +2265,119 @@ because of its possible publication side effect. No tag, release, deployment,
 merge or third-party request occurred. The exact documentation-only head that
 records this addendum is rechecked after commit; its final dry-run/CI results
 are reported separately and are not claimed here in advance.
+
+## 2026-10-24 - beta1 red-team continuation: fail-closed publishing and batch preflight
+
+### User Intent
+
+Continue the max-effort beta1 audit, fix reproduced defects with regression tests,
+prove that a scheduled Nightly cannot publish, and conditionally merge PR #21 only
+if every acceptance gate and repository policy allows it. Do not publish or deploy,
+do not create a tag, do not dispatch a publication-enabled workflow, and do not
+close PR #20 before a successful verified merge and a complete overlap comparison.
+
+### Implementation History
+
+- Rechecked the workspace and GitHub before editing. Base `main` was
+  `1a864791f548e0a5fdb2267d49aefa6df36b3cd0`; PR #21 was open/draft on
+  `8f57dfb16a6066a84fd46066d3393f7f8de3c44e`. The PR #20 head was
+  `d32e471194b756b720f389e8a5e98bc269afb7fd`.
+- **F1, confirmed:** the nightly version command-substitution quoting defect
+  from the earlier audit was fixed in both jobs. Security tests now execute the
+  actual assignment and validation blocks with hostile `RUN_ID` and
+  `RUN_ATTEMPT` values; they reject shell metacharacters without creating a
+  marker file. The tests also cover the release tag's environment-data boundary.
+- **Publication gates:** scheduled Nightly is verification/staging only. Its
+  publisher requires `workflow_dispatch` and boolean `inputs.publish_nightly ==
+  true` (default false). Manual Release publication similarly requires
+  `workflow_dispatch` and `inputs.publish_release == true` (default false);
+  the existing `v*` tag-push path remains. Workflow-level permissions are read
+  only; write permission is on the publisher job. Static event-matrix tests
+  exercise schedule, manual false/true, branch push, PR, and version-tag push.
+  A repository-wide workflow scan found three YAML workflows, no reusable or
+  composite action files, and no alternate publication trigger. Publication
+  command/action regression matching requires every detected release/upload/
+  deploy command to remain within the guarded publisher job.
+- **F2, historical conversion values not reproduced:** independent expected
+  values for all supported unit names/aliases and standard temperature/speed
+  conversions are covered at tight floating-point tolerance. No conversion
+  factors or arithmetic were changed. A separate malformed direct-input
+  reproduction (`convert(1, null, 'm')`) raised a native `TypeError`; runtime
+  type/non-empty guards now return `CalculatorInputError`, and calculator
+  expressions reject non-string values before tokenization. Numeric maximum,
+  overflow, subnormal and unit boundaries are covered.
+- **F3, advisory rechecked:** prior lockfile work moved transitive
+  `fast-uri` from 3.1.8 to 3.1.9 under `ajv@8.20.0`. Fresh `npm audit --json`
+  reports info/low/moderate/high/critical/total all zero; no dependency change
+  was needed in this continuation.
+- **F4, batch/protocol integrity:** besides the previously recorded oversized
+  trace and duplicate-ID fixes, the chat service now refuses structurally
+  malformed batches as a whole, detects duplicate IDs before dispatch,
+  schema-preflights every call still inside the call budget, and refuses the
+  entire accepted batch if any preflight fails. Prepared calls are carried to
+  dispatch so validation is not repeated after siblings begin execution.
+  Missing/empty tool-call arrays when `finish_reason=tool_calls` and non-array
+  `tool_calls` payloads are rejected with bounded diagnostics and one corrective
+  opportunity. Regressions prove that a valid sibling is not executed when a
+  malformed or schema-invalid sibling is present. All behavior here is exercised
+  with local mocks, not live model inference.
+- Committed focused changes as `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`
+  (`fix: gate publishers and preflight tool batches`) on
+  `arena/295bec84-kaggle-kit`, and pushed only that branch. PR #21 was moved from
+  Draft to Ready for review after its five GitHub Actions CI jobs passed.
+- Full semantic comparison against PR #20 confirmed that the same nightly fix,
+  beta1 package/version metadata, `fast-uri` lockfile update, calculator
+  conversion work, beta1 release-note/README intent, and earlier test evidence
+  remain in PR #21. PR #21 additionally contains the chat-loop hardening and
+  the publication gates. Log/environment entries differ because PR #21 records
+  later branch-specific evidence; no unique useful implementation from PR #20
+  was identified as lost. PR #20 was **not** closed because PR #21 has not
+  merged; the standing close-only-after-verified-merge condition remains.
+
+### Decisions & Lessons
+
+- **Publication proof is static and fail-closed.** No Nightly or Release
+  workflow was dispatched. In particular, no dispatch with a publication input
+  set to true occurred, and there is no post-fix scheduled Nightly run to claim.
+  `v0.1.0-beta1` was not created: `git ls-remote --tags origin
+  refs/tags/v0.1.0-beta1` returned no ref and `gh release view` reported
+  `release not found`.
+- Local verification on exact code commit `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`:
+  `npm test -- --reporter=dot` passed 48 files / 506 tests; focused calculator/chat
+  tests passed 53/53; `npm run typecheck`, lint, production build and
+  `npm run check:integration` passed (33/33, mock upstream). With
+  `/tmp/kaggle-kit-venv` and `requests` installed, notebook tests passed 105/105
+  and release-tool tests passed 36/36; `tools.test_workflow_security` passed
+  14/14. The YAML parser accepted Nightly, Release and CI workflow files.
+  `npm audit` reported zero vulnerabilities. Prompt-evaluation `--dry-run`
+  validated 17 cases / 36 automated checks / 45 manual criteria and produced no
+  model output or score.
+- Local-only release dry-run on that exact commit,
+  `PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+  0.1.0-beta1 v0.1.0-beta1`, exited 0. Checks, build, 33/33 integration,
+  staged assets, manifest/checksums, staged validation and simulated downloaded
+  asset validation passed. The produced files stayed local; none were uploaded.
+  Existing ignored `dist/`, `release/`, `downloaded/`, `checks.json` and
+  `release-notes.md` were backed up and restored around the run.
+- Hosted PR CI run `40064511238` on the exact code commit passed all five jobs:
+  Browser E2E, real-Docker sandbox integration, notebook/release-tool tests,
+  typecheck/lint/test/build/integration, and Windows launcher. The same five
+  jobs passed in push run `40064507267`. CodeRabbit passed. Local browser was
+  not rerun in this continuation; the previous local attempt was blocked before
+  assertions because the Chromium executable was unavailable. Hosted browser,
+  Docker and Windows checks are not live model/Kaggle/provider checks.
+- **Merge is blocked, not inferred safe.** PR #21 is open/Ready, but its
+  merge-state is `UNSTABLE`, review decision is empty and there is no human
+  approval. Kilo Code Review is `ACTION_REQUIRED` because its account has
+  insufficient credits; Copilot reported it could not review because of quota.
+  The branch API reports `main.protected=false` and the repository ruleset list
+  is empty, but detailed branch-protection access returns HTTP 403. `gh pr
+  checks --required` reports no required checks for the topic branch; this does
+  not reveal inaccessible repository policy. No merge, self-approval, review
+  bypass or policy change was attempted. Leave PR #21 open/Ready and PR #20 open.
+- The local and hosted evidence is limited to the commands/jobs above. No live
+  inference, Kaggle GPU/TPU deployment, tunnel, external MCP/HTTP provider,
+  publication, release, or deployment was exercised. GitHub emitted Node.js 20
+  deprecation and `ubuntu-latest` migration annotations; these were warnings,
+  not failed CI jobs. A failed quota-bound review check and inaccessible branch
+  policy remain explicit acceptance blockers.

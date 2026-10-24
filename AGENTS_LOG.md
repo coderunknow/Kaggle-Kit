@@ -1495,3 +1495,82 @@ append follows; repeat CI and release dry-run on the resulting exact head.
 - PR #21 stays open/draft. The scheduled post-fix Nightly Release run is still
   outstanding and was not triggered; no publication, merge, tag or deployment.
   Final documentation-only head gets its own CI/dry-run check after commit.
+
+## 2026-10-24T05:03:27Z - beta1 fail-closed publication and batch preflight
+
+**Exact tested code SHA and branch.** `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`
+(`fix: gate publishers and preflight tool batches`) on
+`arena/295bec84-kaggle-kit`; base `main` at
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0`. PR #21 head was advanced from
+`8f57dfb16a6066a84fd46066d3393f7f8de3c44e` to this SHA and pushed only to the
+session branch. Before this append, `DESIGN_LOG.md` SHA-256 was
+`6d2b2a1a7030a0e32fff8f6089a8bd97faa56384581c82e0985c59879441238f` and
+`AGENTS_LOG.md` SHA-256 was
+`c5669aa89f6351ddf0bbb87874165e37f9f6d45196408369f02f783501446106`; this
+entry is appended after those byte prefixes.
+
+**Findings and changes.**
+
+- F1: nightly metadata quoting defect is fixed in both jobs; workflow tests
+  execute the actual assignments/validation with hostile IDs/attempts. The
+  schedule cannot reach the Nightly publisher; manual Nightly and Release
+  publication require their correct `workflow_dispatch` event and explicit
+  boolean `true`, default false. Release `v*` tag-push behavior is preserved;
+  write permissions are scoped to publisher jobs. Event matrix, command-location,
+  action pinning, shell-boundary and permission tests are included.
+- F2: historical Fahrenheit and speed conversion errors did not reproduce;
+  factors/arithmetic were not changed. An independently reproduced malformed
+  null-unit input raised `TypeError`; the calculator now rejects invalid direct
+  values/units/expressions through `CalculatorInputError`. Unit aliases and
+  numeric boundaries have regression coverage.
+- F3: `npm audit --json` after the pre-existing lockfile-only
+  `fast-uri@3.1.9` correction reported zero vulnerabilities (all severity
+  counts zero). No package change was made in this continuation.
+- F4: model tool-call batches are rejected as a whole for structural/schema
+  failures or duplicate IDs; every in-budget accepted call is preflighted
+  before dispatch. Empty/non-array protocol payloads are rejected and trace
+  output remains bounded. Regression evidence is mock-only.
+
+**Commands and local status on the committed code SHA.**
+
+- `npx vitest run server/tools/calculator.test.ts server/tools/chat.test.ts --reporter=dot`: PASS, 53/53; `npm run typecheck`: PASS.
+- `python3 -m unittest tools.test_workflow_security -v`: PASS, 14/14.
+- `npm test -- --reporter=dot`: PASS, 48 files / 506 tests.
+- `npm run lint`, typecheck, `npm run build`, and `npm run check:integration`: PASS; integration 33/33 against local mock upstream. Build emitted non-fatal optional PDF.js canvas/font warnings.
+- `PATH=/tmp/kaggle-kit-venv/bin:$PATH python3 -m unittest discover -s notebooks -p 'test_*.py' -v`: PASS, 105/105, no skips. Same command under `tools`: PASS, 36/36. Notebook test sockets emitted non-fatal `ResourceWarning`s.
+- `npm audit --json`: PASS, 0 vulnerabilities; `npm ls fast-uri --all`: `ajv@8.20.0 -> fast-uri@3.1.9`.
+- `python3 research/qwen-system-prompt/eval/run_eval.py --dry-run`: suite validation PASS, 17 cases / 36 automated checks / 45 manual criteria; no endpoint, model output or score.
+- PyYAML `BaseLoader` parse of `.github/workflows/nightly-release.yml`, `release.yml`, `ci.yml`: PASS. `git diff --check`: PASS.
+- `PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1`: PASS on exact committed SHA. Check runner, build, 33/33 integration, staging, manifest/checksum, staged validation and simulated downloaded-asset validation all passed. Ignored artifacts were backed up/restored. No tag/release/upload.
+
+**Hosted evidence and PR state.** GitHub Actions PR run `40064511238` on exact
+SHA `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`: all five jobs PASS (Browser
+E2E 57s, Docker sandbox 25s, notebook tests 24s, typecheck/lint/test/build
+1m3s, Windows launcher 53s). Push run `40064507267` also passed all five.
+CodeRabbit passed. Kilo Code Review concluded `ACTION_REQUIRED`, title
+“Insufficient credits to run review”; Copilot reported insufficient remaining
+quota. Neither is approval. PR #21 was marked Ready for review and remains
+OPEN; `reviewDecision` is empty and `mergeStateStatus` is `UNSTABLE`.
+
+**Policy, tests not run, and side effects.** `main.protected` is reported false
+and repository rulesets list is empty, but detailed branch-protection API
+returns 403. `gh pr checks 21 --required` says no required checks were reported
+for the topic branch; inaccessible policy is not inferred. No merge or review
+bypass was attempted. Local Playwright was not rerun: the earlier attempt was
+blocked before assertions by the absent Chromium binary; hosted Browser E2E
+passed on this exact SHA. No local Docker or real Windows runtime was run.
+No post-fix Nightly schedule run or workflow dispatch (especially no
+publication-enabled dispatch), live model inference, Kaggle deployment/tunnel,
+external provider/MCP/HTTP call, tag, release, upload, package publication,
+deployment or merge occurred. Confirmed `git ls-remote --tags origin
+refs/tags/v0.1.0-beta1` returned no ref and `gh release view v0.1.0-beta1`
+returned “release not found”.
+
+**PR #20 comparison.** Re-fetched PR #20 at
+`d32e471194b756b720f389e8a5e98bc269afb7fd` and compared its tree and semantic
+changes to PR #21. Beta version/package metadata, `fast-uri` lockfile update,
+nightly fix, conversion examples and prior release/test evidence are retained
+in PR #21; PR #21 adds the chat and workflow hardening. No unique useful
+implementation was found missing. PR #20 remains OPEN because PR #21 has not
+merged; no PR was closed. PR #21 also remains OPEN/Ready because the quota-bound
+review check is unresolved and repository merge policy cannot be confirmed.
