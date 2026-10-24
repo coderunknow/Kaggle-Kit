@@ -54,7 +54,7 @@ jobs:
             echo "Generated nightly tag is invalid: $TAG" >&2
             exit 1
           fi
-          VERSION="$(node -p \"require('./package.json').version\")"
+          VERSION="$(node -p "require('./package.json').version")"
           if [ ! -f "docs/release-notes/$VERSION.md" ]; then
             printf '%s\n' \
               "# Nightly validation note for $VERSION" \
@@ -219,7 +219,7 @@ jobs:
             echo "Generated nightly tag is invalid: $TAG" >&2
             exit 1
           fi
-          VERSION="$(node -p \"require('./package.json').version\")"
+          VERSION="$(node -p "require('./package.json').version")"
           if [ ! -f "docs/release-notes/$VERSION.md" ]; then
             printf '%s\n' \
               "# Nightly validation note for $VERSION" \

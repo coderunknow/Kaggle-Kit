@@ -20,6 +20,7 @@ Run with: python3 -m unittest discover -s tools -p "test_*.py"
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tempfile
@@ -102,6 +103,30 @@ class WorkflowInjectionBoundary(unittest.TestCase):
         self.assertIn("contents: write", release)
         self.assertNotIn("pull-requests: write", release)
         self.assertIn("contents: read", ci)
+
+    def test_nightly_version_line_executes(self) -> None:
+        """Regression (confirmed 2026-10-24): the nightly metadata step failed
+        on every scheduled run with `syntax error near unexpected token '('`
+        because the version read was written with backslash-escaped quotes,
+        `node -p \\"require(...)\\"`, inside the command substitution. GitHub
+        passes the literal block to bash, which rejects that shape before any
+        later step can run. The exact lines from the workflow must execute."""
+        nightly = (ROOT / ".github" / "workflows" / "nightly-release.yml").read_text(encoding="utf-8")
+        self.assertNotIn('\\"', nightly, "escaped quotes inside a run: block break bash parsing")
+        lines = [line.strip() for line in nightly.splitlines() if "node -p" in line]
+        self.assertEqual(len(lines), 2, "both nightly jobs resolve the version")
+        expected = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+        for line in lines:
+            result = subprocess.run(
+                ["bash", "-c", f"{line}\nprintf '%s' \"$VERSION\""],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout, expected)
 
     def test_nightly_workflow_has_expected_schedule_and_tag_shape(self) -> None:
         nightly = (ROOT / ".github" / "workflows" / "nightly-release.yml").read_text(encoding="utf-8")
