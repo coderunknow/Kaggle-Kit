@@ -36,7 +36,9 @@
     "2026-10-24 npm audit --json: info/low/moderate/high/critical/total all zero; npm ls fast-uri shows ajv@8.20.0 -> fast-uri@3.1.9",
     "2026-10-24 prompt evaluation --dry-run: 17 cases, 36 automated checks, 45 manual criteria; candidate prompt 3662 characters, SHA prefix 2f52bd9a1c9c1935; no endpoint, inference, output or score",
     "2026-10-24 GitHub PR run 40064511238 on exact code SHA 6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4: all five CI jobs passed (Browser E2E, Docker sandbox, notebook/release tools, typecheck/lint/test/build/integration, Windows launcher); push run 40064507267 also passed all five; CodeRabbit passed",
-    "2026-10-24 PR #21 review state: Kilo Code Review ACTION_REQUIRED because review account has insufficient credits; Copilot said insufficient quota; neither is approval. PR is OPEN/Ready, review decision empty, merge state UNSTABLE"
+    "2026-10-24 PR #21 review state: Kilo Code Review ACTION_REQUIRED because review account has insufficient credits; Copilot said insufficient quota; neither is approval. PR is OPEN/Ready, review decision empty, merge state UNSTABLE",
+    "2026-10-24 exact documentation/evidence HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: final local release dry-run exited 0; typecheck/lint/Vitest/notebook/tools checks, production build, 33/33 mock integration, staging, manifest/checksums, staged and simulated downloaded-asset validation passed; no tag/release/upload",
+    "2026-10-24 GitHub PR run 40064899655 on exact HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: all five jobs passed (Browser E2E 57s, Docker 19s, notebook 23s, typecheck/lint/test/build 53s, Windows 56s); push run 40064896180 also passed all five; CodeRabbit passed"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
@@ -59,6 +61,7 @@
     "2026-10-24 no post-fix Nightly schedule run and no workflow_dispatch with publish_nightly=true or publish_release=true; no publisher workflow was dispatched and no publication is claimed",
     "2026-10-24 local Playwright was not rerun; the prior local attempt was blocked before assertions by missing Chromium. Exact-head hosted Browser E2E passed in PR run 40064511238",
     "2026-10-24 merge policy remains unverified: main API says protected=false and ruleset list is empty, but branch-protection detail API returns 403; do not infer that policy permits merge. No human approval exists and quota-bound Kilo review is ACTION_REQUIRED",
-    "2026-10-24 no live model inference, Kaggle deployment/tunnel, external MCP/HTTP provider, tag, release, asset/package publication, deployment or merge. Confirmed no remote v0.1.0-beta1 tag and gh release view returned not found"
+    "2026-10-24 no live model inference, Kaggle deployment/tunnel, external MCP/HTTP provider, tag, release, asset/package publication, deployment or merge. Confirmed no remote v0.1.0-beta1 tag and gh release view returned not found",
+    "2026-10-24 exact HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: Kilo Code Review ACTION_REQUIRED because review account had insufficient credits; no human approval exists, PR #21 merge state UNSTABLE, and branch-protection detail inaccessible (HTTP 403). No merge attempted"
   ]
 }

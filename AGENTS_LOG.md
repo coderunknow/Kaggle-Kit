@@ -1574,3 +1574,52 @@ in PR #21; PR #21 adds the chat and workflow hardening. No unique useful
 implementation was found missing. PR #20 remains OPEN because PR #21 has not
 merged; no PR was closed. PR #21 also remains OPEN/Ready because the quota-bound
 review check is unresolved and repository merge policy cannot be confirmed.
+
+## 2026-10-24T05:07:39Z - final documentation-head dry-run and CI
+
+**Exact final source/evidence SHA:**
+`e50c4198aba81ea2c99fde141c30e19865f45d18` on
+`arena/295bec84-kaggle-kit`; code implementation remains at
+`6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`. Immediately before this append,
+`DESIGN_LOG.md` SHA-256 was
+`4329c40c63e4b87fb5046d7aabc3286ec543b148f91c9546563fb2ae07ee463e`,
+`AGENTS_LOG.md` SHA-256 was
+`aaca00047483236d6026d1441011c8d9831751fc463e25d78e786e668cfce0c0`, and
+`docs/release/environment.json` SHA-256 was
+`2462b84f1e946d87826d3aedc3aec9cea32721a3bd6152fe9e6a38457149211f`.
+This entry is appended after the exact log prefixes.
+
+**Local dry-run:**
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1`
+on exact SHA `e50c4198aba81ea2c99fde141c30e19865f45d18` exited 0. The script's
+check runner passed typecheck, lint, full Vitest, notebook and release-tool
+tests; production build passed; built-bundle/mock integration was 33/33; the
+notebook, app and source ZIPs, report, manifest and checksums staged; both
+staged and simulated downloaded-asset validation passed. Rendered release notes
+contained the exact SHA. Generated files were local only; existing ignored
+artifacts were backed up/restored. No upload, tag or release occurred.
+
+**Hosted CI:** PR run `40064899655` on exact SHA
+`e50c4198aba81ea2c99fde141c30e19865f45d18`: all five GitHub Actions jobs
+PASS (Browser E2E 57s; Docker sandbox 19s; notebook tests 23s;
+typecheck/lint/test/build 53s; Windows launcher 56s). Push run `40064896180`
+also passed all five. CodeRabbit passed. Kilo Code Review was
+`ACTION_REQUIRED`; check-run output says “Review could not start because the
+account has insufficient credits.” This is not a completed review or approval.
+
+**Final state and blockers.** At this recheck PR #21 is OPEN/Ready at the exact
+SHA, `mergeStateStatus=UNSTABLE`, review decision empty, with no human approval.
+Kilo review is still blocked by credits. The main branch API reports
+`protected=false` and rulesets list is empty, but branch-protection detail still
+returns HTTP 403; no merge-policy inference is made. `gh pr checks --required`
+reports no required checks for the topic branch, which does not resolve the
+inaccessible policy. PR #20 remains OPEN because PR #21 has not merged. No
+merge, self-approval, review bypass or settings change occurred.
+
+No Nightly schedule test or workflow dispatch was run; manual publication input
+was never true. No live model, Kaggle deployment/tunnel, external provider/MCP/
+HTTP call, tag, release, upload, package publication or deployment occurred.
+No remote `v0.1.0-beta1` tag or GitHub release exists. Local Playwright was not
+rerun (prior attempt blocked before assertions by absent Chromium); hosted
+Browser E2E passed on this SHA. Live inference and Kaggle behavior remain
+NOT RUN, not verified by mock tests or hosted UI/Docker/Windows jobs.

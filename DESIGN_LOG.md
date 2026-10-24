@@ -2381,3 +2381,49 @@ close PR #20 before a successful verified merge and a complete overlap compariso
   deprecation and `ubuntu-latest` migration annotations; these were warnings,
   not failed CI jobs. A failed quota-bound review check and inaccessible branch
   policy remain explicit acceptance blockers.
+
+## 2026-10-24 - Final beta1 documentation-head checks and merge gate
+
+### User Intent
+
+Complete the required local-only release dry-run and obtain hosted CI on the
+latest PR #21 content without dispatching a publisher or claiming external
+runtime validation. Keep the merge conditional on all gates, review and policy.
+
+### Implementation History
+
+- The source/code commit remains `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`;
+  the current documentation/evidence head is
+  `e50c4198aba81ea2c99fde141c30e19865f45d18` and the PR is Ready for review.
+- Ran `PATH=/tmp/kaggle-kit-venv/bin:$PATH
+  tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1` on exact HEAD
+  `e50c4198aba81ea2c99fde141c30e19865f45d18`. The local check runner passed
+  typecheck, lint, Vitest, notebook and tools suites; the build and 33/33
+  mock-upstream integration checks passed; staged and simulated-download
+  validation both reported `The release v0.1.0-beta1 is valid.` The rendered
+  notes contained the exact source SHA. Staged outputs (app ZIP 2,199,404 B,
+  notebook 136,634 B, source ZIP 1,016,102 B) remained local and were not
+  published. Pre-existing ignored build/dry-run artifacts were restored.
+- Hosted PR run `40064899655` on this exact HEAD passed all five jobs: Browser
+  E2E (57s), Docker sandbox integration (19s), notebook tests (23s),
+  typecheck/lint/test/build (53s), and Windows launcher (56s). Push run
+  `40064896180` also passed all five jobs. CodeRabbit passed. Kilo Code Review
+  again returned `ACTION_REQUIRED` with “Insufficient credits to run review.”
+- Final GitHub recheck: PR #21 is OPEN/Ready at this SHA with
+  `mergeStateStatus=UNSTABLE`, empty review decision and no human approval.
+  PR #20 is still OPEN. The remote beta1 tag is absent and GitHub reports no
+  release for `v0.1.0-beta1`.
+
+### Decisions & Lessons
+
+- This local release dry-run proves only repository-local checks, artifact
+  assembly and simulated download validation. It does not prove that GitHub
+  accepted a workflow dispatch, that assets were uploaded, or that a real model,
+  Kaggle runtime, tunnel, Windows host, Docker sandbox outside the hosted job,
+  or external provider works.
+- No publication-enabled workflow was dispatched. No tag, release, asset,
+  package, deployment or merge was created. Kilo's quota failure and the
+  inaccessible branch-protection endpoint remain acceptance blockers; do not
+  infer policy from the `protected=false` branch field or empty ruleset list.
+  Preserve PR #21 as Ready for human review and PR #20 as open until the explicit
+  post-merge close condition can be met.
