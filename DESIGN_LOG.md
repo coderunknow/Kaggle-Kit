@@ -2427,3 +2427,76 @@ runtime validation. Keep the merge conditional on all gates, review and policy.
   infer policy from the `protected=false` branch field or empty ruleset list.
   Preserve PR #21 as Ready for human review and PR #20 as open until the explicit
   post-merge close condition can be met.
+
+## 2026-10-24 - Follow-up review findings and tool-trace/workflow regression fixes
+
+### User Intent
+
+Continue the PR #21 security and protocol audit without publishing or weakening
+any gate. Resolve the four actionable review findings with failing-first tests,
+then run the local and hosted validation matrix. Keep merge and PR #20 closure
+conditional on policy, approval, and verified merge.
+
+### Implementation History
+
+- On exact source SHA `2ecf50031996c03a10150a3121647a4ab8691754`, updated the
+  stale README tag example to `v0.1.0-beta1` and corrected the Release manual
+  dispatch description: default false skips its sole job; only explicit
+  `publish_release: true` enables a manual run. Existing version-tag push
+  behavior and all publication gates remain unchanged.
+- For malformed native tool-call protocol responses with an empty array, null,
+  or missing `tool_calls`, replaced the misleading aggregate “additional tool
+  calls” trace with a generic failed `tool_call_batch` record. Added a
+  parameterized regression verifying no tool executes and the trace does not
+  overstate a call count.
+- Replaced the workflow-security test's substring membership check with source
+  offsets for YAML mapping/job spans and positional inclusion checks for every
+  publication-command match. Added a synthetic duplicate-command case proving
+  the test detects a command placed outside the guarded publisher job.
+- Failing-first: before implementation, all three malformed-payload trace
+  cases failed on the erroneous aggregate text. The initial security-test run
+  failed the stale README and manual description assertions and errored because
+  the span helper was not yet present. After the fixes, focused calculator/chat
+  Vitest passed 55/55 and workflow-security tests passed 17/17.
+- Full local checks on the exact source SHA passed: TypeScript typecheck, ESLint,
+  48 Vitest files / 508 tests, notebook tests 105/105, tools tests 39/39,
+  npm audit with zero vulnerabilities, workflow YAML parsing, release JSON,
+  and `git diff --check`. Prompt evaluation dry-run validated 17 cases, 36
+  automated checks and 45 manual criteria without endpoint or inference.
+- The local beta1 release dry-run on that exact SHA passed checks, build,
+  33/33 mock-upstream integration cases, staging and manifest/checksum
+  validation, plus simulated downloaded-asset validation. Existing ignored
+  outputs were backed up/restored; nothing was uploaded.
+- Exact-SHA GitHub Actions push run `40066555290` and PR run `40066557948` both
+  passed all five jobs, including hosted Browser E2E, Docker sandbox integration,
+  notebook/release-tool tests, typecheck/lint/test/build/integration, and Windows
+  launcher. Local Playwright remained NOT RUN because Chromium is not cached.
+
+### Decisions & Lessons
+
+- Empty/null/missing protocol payloads need an aggregate failure trace, but must
+  not imply a number of tool calls that did not exist. This is now explicit in
+  the regression matrix; it is mock protocol coverage, not live model evidence.
+- A security test must establish command location by source position, not by
+  seeing the same command text somewhere in a guarded block. The synthetic
+  outside-job case preserves that adversarial guarantee.
+- Release documentation must describe its actual job gate: a false manual input
+  skips the job rather than performing validation. Manual publishing remains
+  opt-in, and no tag or publisher workflow was run.
+- PR #21 remains OPEN/Ready with `UNSTABLE` merge state, no human approval, and
+  a quota-blocked Kilo review. The effective branch-rules request returned 403;
+  an empty ruleset response and “no required checks” do not establish absent
+  policy. No merge or review bypass is permitted. PR #20 remains OPEN/Draft
+  until a permitted PR #21 merge is actually verified.
+- No publication-enabled dispatch, tag, release, asset/package upload,
+  deployment, live inference, Kaggle tunnel, or external provider/MCP/HTTP
+  testing occurred. Mock and hosted CI evidence is not live integration proof.
+
+### Append-only correction: merge-policy endpoint results
+
+The fresh `GET /repos/coderunknow/Kaggle-Kit/rules/branches/main` response was
+`[]` (the rulesets list length was 0); it did not return 403. The branch record
+reported `protected:false`, while the detailed branch-protection and required
+pull-request-review endpoints returned HTTP 403. This correction does not
+change the merge decision: review approval is absent, Kilo is quota-blocked,
+and inaccessible protection details are not authorization to bypass policy.
