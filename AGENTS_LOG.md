@@ -1408,3 +1408,23 @@ source archive, push only `arena/295bec84-kaggle-kit`, open one unmerged PR if
 appropriate, and report this branch's own CI. Keep any candidate acceptance
 status partial until local release dry-run and branch CI are confirmed. No
 publication or deployment is authorized.
+
+
+## 2026-10-24 - beta1 release dry-run result and notation correction
+
+On commit `1df130b00c359f646967a42dc60c9fb49c1696a8`, ran
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1`: exit 0. The release check runner passed typecheck,
+lint, 497 Vitest tests, 105 notebook tests and 32 tools tests; production
+build passed; integration returned 33/33; notebook, app and source archives,
+report, manifest and SHA256SUMS were staged; both staged-release and simulated
+download validation said `The release v0.1.0-beta1 is valid.` The rendered
+notes contain SHA `1df130b00c359f646967a42dc60c9fb49c1696a8`. No tag/release was
+created. Run this again after final evidence/log append so the exact final HEAD
+is also covered.
+
+Append-only notation correction: the F1 inline sample in the prior entry
+shows four backslashes because of the string literal used to append it. The
+original workflow line contained two literal backslash characters (one before
+each inner quote), reproduced from the actual file. The test executes actual
+workflow text and is unaffected.

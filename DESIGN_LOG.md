@@ -2080,3 +2080,20 @@ The release dry-run has not yet been run on a committed head at the time of
 this entry. Record its exact result in a dated addendum after execution.
 The candidate is not fully accepted until its own CI and release dry-run pass;
 no merge, tag, release or deployment has occurred.
+
+
+### Addendum - release dry-run and command-quoting notation correction
+
+On committed candidate `1df130b00c359f646967a42dc60c9fb49c1696a8`,
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1` exited 0. Its automated checks (typecheck, lint,
+497-test Vitest suite, 105 notebook tests, 32 tools tests), production build,
+33/33 built-bundle integration checks, staging, manifest/checksum generation,
+release validation and simulated downloaded-asset validation all passed.
+The rendered release notes include the exact source SHA. No tag or release was
+created. This local dry-run is not publication or live-model evidence.
+
+Notation correction for the F1 line above: the literal workflow source had
+two backslash characters total, one before each embedded quote; the inline
+example's Markdown escaping rendered four. The finding and reproduction use
+the actual workflow text, which the exact-line regression now reads directly.
