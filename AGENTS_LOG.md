@@ -1737,3 +1737,47 @@ endpoint did not return 403; detailed review/protection policy remains
 inaccessible. None of these results is used as permission to merge: PR #21 has
 no approval, Kilo's review check is credit-blocked, and the standing acceptance
 rule forbids merging while review or policy is unresolved.
+
+## 2026-10-24T08:19:00Z - PR #21 final policy and review-thread checkpoint
+
+This append-only checkpoint records a fresh pre-merge audit of PR #21 at source
+SHA `bb65378b57b7e8e2d97abc70641d55d32f1d35da` (base `main` SHA
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0`). The isolated audit clone was
+clean; the original local checkout at the base SHA, with its 14 tracked edits
+and untracked beta1 release note, was left untouched.
+
+- Re-read the changed tool-call batch/preflight paths, calculator conversion
+  changes, release/nightly publication gates, and workflow-security assertions.
+  No new defect was confirmed. The four current CodeRabbit findings were
+  checked against this exact source and fixed: manual Release wording, beta1
+  tag example, empty/missing/null tool-call trace wording, and positional
+  publisher-job assertions. Factual replies were added and all four threads
+  resolved; these author replies are not approvals. `python3 -m unittest
+  tools.test_workflow_security -v` passed 17/17 on the exact source. Earlier
+  full local checks and exact-SHA CI results are recorded above.
+- Refreshed PR #21: OPEN/Ready, exact head `bb65378...`, base `1a86479...`,
+  mergeable, `UNSTABLE`, empty review decision, no review requests, and no
+  merge-queue entry. Both PR run `40066780614` and push run `40066776488` passed
+  all five CI jobs. Kilo Code Review is the only non-success status and reports
+  `ACTION_REQUIRED` because of insufficient credits; CodeRabbit's green status
+  and the author replies are not approvals.
+- Refreshed effective policy evidence: `GET /branches/main` reports
+  `protected:false`; applicable branch rules are `[]`; parent-inclusive
+  rulesets count is 0; `gh pr checks 21 --required` reports no required checks;
+  the PR has no merge-queue entry. On that positive evidence, this audit found
+  no enforced approval count, eligible-independent-reviewer requirement,
+  required status check, stale-approval rule, or merge-queue requirement.
+  The detailed classic protection endpoint still returns HTTP 403, so its
+  hidden detail was not inspected; no policy/settings change or bypass was
+  made. The sole collaborator visible is the PR author/admin, and no
+  self-approval was submitted.
+- The PR description was changed only to replace its obsolete “open and draft”
+  sentence with “open and ready for review”; other technical/history text was
+  preserved. GitHub reports `UNSTABLE` while the only non-success check is the
+  credit-blocked Kilo status; that status is not reported as required by the
+  available effective-policy checks.
+
+This is a pre-merge record, not a claim that merge has happened. The next
+operation is the ordinary GitHub merge mechanism only after the appended-log
+head's exact CI is green; no admin/bypass option is authorized. No tag, release,
+publication, workflow dispatch, deployment, or live model call occurred.

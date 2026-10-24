@@ -2500,3 +2500,59 @@ reported `protected:false`, while the detailed branch-protection and required
 pull-request-review endpoints returned HTTP 403. This correction does not
 change the merge decision: review approval is absent, Kilo is quota-blocked,
 and inaccessible protection details are not authorization to bypass policy.
+
+## 2026-10-24T08:19:00Z - Final PR #21 gate adjudication (pre-merge)
+
+### Scope and evidence
+
+The user superseded the earlier follow-up-only restriction and authorized a
+normal merge of PR #21 only when actual enforced gates pass, followed by PR #20
+reconciliation. This entry records the independent pre-merge review at PR #21
+source SHA `bb65378b57b7e8e2d97abc70641d55d32f1d35da`, against `main`
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0`. The isolated clone was clean; the
+separate original checkout and all its local edits were preserved.
+
+Manual review of the changed tool-call batch preflight/trace paths, calculator
+conversions, publication workflows, and workflow-security tests found no new
+confirmed issue. The four unresolved CodeRabbit comments were verified against
+current code, answered factually, and resolved after confirming their fixes:
+manual Release text now matches the default-false opt-in gate; README tag
+examples match beta1; empty/missing/null tool-call payloads produce no invented
+omitted-call count; and publisher-command assertions compare source positions
+with the gated-job span. The security-test suite passed 17/17 in the clean
+clone. Previous full local and hosted validation results are preserved in the
+prior append-only entries.
+
+### Effective policy and merge decision
+
+Fresh live evidence: `main.protected` is false; the effective branch-rules
+endpoint returns `[]`; parent-inclusive rulesets count is 0; the PR's
+`mergeQueueEntry` is null; and `gh pr checks --required` reports no required
+checks. Thus the queried effective policy imposes zero required approvals,
+zero required status checks, and no merge queue. There are no approvals to
+become stale, and the empty review decision/no requested reviewers do not
+represent an unmet enforced review requirement. The only listed collaborator
+is the PR author/admin, so no self-approval was made or treated as eligible.
+The detailed classic branch-protection endpoint remains inaccessible (HTTP
+403); that limitation is recorded, but the positive unprotected-branch and
+empty-effective-rules responses—not the 403—are the basis for this decision.
+No protection setting was changed and no bypass is used.
+
+At exact source SHA `bb65378...`, both PR and push CI runs (`40066780614`,
+`40066776488`) passed their five CI jobs. Kilo Code Review is
+`ACTION_REQUIRED` due insufficient credits and is the sole non-success check
+visible; the available required-check query does not report it as mandatory.
+CodeRabbit's successful status is not approval. GitHub currently reports
+`mergeable=true`, `mergeStateStatus=UNSTABLE`; this appears alongside the
+credit-blocked optional status, but GitHub remains the authority for whether its
+ordinary merge operation accepts the PR. The review threads are all resolved;
+none of the factual author replies is an approval.
+
+The PR body was minimally corrected to say “open and ready for review,” changing
+only the stale draft-status sentence. This entry is explicitly pre-merge: the
+ordinary merge command has not yet been run, and the PR must be rechecked at the
+new append-only log commit's exact head first. If GitHub permits the normal
+merge, verify the resulting merge commit and `main`; only then compare PR #20's
+full diff against updated `main` and close #20 if no unique useful changes are
+lost. No tag, release, publication, workflow dispatch, deployment, or bypass is
+authorized.
