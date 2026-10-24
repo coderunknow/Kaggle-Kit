@@ -164,10 +164,12 @@ export class ProxyService {
       apiKey,
       timeoutMs,
       fetchImpl: this.pinnedFetch,
-      // Callers may tighten the limit (the capability probe does); they may
-      // never remove it, so an unbounded endpoint can never buffer gigabytes
-      // into the proxy process.
-      maxResponseBytes: maxResponseBytes ?? MAX_CHAT_RESPONSE_BYTES,
+      // Callers may tighten the limit (the capability probe uses 16 KiB);
+      // they may never remove or raise it. The Math.min enforces the hard
+      // maximum at this single factory instead of trusting every caller:
+      // a value above it (up to Number.MAX_SAFE_INTEGER) would otherwise
+      // disable the cap silently.
+      maxResponseBytes: Math.min(maxResponseBytes ?? MAX_CHAT_RESPONSE_BYTES, MAX_CHAT_RESPONSE_BYTES),
       validateRedirect: (target) => this.isRedirectAllowed(target),
     });
   }

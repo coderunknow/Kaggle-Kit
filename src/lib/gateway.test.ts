@@ -56,6 +56,28 @@ describe('the browser gateway', () => {
     expect(result.finishReason).toBe('stop');
   });
 
+  it('rejects a multi-byte stream that exceeds the byte cap instead of buffering it without bound', async () => {
+    // 1.5M CJK characters are 4.5 MiB of UTF-8 bytes (over the 4 MiB event
+    // cap) although only 1.5M code units. The stream ends with [DONE] so
+    // that the cap is the only reason the consumer can fail: with an
+    // accepting parser the stream would complete cleanly.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        eventStream(
+          [
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+            `data: ${'汉'.repeat(1_500_000)}\n\n`,
+            'data: [DONE]\n\n',
+          ],
+          { close: true },
+        ),
+      ),
+    );
+
+    await expect(gateway.chat(REQUEST)).rejects.toMatchObject({ kind: 'inference' });
+  });
+
   it('keeps vLLM-style streamed reasoning separate from the final content (Raon/Qwen on vLLM)', async () => {
     vi.stubGlobal(
       'fetch',

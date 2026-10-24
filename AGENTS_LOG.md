@@ -1905,3 +1905,131 @@ any public interface, persistence format, or security policy. The 8 MiB /
 (`max_tokens` ≤ 32,768; SSE delta frames are small). No tag, release,
 merge, or publication was performed; this entry and the accompanying commit
 are the release-review evidence only.
+
+## 2026-10-24T10:40:00Z - Independent red-team audit, cycle 2: RT-007/RT-008 challenged, two new defects confirmed and fixed (RT-009, RT-010)
+
+Second independent ~120-minute red-team pass over PR #22 (branch
+`arena/b99be7de-kaggle-kit`), base `main` @ fc6893dc, previous head
+b8e7f42. Hard boundary honored throughout: no merge, no tags, no release,
+no publish/deploy, no workflow dispatch; only branch edits, commits, and a
+push to the existing PR branch.
+
+### RT-007 re-challenged -> RT-009 confirmed (low)
+
+The 8 MiB non-streaming hard maximum was not actually un-removable:
+`ProxyService.createClient()` (the single factory) substituted
+`maxResponseBytes ?? MAX_CHAT_RESPONSE_BYTES`, and `??` only replaces
+null/undefined. The public parameter accepted any safe integer up to
+`Number.MAX_SAFE_INTEGER`, which passed the client's validation and
+silently disabled the cap. The documented "tighten, never remove"
+invariant existed only in a comment.
+
+- Repro (unfixed source): new test
+  "clamps a caller-provided limit above the hard maximum instead of
+  removing it" FAILED - a 9 MiB upstream body was accepted when the
+  caller passed `Number.MAX_SAFE_INTEGER`.
+- Fix (shared boundary = the factory): `maxResponseBytes: Math.min(
+  maxResponseBytes ?? MAX_CHAT_RESPONSE_BYTES, MAX_CHAT_RESPONSE_BYTES)`.
+  Preserves the 16 KiB probe tightening and the 1 MiB tool-chat cap
+  (the only other construction site, `server/tools/chat.ts`, is a direct
+  `new OpenAIClient` with a fixed 1 MiB limit and `validateRedirect: () =>
+  false` - verified bounded, not a defect).
+- Boundary semantics pinned by tests: exactly 8 MiB passes, +1 byte
+  rejected (inclusive, wrapper overhead measured, not hard-coded);
+  tightening still works (1 MiB rejects 2 MiB, passes 512 KiB); `null`
+  runtime argument falls back to the default.
+- What the cap counts: actual transferred UTF-8 bytes, accumulated
+  incrementally (never trusts Content-Length), rejected strictly above
+  the limit, socket cancelled and body released on rejection.
+
+### RT-008 re-challenged -> RT-010 confirmed, five defects (low)
+
+The "4 MiB bytes" SSE event cap was measured and applied incorrectly:
+
+1. Byte-vs-units undercount: the check compared `buffer.length` (UTF-16
+   code units) against `MAX_SSE_EVENT_BYTES`. CJK text is 3 UTF-8 bytes
+   per unit, so events up to ~3x the named byte cap (~12 MiB wire) were
+   accepted. Repro (unfixed): 1.5M CJK characters (4.5 MiB bytes, 1.5M
+   units) delivered; new tests failed.
+2. Chunk-total false positive: the check ran on the pre-split buffer, so
+   a single 5 MiB network chunk of 5,120 one-KiB complete events was
+   rejected although no event was near the cap. The cap must bound ONE
+   unterminated event, not a chunk total. Repro (unfixed): new test
+   failed.
+3. Missing final-flush check: an event that crossed the limit only via
+   the final `decoder.decode()` flush (incomplete character at EOF) was
+   delivered. Repro (unfixed): new test failed.
+4. O(n^2) separator rescan: the regex re-executed over the whole growing
+   buffer for every chunk (V8 flattens the rope per exec: ~2.4 ms per
+   scan of a 2M-unit buffer, measured). A never-terminated event arriving
+   in small chunks burned quadratic CPU before the cap could reject it.
+   Measured on the identical test: 9172 ms unfixed vs 58 ms fixed.
+5. Consumer level: the browser gateway (`src/lib/gateway.ts readStream`)
+   accepted an over-limit multi-byte stream and completed "cleanly".
+   Repro (unfixed): new gateway test failed (it first passed for the
+   wrong reason - the missing-finish-reason guard - until the test stream
+   was made to carry a well-formed `[DONE]` event; the correction is
+   documented in the test comment).
+
+Fix: `parseSseStream` now keeps the undelivered tail as raw wire bytes in
+arrival-ordered segments (no ever-growing JS string). The cap is applied
+in exact UTF-8 wire bytes at three points: the unterminated tail after
+each chunk, each completed event block before it is delivered, and the
+final flush. Separators (LF/CRLF/CR, pure ASCII - UTF-8 multi-byte
+sequences never contain 0x0A/0x0D, so byte-level scanning is exact) are
+found by scanning only the new chunk plus a 3-byte straddle window, so
+per-chunk work is O(chunk) regardless of tail size. One streaming
+`TextDecoder` is fed only completed blocks plus the final flush,
+preserving the original split-character semantics. Peak allocation stays
+bounded by the cap plus one chunk. All three consumers (proxy capability
+probe, proxy streaming probe, browser gateway) share the fixed parser.
+
+Verification (fixed source): `shared/api/stream.test.ts` 27/27,
+`src/lib/gateway.test.ts` 10/10, `server/proxy.test.ts` 34/34,
+`server/http.test.ts` 5/5 (new).
+
+### Fresh audit pass (subsystems A-J), new candidates resolved
+
+- Non-upload JSON routes: all use `readJsonBody(request, maxBodyBytes)`
+  with the 1 MiB default; the check is incremental (413 strictly above
+  the limit, memory bounded by limit + one chunk). The upload route
+  carries its own deliberately larger limit
+  (`ceil(4 MiB/3) * 4 + 64 KiB`) consistent with the 4 MiB file cap.
+  The 413/400 boundary had NO test coverage: added
+  `server/http.test.ts` (413 above limit, exact-limit inclusive +1
+  rejected, empty 400, array 400, invalid JSON 400 including a 1 MiB
+  body of unbounded brackets). Regression pins, not new defects.
+- Deep JSON nesting: V8's parser handles 200k+ levels of valid nesting
+  in ~50 ms (measured); invalid deep bodies throw SyntaxError -> 400.
+  Not a defect; the new 1 MiB-brackets test pins the 400 behavior.
+- Redirect + cap interplay: the client uses `redirect: 'manual'` with
+  the origin/allow-list/max-redirect policy; the cap applies to the
+  final body via `readBody` before the ok-check. Not a defect.
+- Calculator own-property guard (RT-001 fix) and tool-chat/approval
+  regression suites re-verified present and green in the full run.
+
+### Verification evidence (local, exact final tree)
+
+- typecheck (app + server tsconfigs): 0 errors
+- eslint .: 0 errors
+- vitest: 535/535 across 49 files, 45.3 s (reference 516 + 14 new + 5 new
+  http tests; the +19 reconciles as proxy caps 2->6 (+4), stream +9,
+  gateway +1, http +5)
+- npm run build: success
+- integration check: 33/33
+- notebook unittest: 105 OK; tools unittest: 39 OK
+- npm audit: 0 vulnerabilities
+- git diff --check: clean
+
+### Unresolved / environment-bound
+
+Browser e2e, Windows launcher, and Docker sandbox jobs run on hosted CI
+only (no Docker/Playwright in this sandbox); CI on the final commit is
+the gate for those. Live provider behavior remains out of scope as in
+cycle 1.
+
+### Boundary confirmation
+
+No merge, no tag, no release, no publish/deploy, no workflow dispatch
+performed in this cycle. PR #22 remains open; the only push is to the
+existing branch `arena/b99be7de-kaggle-kit`.
