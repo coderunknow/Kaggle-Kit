@@ -20,6 +20,7 @@ Run with: python3 -m unittest discover -s tools -p "test_*.py"
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tempfile
@@ -115,6 +116,29 @@ class WorkflowInjectionBoundary(unittest.TestCase):
         self.assertIn("publish:\n", nightly)
         self.assertIn("permissions:\n      contents: write", nightly)
 
+    def test_nightly_version_lines_execute_as_written_in_bash(self) -> None:
+        """Run each exact version assignment from the workflow's shell blocks."""
+        nightly = (ROOT / ".github" / "workflows" / "nightly-release.yml").read_text(encoding="utf-8")
+        assignments = [
+            line.strip()
+            for line in nightly.splitlines()
+            if line.strip().startswith("VERSION=")
+        ]
+        self.assertEqual(len(assignments), 2, "verify and publish jobs must resolve version independently")
+        for assignment in assignments:
+            script = f'{assignment}\nprintf \'%s\\n\' "$VERSION"\n'
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            expected = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+            self.assertEqual(result.stdout.strip(), expected)
+
     def test_tag_regex_rejects_hostile_values(self) -> None:
         hostile = [
             'v1.2.3"; touch PWNED; echo "',
@@ -133,8 +157,12 @@ class WorkflowInjectionBoundary(unittest.TestCase):
         ]
         for value in hostile:
             self.assertIsNone(VERSION_TAG.match(value), repr(value))
-        for value in ["v0.1.0-dev4", "v1.2.3", "v10.20.30-rc.1"]:
+        for value in ["v0.1.0-dev4", "v0.1.0-beta1", "v1.2.3", "v10.20.30-rc.1"]:
             self.assertIsNotNone(VERSION_TAG.match(value), value)
+        release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        workflow_pattern = re.search(r"grep -Eq '([^']+)'", release)
+        self.assertIsNotNone(workflow_pattern)
+        self.assertEqual(workflow_pattern.group(1), r"^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$")
 
     def test_hostile_tag_cannot_execute_through_the_env_boundary(self) -> None:
         """Run the workflow's exact assignment+validation shape with hostile data."""

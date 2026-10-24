@@ -152,6 +152,27 @@ describe('bounded server-side tool chat', () => {
     expect(test.fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('passes calculator_convert value/from/to arguments to the conversion in the declared order', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_convert'] }), [
+      functionCall('calculator_convert', { value: 100, from: 'fahrenheit', to: 'celsius' }),
+      answer('100°F is about 37.78°C.'),
+    ]);
+
+    const result = await test.start();
+    const toolResults = (test.bodies[1]?.messages as Array<Record<string, unknown>> | undefined)
+      ?.filter((message) => message.role === 'tool') ?? [];
+
+    expect(result.status).toBe('complete');
+    expect(result.toolTrace[0]).toMatchObject({
+      toolName: 'calculator_convert',
+      status: 'succeeded',
+      approvalRequired: false,
+      resultSummary: expect.stringContaining('celsius'),
+    });
+    expect(JSON.stringify(toolResults)).toContain('37.7777777778');
+    expect(test.bodies[0]?.tools).toMatchObject([{ function: { name: 'calculator_convert' } }]);
+  });
+
   it('never sends the base prompt no-tools claim together with a tool list', async () => {
     const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
       functionCall('calculator_calculate', { expression: '2 + 2' }),

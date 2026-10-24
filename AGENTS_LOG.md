@@ -1328,3 +1328,83 @@ defect found there by the audit); the KRAFTON-codeload and
 Qwen-GGUF-default digest-pin risks stay documented open risks - both are
 deliberate, disclosed product decisions whose change needs live-download
 evidence this session must not produce.
+
+
+## 2026-10-24 - beta1 audit continuation on arena/295bec84-kaggle-kit
+
+### Confirmed baseline and GitHub evidence
+
+- Active local branch: `arena/295bec84-kaggle-kit`, HEAD/base
+  `1a864791f548e0a5fdb2267d49aefa6df36b3cd0`; initially clean. No branch
+  switch, commit, push, merge, tag or release performed at this point.
+- Queried GitHub directly. `main` latest nightly run `40029657246` is a
+  scheduled failure on the baseline. Job `validate nightly build inputs and
+  artifacts` failed at step `Resolve nightly metadata`; later checks and
+  staging were skipped; publish job was skipped. `gh run view ... --log-failed`
+  returned an EOF while downloading logs. Do not claim the unavailable hosted
+  logs were inspected. Reproduced the same malformed Bash assignment locally
+  with exit 2 before changing the workflow.
+- Reviewed open Draft PR #20's current metadata and actual diff. It is based on
+  the other branch `arena/02f947f2-kaggle-kit`, head
+  `d32e471194b756b720f389e8a5e98bc269afb7fd`; its actual files overlap the
+  workflow fix, calculator conversion tests, fast-uri update and beta1 docs,
+  but do not include this branch's `server/tools/chat.test.ts` argument-order
+  regression. Its five checks (Browser E2E, Docker sandbox, notebook tests,
+  typecheck/lint/test/build, Windows launcher) pass on that head only. No
+  result from PR #20 is attributed to this branch.
+
+### Changes made
+
+- `.github/workflows/nightly-release.yml`: remove escaped quotes in both
+  `VERSION=$(node -p ...)` command substitutions.
+- `tools/test_workflow_security.py`: execute the two exact assignment lines
+  read from the workflow; assert output matches package metadata; pin beta1 in
+  both the test's accepted shape and the release workflow regex.
+- `server/tools/calculator.test.ts`: relative-tolerance conversion examples,
+  reverse/category/normalization/edge-case regressions. Calculator production
+  implementation unchanged; no reported defect reproduced.
+- `server/tools/chat.test.ts`: deterministic tool-loop case checks declared
+  calculator conversion arguments are forwarded as `value/from/to` and result
+  is returned. Mock only; not model evidence.
+- `package-lock.json`: fast-uri 3.1.8→3.1.9 lockfile-only; `npm ci` refreshed
+  installed tree. package/lock/app versions align at `0.1.0-beta1`; README and
+  beta release-note input added/updated. `{{SOURCE_SHA}}` remains a deliberate
+  template token for dry-run rendering (replacing it in tracked source would
+  create an incorrect/circular hash).
+- `docs/release/environment.json`: append dated test evidence and latest local
+  E2E blocker, preserving earlier historical entries.
+- Before appending to these two logs, SHA-256 was recorded as
+  `DESIGN_LOG.md=271b4d5ab79af700da52492c5e2959bc3faea680e132f049115e04004d428102`
+  and `AGENTS_LOG.md=ceea997ebe91735f9ada8b72360d12de9d44eae6e9ab5fd2a08f9a66e57e30cd`.
+  Rechecked immediately before append; both matched. This entry is appended
+  only; prior content was not changed.
+
+### Exact Verification Results
+
+- `npm ci`: 372 packages added/audited; 0 vulnerabilities; `npm audit` later
+  reports all severity counts zero.
+- `npm run typecheck`: pass; `npm run lint`: pass.
+- `npm test`: 48 files, 497 passed.
+- `npm run build`: pass; production client and bundled standalone server.
+- `npm run check:integration`: pass, 33/33.
+- Python notebook tests (3.11.2 venv with requests installed from PyPI): 105
+  pass / 0 skipped. Python tools tests: 32 pass / 0 skipped.
+- Focused security subset: 12 Vitest files / 155 passed; workflow Python tests
+  10 passed. Exact nightly assignment regression ran both workflow lines.
+- Prompt eval `--dry-run`: exit 0; 17 cases / 36 automatic / 45 manual
+  criteria; canonical text matches research prompt, SHA prefix
+  `2f52bd9a1c9c1935`; no endpoint/model output/score.
+- Conversion direct outputs: `100°F→°C=37.77777777777783`,
+  `100 km/h→mph=62.1371192237334`; no arithmetic defect reproduced.
+- E2E: attempted five browser tests with temporary @sparticuz/chromium
+  executable; all blocked before tests because `/tmp/chromium` cannot load
+  `libnspr4.so` (also missing NSS shared libs). Not a test pass. Docker and
+  real Windows were not run locally. Live model/Kaggle work was not attempted.
+- `git diff --check`: pass.
+
+**Still pending at this append:** commit the candidate on this branch, run
+`tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1` against the committed
+source archive, push only `arena/295bec84-kaggle-kit`, open one unmerged PR if
+appropriate, and report this branch's own CI. Keep any candidate acceptance
+status partial until local release dry-run and branch CI are confirmed. No
+publication or deployment is authorized.

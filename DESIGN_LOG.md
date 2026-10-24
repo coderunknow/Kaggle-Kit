@@ -1966,3 +1966,117 @@ Playwright browser ran here (cost/safety constraints and sandbox
 network policy); the browser e2e, Docker sandbox and Windows launcher
 jobs of the CI workflow on the PR head are the verification path for
 those layers, exactly as for the original dev7 candidate.
+
+
+## 2026-10-24 - v0.1.0-beta1 reliability/security audit on arena/295bec84-kaggle-kit
+
+### User Intent
+
+Continue the repository-wide release-readiness audit for v0.1.0-beta1: preserve
+backward compatibility and security first; test the native tool loop, prompt,
+conversion leads, workflow/release tooling and Kaggle deployment surfaces;
+fix only reproduced defects; keep evidence and blocked work explicit. No live
+model inference, Kaggle tunnel benchmark, deployment, merge, tag or release.
+
+### Baseline and Current GitHub State
+
+The working branch is `arena/295bec84-kaggle-kit`, based on
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0`. Before changes its tree was clean.
+At audit time `main` was at the same SHA; latest published version was
+`v0.1.0-dev7`. An unrelated open Draft PR #20 already prepares the same beta1
+candidate from `arena/02f947f2-kaggle-kit`; its head is
+`d32e471194b756b720f389e8a5e98bc269afb7fd`. I reviewed its actual changed-file
+list and diff rather than treating its description as evidence: it overlaps
+this candidate's nightly fix, conversions, dependency and version/docs, but
+does not include this branch's `server/tools/chat.test.ts` calculator argument
+mapping regression. Its five CI jobs pass, but those results are for PR #20's
+head, not this branch. Keep this distinction explicit and do not infer that
+this branch passed CI from the other PR.
+
+Main's scheduled Nightly Release run `40029657246`, on the baseline SHA, failed
+in `validate nightly build inputs and artifacts` at `Resolve nightly metadata`;
+the publish job was skipped. The `gh run view --log-failed` request returned
+EOF before delivering job logs, so failure evidence is the exact failed step
+metadata plus the independent local byte-for-byte shell reproduction below.
+
+### Findings and Fixes
+
+- **F1, P1 reliability/release automation — confirmed and fixed.** Both nightly
+  jobs contained `VERSION="$(node -p \\"require('./package.json').version\\")"`.
+  Executing the workflow line shape under Bash reproduced
+  `syntax error near unexpected token '('`, exit 2. Removed the literal
+  backslashes from both assignments. Added a Python regression which extracts
+  and executes each exact line as stored in the workflow, checks it returns
+  the package version, and pins acceptance of `v0.1.0-beta1` against the
+  release workflow's regex. No permission, validation or release gate was
+  removed. A successful post-fix scheduled GitHub run remains outstanding.
+- **F2, calculator conversion leads — not reproduced; no arithmetic edit.**
+  Direct execution returns `37.77777777777783` for 100°F→°C and
+  `62.1371192237334` for 100 km/h→mph, not the reported erroneous values.
+  Added relative-tolerance regressions (1e-6), reverse and supported-category
+  conversions, normalization, signed/decimal/zero inputs, invalid units and
+  category, non-finite values, and absolute-zero boundaries. Added a separate
+  mocked chat-loop assertion that `calculator_convert` forwards `value/from/to`
+  in the declared order. No model result is involved.
+- **F3, dependency security — confirmed and fixed.** Baseline `npm audit` found
+  four advisories on transitive `fast-uri@3.1.8`. Updated only the lockfile
+  within the existing dependency range to `3.1.9`; after `npm ci`, `npm audit`
+  reports zero vulnerabilities. No declared dependency changed.
+- Prepared package, lockfile and application version together for
+  `0.1.0-beta1`; README points to the candidate notes. The release workflow
+  regex accepts `v0.1.0-beta1`; release artifact validation has no conflicting
+  suffix rule. No policy was relaxed. The notes retain the repository's
+  `{{SOURCE_SHA}}` build-time placeholder so the release dry-run can render the
+  actual commit SHA without a self-referential source hash.
+
+The broader audit reviewed (and did not establish a new defect in) system
+prompt canonical/source parity and tool/no-tool prompt selection, native tool
+probe/protocol/loop/recovery, approval authorization/bounds/replay, executor
+policy, file vault, web/HTTP/MCP tools, pinned fetch/SSRF controls, sandbox
+fail-closed policy, and deployment notebook gates. This is not evidence of
+real-model behavior. Existing research `system_prompt.txt` remains a separate
+candidate and is not silently substituted for the canonical prompt. Existing
+storage formats, defaults, credentials and migration behavior are unchanged.
+
+### Version Decision
+
+Prepare `v0.1.0-beta1`, not `dev8`: the reported conversion issue is already
+correct in the audited implementation and is now locked by tests; the only
+confirmed blocking reliability defect (nightly metadata quoting) is fixed at
+its root with a regression; the transitive advisory is resolved. PR #20's
+independent draft demonstrates that another branch has already proposed the
+same version, so avoid presenting its CI as this branch's evidence. This
+branch still needs its own release dry-run and CI before it can be called
+acceptance-complete. The beta label does not imply live Kaggle/model
+verification.
+
+### Local Verification (2026-10-24)
+
+- `npm ci`: exit 0, 372 packages; `npm audit`: zero vulnerabilities.
+- `npm run typecheck`, `npm run lint`: exit 0.
+- `npm test`: 48 files, 497 tests passed.
+- `npm run build`: exit 0; client and bundled server built.
+- `npm run check:integration`: exit 0, 33/33 built-bundle integration checks
+  passed against the mock upstream.
+- Notebook suite: 105 passed, 0 skipped; tools suite: 32 passed. Python 3.11.2
+  venv had `requests` installed from PyPI; no test was skipped for the host's
+  missing optional Python package.
+- Focused security regression group: 12 Vitest files / 155 tests passed;
+  workflow-security unittest: 10 tests passed.
+- Offline Qwen evaluation dry-run: 17 cases, 36 automated checks, 45 manual
+  criteria validated; canonical prompt equals the research copy and has SHA
+  prefix `2f52bd9a1c9c1935`. This was not model inference and produced no score.
+- `git diff --check`: clean.
+- Local Playwright E2E remains **blocked**, not passed. Standard browser binary
+  was absent; an alternate transient Chromium also could not start (exit 127,
+  `libnspr4.so` missing; `libnss3.so` and `libnssutil3.so` also missing).
+  All five browser tests were blocked before test execution. Docker and Windows
+  tests were not run locally. Candidate-branch CI must supply independent
+  evidence for browser/Docker/Windows; PR #20 CI is not a substitute.
+- Live inference, Kaggle hardware/tunnel, hosted endpoints and external tool
+  services were not called, per instruction.
+
+The release dry-run has not yet been run on a committed head at the time of
+this entry. Record its exact result in a dated addendum after execution.
+The candidate is not fully accepted until its own CI and release dry-run pass;
+no merge, tag, release or deployment has occurred.

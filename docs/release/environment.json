@@ -12,7 +12,14 @@
     "npm audit --json: 0 vulnerabilities (info/low/moderate/high/critical all 0); git diff --check clean",
     "Regression discipline: the three new stream/tool tests failed against the pre-fix implementation (dropped delta.reasoning, merged conflicting tool-call identity, abort not waking a silent SSE read) and pass with the fixes; the default-Qwen deployment fingerprint is byte-identical to the pre-dev7 payload (proven in the notebook suite), so healthy Qwen servers keep being reused across the upgrade",
     "Primary-source deployment research fetched 2026-10-22: KRAFTON model card, Hugging Face API metadata for KRAFTON/Raon-1-mini-preview-gguf (revision, file sizes, LFS SHA-256 ids) and Qwen/Qwen3.8-27B (safetensors, revision, license), GitHub API head of krafton-ai/llama.cpp@raon-1-mini-preview, PyPI vllm-tpu metadata, kaggle-cli kernels.md (TpuV5E8), SearXNG search-API documentation",
-    "Primary-source Spark research fetched 2026-10-23: XHToken/Spark-X2.6 repository at X2.6 (ec963733...), Hugging Face API metadata for XHToken/Spark-X2.6-4B-GGUF at revision fe31f8d6... (file names, sizes, LFS SHA-256), chat_template.jinja, and llama.cpp b11719 source (spark2_5 arch, per-request reasoning_effort mapping, /props.chat_template_caps, API-key middleware)"
+    "Primary-source Spark research fetched 2026-10-23: XHToken/Spark-X2.6 repository at X2.6 (ec963733...), Hugging Face API metadata for XHToken/Spark-X2.6-4B-GGUF at revision fe31f8d6... (file names, sizes, LFS SHA-256), chat_template.jinja, and llama.cpp b11719 source (spark2_5 arch, per-request reasoning_effort mapping, /props.chat_template_caps, API-key middleware)",
+    "2026-10-24 beta1 candidate, Arena sandbox Linux x86_64; npm ci succeeded with 372 packages; npm audit reports 0 vulnerabilities after fast-uri lockfile update to 3.1.9",
+    "2026-10-24 beta1 candidate: npm run typecheck, npm run lint, npm test all exit 0; Vitest 48 files / 497 tests passed",
+    "2026-10-24 beta1 candidate: npm run build and npm run check:integration exit 0; production client and bundled backend built; integration harness 33/33 checks passed (mock upstream only)",
+    "2026-10-24 beta1 candidate: notebook unittest suite 105 tests passed, 0 skipped; tools unittest suite 32 tests passed, using Python 3.11.2 venv with requests installed from PyPI",
+    "2026-10-24 beta1 candidate security focus: 12 Vitest files / 155 tests passed; tools.test_workflow_security 10 tests passed; workflow regression executes the exact version-assignment lines from both nightly jobs",
+    "2026-10-24 calculator regression: audited implementation returned 37.77777777777783 for 100 Fahrenheit to Celsius and 62.1371192237334 for 100 km/h to mph; no arithmetic defect reproduced; test suite uses explicit relative tolerance 1e-6",
+    "2026-10-24 offline prompt evaluation dry-run: valid 17 cases, 36 automated checks, 45 manual criteria; canonical source and research copy match SHA-256 prefix 2f52bd9a1c9c1935; no endpoint, model output or score was produced"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
@@ -29,6 +36,7 @@
     "No live Brave account/retention rights, external MCP server or configured external HTTP service was validated; no assistive-technology audit or other browser engines; component tests use jsdom",
     "Qwen GGUF weights remain digest-unpinned by default unless the operator supplies the existing optional model_revision/model_sha256 configuration (no authoritative digest is baked in; Raon GGUF and Qwen TPU checkpoint revisions/digests ARE pinned from official metadata)",
     "Native tool calling for Spark is NOT verified and stays disabled: the probe has not run against a real Spark endpoint, and nothing here proves that llama.cpp b11719 parses the model's <tool_call>/<arg_key> markup",
-    "Playwright browser end-to-end: BLOCKED locally as before - the Chromium executable is absent (browser download host unreachable); the Browser end-to-end CI job on the PR head is the verification path"
+    "Playwright browser end-to-end: BLOCKED locally as before - the Chromium executable is absent (browser download host unreachable); the Browser end-to-end CI job on the PR head is the verification path",
+    "2026-10-24 beta1 candidate local Playwright attempt: BLOCKED before test execution; transient @sparticuz/chromium binary exits 127 because libnspr4.so is absent (ldd also reports missing libnss3.so and libnssutil3.so). All five E2E cases are NOT locally passed; rely on the candidate branch CI job if it completes successfully"
   ]
 }
