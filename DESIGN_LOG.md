@@ -1966,3 +1966,95 @@ Playwright browser ran here (cost/safety constraints and sandbox
 network policy); the browser e2e, Docker sandbox and Windows launcher
 jobs of the CI workflow on the PR head are the verification path for
 those layers, exactly as for the original dev7 candidate.
+
+
+## 2026-10-24 - v0.1.0-beta1 candidate: nightly root cause, version decision, conversion leads closed
+
+### User Intent
+
+Prepare a release candidate for `v0.1.0-beta1` only if the evidence supports
+it (otherwise prepare `v0.1.0-dev8` first): audit the whole repository —
+native tool-calling lifecycle, calculator/conversion, file/web tools,
+HTTP/MCP, Docker sandbox and approval lifecycle, the Qwen system-prompt
+research, Kaggle deployment, CI/Nightly/release tooling and the security
+boundaries hardened in dev1–dev7 — fix confirmed defects at the root cause
+with regression tests, and stop at an unmerged pull request. No merge, no
+tag, no release, no live-model calls.
+
+### Implementation History
+
+Baseline re-verified live before any edit: `main` = this branch's base =
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0` (merge of PR #19), working tree
+clean, no open PRs, latest release `v0.1.0-dev7`, CI on `main` green, and
+the scheduled Nightly Release run `40029657246` failed (as did its
+predecessor) — matching the recorded baseline exactly.
+
+Confirmed finding F1 (P1, release automation): Nightly Release could never
+get past `Resolve nightly metadata`. The step read the package version as
+`node -p \"require('./package.json').version\"` — backslash-escaped quotes
+inside a command substitution. GitHub passes the literal `run:` block to
+bash, and bash rejects that shape. Reproduced byte-for-byte outside the
+workflow: `syntax error near unexpected token '('`, exit 2. Both jobs
+(verify and publish) carried the same line, so even a successful verify
+would have died again in publish. The fix uses the unescaped shape already
+proven in `release.yml`; no guard, check or permission was removed.
+
+Confirmed finding F2 (informational, closed without a code change): the
+historical conversion leads (`100 °F → ≈1036.566…`, `100 km/h → ≈345.52…`)
+do not reproduce on the current implementation. Direct execution gives
+`37.77777777777783 °C` and `62.1371192237334 mph`. The defect, wherever it
+lived historically, is gone; what was missing was a test that would catch
+its return, so explicit regression assertions (1e-6 relative tolerance)
+plus reverse/negative/zero/case-whitespace and unknown/incompatible/
+non-finite cases were added instead of a code change.
+
+Confirmed finding F3 (moderate, dependency): `npm audit` reported
+`fast-uri` 3.1.8 (transitive via `ajv`) with four advisories fixed in
+3.1.9. Lockfile-only update inside the existing `^3.0.1` range; `npm
+audit` now reports 0 vulnerabilities and no `package.json` dependency
+changed.
+
+Audited without finding a new defect (scope, not a guarantee): the
+tool-calling probe/protocol/loop suites, calculator parser (whitelist
+tokenizer, no `eval`/`Function`), file vault, web search/open honesty
+(`web_open` is retrieval; `web_search` requires the Brave credential and
+fails closed without it), HTTP/MCP validation, pinned fetch and SSRF
+layers, Docker sandbox policy (`--network=none`, digest-pinned image,
+no host fallback), the approval lifecycle, prompt integration
+(`qwenToolSystemPrompt()` replaces — never contradicts — the no-tools
+claim; the canonical prompt in `shared/prompts/qwen.ts` still matches
+`research/qwen-system-prompt/SYSTEM_PROMPT.md` character-for-character per
+the existing test; `system_prompt.txt` is a distinct research candidate,
+not the shipped text), and the deployment notebooks. The system-prompt
+evaluation dry-run validates the suite offline (17 cases, 36 automated
+checks, 45 manual criteria); no model was called, so no prompt-quality
+claim is made.
+
+### Decisions & Lessons
+
+- **Version strategy: prepare the `v0.1.0-beta1` candidate (Option A).**
+  The dev1–dev7 scope is feature-complete, PR #19 already closed the
+  post-dev7 audit defects on `main`, the only still-open blocker found
+  (F1) is fixed with a regression test, and no unresolved P0/P1 remains.
+  Deferring to dev8 would add a cycle without adding evidence. The
+  release tooling needed no change: the existing tag regex in
+  `release.yml` and the workflow-security tests already accept
+  `v0.1.0-beta1` (now pinned by an added test case), and
+  `tools/validate_release.py` is version-agnostic. `package.json`,
+  `package-lock.json` and `shared/version.ts` move together to
+  `0.1.0-beta1`; `shared/version.test.ts` guards the agreement.
+- **A dry run is not a publication, and local green is not acceptance.**
+  Playwright e2e and Docker sandbox integration cannot run in this
+  sandbox (no Chromium binary — the download host is unreachable — and no
+  Docker CLI), so the candidate goes up as a Draft PR and is explicitly
+  not acceptance-complete until the CI Browser/Docker/Windows jobs pass
+  on the PR head. The nightly fix is likewise verified locally (exact
+  extracted line, full extracted step simulation, tools suite) but the
+  next scheduled run on `main` after a merge is the live evidence.
+- **Do not fix what does not reproduce.** The conversion leads were
+  closed by proof plus locking tests, not by touching correct arithmetic.
+- Compatibility: no stored format, schema, default, credential mode or
+  policy changed; no migration exists or is needed. The `fast-uri` bump
+  is lockfile-only. Historical log entries and the published dev7 tag,
+  release and assets are untouched (prefix digests of both logs were
+  recorded before appending and verified unchanged afterwards).

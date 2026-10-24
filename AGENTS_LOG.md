@@ -1328,3 +1328,76 @@ defect found there by the audit); the KRAFTON-codeload and
 Qwen-GGUF-default digest-pin risks stay documented open risks - both are
 deliberate, disclosed product decisions whose change needs live-download
 evidence this session must not produce.
+
+
+## 2026-10-24 - v0.1.0-beta1 hardening candidate (branch arena/02f947f2-kaggle-kit)
+
+**Baseline (re-queried live, not assumed).** Branch base = `main` =
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0` (merge PR #19); working tree
+clean; no open PRs; releases dev1–dev7 (latest `v0.1.0-dev7`, prerelease,
+2026-10-23); CI run 39963907919 on `main` success; Nightly Release run
+40029657246 failure (9s — it dies in its first step). Append-only prefix
+digests before this entry: DESIGN_LOG.md sha256
+`271b4d5ab79af700da52492c5e2959bc3faea680e132f049115e04004d428102`,
+AGENTS_LOG.md sha256
+`ceea997ebe91735f9ada8b72360d12de9d44eae6e9ab5fd2a08f9a66e57e30cd`.
+
+**Baseline tests (before edits).** typecheck 0; lint 0; Vitest 48 files /
+493 passed; notebooks 105 OK (requests 2.34.2 installed with
+`--break-system-packages` after the plain install was refused by PEP 668);
+tools 31 OK; prompt eval dry-run exit 0 (17 cases / 36 auto / 45 manual).
+
+**Findings.**
+- F1 CONFIRMED + FIXED (P1): nightly `Resolve nightly metadata` —
+  `node -p \"require('./package.json').version\"` (lines 57 and 222)
+  fails under bash with `syntax error near unexpected token '('`, exit 2,
+  reproduced verbatim in isolation. Root cause: escaped quotes inside
+  `$(...)` in a literal `run:` block. Fix: unescaped shape matching
+  `release.yml`. Regression: `test_nightly_version_line_executes`
+  (executes the exact workflow lines; FAILED on the pre-fix file —
+  verified by stashing the fix — passes after) plus a full extracted-step
+  simulation in a scratch git repo (exit 0, correct outputs).
+- F2 NOT REPRODUCED (leads closed): `convert(100,'°F','°C') =
+  37.77777777777783`, `convert(100,'km/h','mph') = 62.1371192237334`,
+  executed directly via tsx against `server/tools/calculator.ts`; the
+  historical wrong values do not occur. Added locking tests with stated
+  1e-6 relative tolerance + reverse/negative/zero/case/unknown/
+  incompatible/non-finite cases (+3 Vitest tests). No calculator code
+  changed.
+- F3 CONFIRMED + FIXED (moderate): `npm audit` = 1 moderate package,
+  `fast-uri` 3.1.8 via `ajv` (GHSA-w74x-v6f9-j3xg et al., fixed 3.1.9).
+  `npm audit fix --package-lock-only` → 3.1.9, audit now 0/0/0/0/0.
+- No new defect confirmed in: tool probe/protocol/loop, stream handling,
+  approvals, executor/policy, files, web, HTTP/MCP, pinnedFetch/SSRF,
+  sandbox policy, prompt canonical-text drift (qwen.test.ts green),
+  notebook deployment suites. `web_search` stays Brave-gated and
+  `web_open` is retrieval-only; prompt `system_prompt.txt` is a research
+  candidate distinct from the canonical shipped prompt — documented, not
+  silently merged.
+
+**Version decision.** Option A — prepare `0.1.0-beta1` candidate (see
+DESIGN_LOG entry of this date). Version moved in `package.json`,
+`package-lock.json`, `shared/version.ts`; new
+`docs/release-notes/0.1.0-beta1.md` (keeps the `{{SOURCE_SHA}}`
+placeholder); validator/tag regex already accepted the beta shape — one
+test case added, nothing relaxed. README status section updated to the
+beta1 candidate. `docs/release/environment.json` gained dated beta1
+entries; historical entries untouched.
+
+**Final local results (candidate head, real output).** typecheck 0;
+lint 0; Vitest 48 files / **496 passed**; build 0;
+check:integration **33/33**; notebooks **105 OK, 0 skipped**; tools
+**32 OK**; prompt eval dry-run exit 0 (no model called, no score
+claimed); `tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1` recorded
+with the commit (runs after committing so `git archive` sees the head);
+`npm audit` 0 vulnerabilities; `git diff --check` clean.
+
+**Blocked / not run (not counted as passed).** `npm run test:e2e`: 5
+tests failed at launch — Chromium executable absent
+(`chromium_headless_shell-1194`), and `npx playwright install chromium`
+fails (download host unreachable from this sandbox). Docker sandbox
+integration: no `docker` CLI locally. Windows launcher: no Windows. Live
+models/Kaggle GPU/TPU/tunnels: none, by instruction. The CI
+Browser/Docker/Windows jobs on the PR head are the evidence path; until
+they pass, this candidate is **not acceptance-complete** and the PR stays
+Draft. No merge, no tag, no release was performed.

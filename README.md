@@ -24,7 +24,13 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
                             • verifies streaming support
 ```
 
-## dev7 candidate status
+## beta1 candidate status
+
+This branch prepares the `v0.1.0-beta1` beta candidate (not yet published;
+no beta tag or release exists). It carries the dev7 feature set plus the
+fix for the always-failing Nightly Release metadata step, a lockfile-only
+`fast-uri` security update, and locked-in calculator/conversion
+regressions. See [the beta1 release notes](docs/release-notes/0.1.0-beta1.md).
 
 Guided connection setup, Basic/Advanced settings, an explicit reviewed
 keyless built-in grant, a **model catalog** (Qwen3.8-27B, Raon-1 mini
@@ -214,8 +220,8 @@ Provider availability, account terms and fees are separate from the local
 checks.
 
 See [docs/chat-interface.md](docs/chat-interface.md) and [docs/security.md](docs/security.md)
-for details, and [docs/release-notes/0.1.0-dev7.md](docs/release-notes/0.1.0-dev7.md)
-for this development release's changes and verification limits.
+for details, and [docs/release-notes/0.1.0-beta1.md](docs/release-notes/0.1.0-beta1.md)
+for this beta candidate's changes and verification limits.
 
 ## Security model
 
@@ -287,7 +293,7 @@ stages the assets, validates them and uploads them to a prerelease of the same
 tag. Nothing is uploaded by hand.
 
 ```bash
-git tag v0.1.0-dev7 <commit> && git push origin v0.1.0-dev7
+git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1
 ```
 
 The version of `package.json` has to match the tag and the release notes have
