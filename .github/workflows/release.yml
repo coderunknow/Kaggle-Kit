@@ -4,7 +4,8 @@
 # them, publishes them to a GitHub prerelease and verifies the upload. It is
 # the only supported way to produce a release: nothing is uploaded by hand.
 #
-# Trigger: a push of a version tag (`v*`).
+# Triggers: a push of a version tag (`v*`), or manual dispatch with the
+# explicit `publish_release: true` input.
 #
 #   git tag v0.1.0-dev4 <commit> && git push origin v0.1.0-dev4
 #
@@ -28,9 +29,14 @@ on:
       tag:
         description: 'Existing tag to build the release from'
         required: true
+      publish_release:
+        description: 'Publish the validated release; manual dispatch requires publish_release: true (default false)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -42,7 +48,10 @@ env:
 
 jobs:
   release:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true)
     name: build, verify and publish the release artifacts
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

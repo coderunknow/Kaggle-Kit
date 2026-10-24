@@ -31,6 +31,12 @@ interface ToolChatInput {
   conversationSettings?: ConversationToolSettings;
 }
 
+interface QueuedToolCall {
+  call: OpenAIToolCall;
+  /** Prepared for every call that can still fit in the call budget before dispatch begins. */
+  prepared?: PreparedToolCall;
+}
+
 interface PendingCall {
   approvalId: string;
   call: OpenAIToolCall;
@@ -62,7 +68,7 @@ interface ToolChatSession {
   startedAt: number;
   round: number;
   callCount: number;
-  pendingQueue: OpenAIToolCall[];
+  pendingQueue: QueuedToolCall[];
   deniedOperations: Set<string>;
   pending?: PendingCall;
   trace: ToolTraceRecord[];
@@ -399,7 +405,9 @@ export class ToolChatService {
         }
 
         if (session.pendingQueue.length > 0) {
-          const call = session.pendingQueue.shift()!;
+          const queued = session.pendingQueue.shift()!;
+          const call = queued.call;
+          const prepared = queued.prepared;
           const callId = validCallId(call.id) ? call.id : '';
           const traceId = randomUUID();
           session.callCount += 1;
@@ -412,43 +420,11 @@ export class ToolChatService {
             if (callId) session.messages.push(toolResultMessage(call, JSON.stringify({ error: message, failureKind })));
             continue;
           }
-
-          let prepared: PreparedToolCall;
-          try {
-            prepared = this.executor.parseAndPrepare(call.function.name, call.function.arguments, this.context(session, signal));
-          } catch (error) {
-            const message = safeError(error);
-            const failureKind: ToolFailureKind = error instanceof ToolExecutionError ? error.failureKind : 'invalid_arguments';
-            const expectedSchema = error instanceof ToolExecutionError ? error.expectedSchema : undefined;
-            session.trace.push(makeFailureTrace(traceId, call, message, { failureKind }));
-            // The tool result carries the structured failure and the bounded
-            // published-schema signature so the single corrective opportunity
-            // of the recovery policy below can be aimed at the real schema.
-            // Schema signatures come from the published definitions only:
-            // never argument values, never credentials.
-            session.messages.push(toolResultMessage(call, JSON.stringify({
-              error: message,
-              failureKind,
-              ...(expectedSchema ? { expectedSchema } : {}),
-              availableTools: session.definitions.map((definition) => definition.function.name),
-              guidance: 'Correct this at most once: re-issue the call as a structured tool_calls entry matching the published schema, choose another listed tool, or answer directly. Never claim an action ran without its tool result.',
-            })));
-            // Bounded recovery: the first invalid call in a correction episode
-            // is fed back to the model as its single corrective opportunity.
-            // A second failure in the same episode — or the same invalid call
-            // repeated at all — ends the loop honestly instead of looping.
-            const fingerprint = `${call.function.name}\u0000${call.function.arguments}`;
-            const failures = (session.failedCallCounts.get(fingerprint) ?? 0) + 1;
-            session.failedCallCounts.set(fingerprint, failures);
-            if (session.recoveryAttempts === 0 && failures === 1) {
-              session.recoveryAttempts += 1;
-              session.recoveryTotal += 1;
-              session.recoveryEvents.push(`Invalid tool call "${call.function.name}" was not executed; the validation error was returned to the model as its one corrective opportunity: ${message}`);
-              continue;
-            }
-            session.recoveryFailed = true;
-            session.recoveryEvents.push(`The model produced another invalid tool call ("${call.function.name}") in the same correction episode; it was not executed and the loop ended.`);
-            return this.finishBudget(session, 'The model repeated an invalid tool call after its single corrective opportunity. The call was not executed, no result was fabricated, and the tool loop ended. Whatever succeeded earlier is preserved above.');
+          if (!prepared) {
+            const message = 'The tool call was not preflighted and was not run.';
+            session.trace.push(makeFailureTrace(traceId, call, message, { failureKind: 'invalid_arguments' }));
+            session.messages.push(toolResultMessage(call, JSON.stringify({ error: message, failureKind: 'invalid_arguments' })));
+            continue;
           }
           const safeArguments = await this.safeArguments(prepared.args);
           const operationKey = operationFingerprint(prepared);
@@ -557,11 +533,38 @@ export class ToolChatService {
         const choice = completion.choices?.[0];
         const message = choice?.message;
         const rawCalls = message?.tool_calls;
+        const malformedToolCallPayload = rawCalls !== undefined && rawCalls !== null && !Array.isArray(rawCalls);
+        const missingCallsForToolFinish = choice?.finish_reason === 'tool_calls'
+          && (!Array.isArray(rawCalls) || rawCalls.length === 0);
+        if (malformedToolCallPayload || missingCallsForToolFinish) {
+          const examples = Array.isArray(rawCalls) ? rawCalls : rawCalls == null ? [] : [rawCalls];
+          appendBoundedFailureTraces(
+            session,
+            examples.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+            examples.length || 1,
+            'The endpoint returned malformed tool-call protocol data; no tool was run.',
+            'invalid_arguments',
+          );
+          const evidence = malformedToolCallPayload
+            ? 'The endpoint returned a non-array tool_calls payload; no tool was run.'
+            : 'The endpoint used finish_reason="tool_calls" without any tool-call entries; no tool was run.';
+          if (this.beginRecovery(session, evidence)) continue;
+          session.recoveryFailed = session.recoveryAttempts > 0;
+          session.lastAssistantContent = 'The endpoint returned malformed tool-call protocol data. No tool was executed.';
+          session.lastReasoning = message?.reasoning_content ?? message?.reasoning ?? undefined;
+          session.lastFinishReason = choice?.finish_reason ?? undefined;
+          this.jobs.delete(session.jobId);
+          return this.completeResult(session);
+        }
         if (Array.isArray(rawCalls) && rawCalls.length > 0) {
           if (choice?.finish_reason !== 'tool_calls') {
-            for (const invalid of rawCalls) {
-              session.trace.push(makeFailureTrace(randomUUID(), invalid, 'The endpoint returned tool-call data without finish_reason=tool_calls; it was not run.'));
-            }
+            appendBoundedFailureTraces(
+              session,
+              rawCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              rawCalls.length,
+              'The endpoint returned tool-call data without finish_reason=tool_calls; it was not run.',
+              'invalid_arguments',
+            );
             // Protocol failures are recoverable once per episode: nothing was
             // executed, so a single corrective round with the failure evidence
             // cannot duplicate a side effect or bypass an approval.
@@ -576,16 +579,135 @@ export class ToolChatService {
             this.jobs.delete(session.jobId);
             return this.completeResult(session);
           }
-          const calls = rawCalls.filter(isValidToolCall);
-          for (const invalid of rawCalls.filter((call) => !isValidToolCall(call))) {
-            session.trace.push(makeFailureTrace(randomUUID(), invalid, 'The model returned malformed tool-call data; it was not run.'));
+          const calls: OpenAIToolCall[] = [];
+          let invalidCount = 0;
+          for (const call of rawCalls) {
+            if (isValidToolCall(call)) calls.push(call);
+            else invalidCount += 1;
           }
+          if (invalidCount > 0) {
+            appendBoundedFailureTraces(
+              session,
+              rawCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              rawCalls.length,
+              'The model returned malformed tool-call data; the entire batch was refused.',
+              'invalid_arguments',
+            );
+            const evidence = `The model returned ${invalidCount} malformed tool-call entry/entries; no call in the batch was executed.`;
+            if (this.beginRecovery(session, evidence)) continue;
+            session.recoveryFailed = session.recoveryAttempts > 0;
+            session.lastAssistantContent = 'The endpoint returned malformed tool-call data. No tool was executed.';
+            session.lastReasoning = message?.reasoning_content ?? message?.reasoning ?? undefined;
+            session.lastFinishReason = choice?.finish_reason ?? undefined;
+            this.jobs.delete(session.jobId);
+            return this.completeResult(session);
+          }
+
+          const callIds = new Set<string>();
+          const duplicateIds = new Set<string>();
+          for (const call of calls) {
+            if (callIds.has(call.id)) duplicateIds.add(call.id);
+            else callIds.add(call.id);
+          }
+          if (duplicateIds.size > 0) {
+            appendBoundedFailureTraces(
+              session,
+              calls.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              calls.length,
+              'The model returned duplicate tool-call IDs; the entire batch was refused.',
+              'invalid_arguments',
+            );
+            if (this.beginRecovery(session, 'The model returned duplicate tool-call IDs; no tool in the batch was executed.')) continue;
+            session.recoveryFailed = session.recoveryAttempts > 0;
+            session.lastAssistantContent = 'The endpoint returned duplicate tool-call IDs. No tool was executed.';
+            this.jobs.delete(session.jobId);
+            return this.completeResult(session);
+          }
+
           if (calls.length > MAX_TOOL_CALLS_PER_ROUND) {
-            for (const excess of calls.slice(MAX_TOOL_CALLS_PER_ROUND)) {
-              session.trace.push(makeFailureTrace(randomUUID(), excess, 'The model returned more than the per-round tool-call limit; this call was refused.'));
-            }
+            const excess = calls.slice(MAX_TOOL_CALLS_PER_ROUND);
+            appendBoundedFailureTraces(
+              session,
+              excess.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              excess.length,
+              'The model returned more than the per-round tool-call limit; this call was refused.',
+              'budget_exceeded',
+            );
           }
           const accepted = calls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
+          const preflightLimit = Math.min(
+            accepted.length,
+            Math.max(0, session.limits.maxCalls - session.callCount),
+          );
+          const preparedCalls: PreparedToolCall[] = [];
+          let invalidCall: OpenAIToolCall | undefined;
+          let preflightError: unknown;
+          for (const call of accepted.slice(0, preflightLimit)) {
+            try {
+              preparedCalls.push(this.executor.parseAndPrepare(
+                call.function.name,
+                call.function.arguments,
+                this.context(session, signal),
+              ));
+            } catch (error) {
+              invalidCall = call;
+              preflightError = error;
+              break;
+            }
+          }
+          if (invalidCall) {
+            const detail = safeError(preflightError);
+            const failureKind: ToolFailureKind = preflightError instanceof ToolExecutionError
+              ? preflightError.failureKind
+              : 'invalid_arguments';
+            const expectedSchema = preflightError instanceof ToolExecutionError ? preflightError.expectedSchema : undefined;
+            appendBoundedFailureTraces(
+              session,
+              accepted.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              accepted.length,
+              `The model returned an invalid tool-call batch; the entire batch was refused. ${detail}`,
+              failureKind,
+            );
+            // Keep the protocol round-trip coherent while explicitly refusing
+            // every call: the failing call receives the safe schema signature,
+            // siblings receive a batch-refused result, and nothing is dispatched.
+            session.messages.push({
+              role: 'assistant',
+              content: typeof message?.content === 'string' ? message.content : null,
+              tool_calls: accepted,
+            });
+            for (const call of accepted) {
+              const isInvalid = call.id === invalidCall.id;
+              session.messages.push(toolResultMessage(call, JSON.stringify({
+                error: isInvalid
+                  ? `The entire batch was refused because this call failed validation: ${detail}`
+                  : 'The entire batch was refused because another call failed validation; this call was not run.',
+                failureKind: isInvalid ? failureKind : 'invalid_arguments',
+                ...(isInvalid && expectedSchema ? { expectedSchema } : {}),
+                availableTools: session.definitions.map((definition) => definition.function.name),
+                batchRefused: true,
+                guidance: 'Correct this at most once: re-issue the entire batch with calls matching their published schemas, choose another listed tool, or answer directly. No call in this batch was executed.'
+              })));
+            }
+            const fingerprint = createHash('sha256')
+              .update(JSON.stringify([invalidCall.function.name, invalidCall.function.arguments]))
+              .digest('hex');
+            const failures = (session.failedCallCounts.get(fingerprint) ?? 0) + 1;
+            session.failedCallCounts.set(fingerprint, failures);
+            const evidence = `A tool-call batch contained an invalid or disallowed call (${detail}); no call in the batch was executed.`;
+            if (session.recoveryAttempts === 0 && failures === 1 && this.beginRecovery(session, evidence)) continue;
+            if (session.recoveryAttempts > 0 || failures > 1) {
+              session.recoveryFailed = true;
+              session.recoveryEvents.push('The model repeated an invalid tool call after its single corrective opportunity; the entire batch remained unexecuted.');
+              return this.finishBudget(session, 'The model repeated an invalid tool call after its single corrective opportunity. No call in the batch was executed, and the tool loop ended.');
+            }
+            session.lastAssistantContent = 'The endpoint returned an invalid tool-call batch. No tool was executed.';
+            session.lastReasoning = message?.reasoning_content ?? message?.reasoning ?? undefined;
+            session.lastFinishReason = choice?.finish_reason ?? undefined;
+            this.jobs.delete(session.jobId);
+            return this.completeResult(session);
+          }
+
           session.lastAssistantContent = typeof message?.content === 'string' ? message.content : '';
           session.lastReasoning = message?.reasoning_content ?? message?.reasoning ?? undefined;
           session.lastFinishReason = choice?.finish_reason ?? undefined;
@@ -595,7 +717,10 @@ export class ToolChatService {
               content: typeof message?.content === 'string' ? message.content : null,
               tool_calls: accepted,
             });
-            session.pendingQueue = accepted;
+            session.pendingQueue = accepted.map((call, index) => ({
+              call,
+              ...(index < preparedCalls.length ? { prepared: preparedCalls[index] } : {}),
+            }));
             continue;
           }
           if (this.beginRecovery(session, 'The model returned malformed tool-call data (invalid correlation ID, type, function name, or arguments); no tool was executed.')) continue;
@@ -828,6 +953,37 @@ function wrapUntrustedOutput(content: string, maximumBytes: number): string {
   let excerpt = bytes.subarray(0, remaining).toString('utf8');
   while (Buffer.byteLength(excerpt, 'utf8') > remaining) excerpt = excerpt.slice(0, -1);
   return `${prefix}${excerpt}`;
+}
+
+function appendBoundedFailureTraces(
+  session: ToolChatSession,
+  examples: unknown[],
+  totalCount: number,
+  error: string,
+  failureKind: ToolFailureKind,
+): void {
+  const detailLimit = MAX_TOOL_CALLS_PER_ROUND;
+  if (examples.length === 0) {
+    session.trace.push(makeFailureTrace(
+      randomUUID(),
+      { function: { name: 'tool_call_batch' } },
+      error,
+      { failureKind },
+    ));
+    return;
+  }
+  for (const call of examples.slice(0, detailLimit)) {
+    session.trace.push(makeFailureTrace(randomUUID(), call, error, { failureKind }));
+  }
+  const omitted = Math.max(0, totalCount - Math.min(examples.length, detailLimit));
+  if (omitted > 0) {
+    session.trace.push(makeFailureTrace(
+      randomUUID(),
+      { function: { name: 'tool_call_batch' } },
+      `${omitted} additional tool call(s) were refused and omitted from individual traces. ${error}`,
+      { failureKind },
+    ));
+  }
 }
 
 function makeFailureTrace(

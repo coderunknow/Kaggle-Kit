@@ -24,7 +24,7 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
                             • verifies streaming support
 ```
 
-## dev7 candidate status
+## v0.1.0-beta1 candidate status
 
 Guided connection setup, Basic/Advanced settings, an explicit reviewed
 keyless built-in grant, a **model catalog** (Qwen3.8-27B, Raon-1 mini
@@ -214,8 +214,8 @@ Provider availability, account terms and fees are separate from the local
 checks.
 
 See [docs/chat-interface.md](docs/chat-interface.md) and [docs/security.md](docs/security.md)
-for details, and [docs/release-notes/0.1.0-dev7.md](docs/release-notes/0.1.0-dev7.md)
-for this development release's changes and verification limits.
+for details, and [docs/release-notes/0.1.0-beta1.md](docs/release-notes/0.1.0-beta1.md)
+for this beta candidate's changes and verification limits.
 
 ## Security model
 
@@ -284,10 +284,17 @@ for what each layer proves and what it cannot.
 A release is built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
 from the tagged commit: the workflow runs the checks, builds the application,
 stages the assets, validates them and uploads them to a prerelease of the same
-tag. Nothing is uploaded by hand.
+tag. Nothing is uploaded by hand. A tag push keeps this behavior; a manual
+release dispatch additionally requires `publish_release: true` (default:
+`false`).
+
+The scheduled Nightly Release workflow is verification-only: it validates and
+stages artifacts but never publishes on a schedule. Manual nightly publication
+requires the explicit `publish_nightly: true` dispatch input (default:
+`false`). Neither CI nor a local release dry-run publishes anything.
 
 ```bash
-git tag v0.1.0-dev7 <commit> && git push origin v0.1.0-dev7
+git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1
 ```
 
 The version of `package.json` has to match the tag and the release notes have

@@ -1328,3 +1328,456 @@ defect found there by the audit); the KRAFTON-codeload and
 Qwen-GGUF-default digest-pin risks stay documented open risks - both are
 deliberate, disclosed product decisions whose change needs live-download
 evidence this session must not produce.
+
+
+## 2026-10-24 - beta1 audit continuation on arena/295bec84-kaggle-kit
+
+### Confirmed baseline and GitHub evidence
+
+- Active local branch: `arena/295bec84-kaggle-kit`, HEAD/base
+  `1a864791f548e0a5fdb2267d49aefa6df36b3cd0`; initially clean. No branch
+  switch, commit, push, merge, tag or release performed at this point.
+- Queried GitHub directly. `main` latest nightly run `40029657246` is a
+  scheduled failure on the baseline. Job `validate nightly build inputs and
+  artifacts` failed at step `Resolve nightly metadata`; later checks and
+  staging were skipped; publish job was skipped. `gh run view ... --log-failed`
+  returned an EOF while downloading logs. Do not claim the unavailable hosted
+  logs were inspected. Reproduced the same malformed Bash assignment locally
+  with exit 2 before changing the workflow.
+- Reviewed open Draft PR #20's current metadata and actual diff. It is based on
+  the other branch `arena/02f947f2-kaggle-kit`, head
+  `d32e471194b756b720f389e8a5e98bc269afb7fd`; its actual files overlap the
+  workflow fix, calculator conversion tests, fast-uri update and beta1 docs,
+  but do not include this branch's `server/tools/chat.test.ts` argument-order
+  regression. Its five checks (Browser E2E, Docker sandbox, notebook tests,
+  typecheck/lint/test/build, Windows launcher) pass on that head only. No
+  result from PR #20 is attributed to this branch.
+
+### Changes made
+
+- `.github/workflows/nightly-release.yml`: remove escaped quotes in both
+  `VERSION=$(node -p ...)` command substitutions.
+- `tools/test_workflow_security.py`: execute the two exact assignment lines
+  read from the workflow; assert output matches package metadata; pin beta1 in
+  both the test's accepted shape and the release workflow regex.
+- `server/tools/calculator.test.ts`: relative-tolerance conversion examples,
+  reverse/category/normalization/edge-case regressions. Calculator production
+  implementation unchanged; no reported defect reproduced.
+- `server/tools/chat.test.ts`: deterministic tool-loop case checks declared
+  calculator conversion arguments are forwarded as `value/from/to` and result
+  is returned. Mock only; not model evidence.
+- `package-lock.json`: fast-uri 3.1.8→3.1.9 lockfile-only; `npm ci` refreshed
+  installed tree. package/lock/app versions align at `0.1.0-beta1`; README and
+  beta release-note input added/updated. `{{SOURCE_SHA}}` remains a deliberate
+  template token for dry-run rendering (replacing it in tracked source would
+  create an incorrect/circular hash).
+- `docs/release/environment.json`: append dated test evidence and latest local
+  E2E blocker, preserving earlier historical entries.
+- Before appending to these two logs, SHA-256 was recorded as
+  `DESIGN_LOG.md=271b4d5ab79af700da52492c5e2959bc3faea680e132f049115e04004d428102`
+  and `AGENTS_LOG.md=ceea997ebe91735f9ada8b72360d12de9d44eae6e9ab5fd2a08f9a66e57e30cd`.
+  Rechecked immediately before append; both matched. This entry is appended
+  only; prior content was not changed.
+
+### Exact Verification Results
+
+- `npm ci`: 372 packages added/audited; 0 vulnerabilities; `npm audit` later
+  reports all severity counts zero.
+- `npm run typecheck`: pass; `npm run lint`: pass.
+- `npm test`: 48 files, 497 passed.
+- `npm run build`: pass; production client and bundled standalone server.
+- `npm run check:integration`: pass, 33/33.
+- Python notebook tests (3.11.2 venv with requests installed from PyPI): 105
+  pass / 0 skipped. Python tools tests: 32 pass / 0 skipped.
+- Focused security subset: 12 Vitest files / 155 passed; workflow Python tests
+  10 passed. Exact nightly assignment regression ran both workflow lines.
+- Prompt eval `--dry-run`: exit 0; 17 cases / 36 automatic / 45 manual
+  criteria; canonical text matches research prompt, SHA prefix
+  `2f52bd9a1c9c1935`; no endpoint/model output/score.
+- Conversion direct outputs: `100°F→°C=37.77777777777783`,
+  `100 km/h→mph=62.1371192237334`; no arithmetic defect reproduced.
+- E2E: attempted five browser tests with temporary @sparticuz/chromium
+  executable; all blocked before tests because `/tmp/chromium` cannot load
+  `libnspr4.so` (also missing NSS shared libs). Not a test pass. Docker and
+  real Windows were not run locally. Live model/Kaggle work was not attempted.
+- `git diff --check`: pass.
+
+**Still pending at this append:** commit the candidate on this branch, run
+`tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1` against the committed
+source archive, push only `arena/295bec84-kaggle-kit`, open one unmerged PR if
+appropriate, and report this branch's own CI. Keep any candidate acceptance
+status partial until local release dry-run and branch CI are confirmed. No
+publication or deployment is authorized.
+
+
+## 2026-10-24 - beta1 release dry-run result and notation correction
+
+On commit `1df130b00c359f646967a42dc60c9fb49c1696a8`, ran
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1`: exit 0. The release check runner passed typecheck,
+lint, 497 Vitest tests, 105 notebook tests and 32 tools tests; production
+build passed; integration returned 33/33; notebook, app and source archives,
+report, manifest and SHA256SUMS were staged; both staged-release and simulated
+download validation said `The release v0.1.0-beta1 is valid.` The rendered
+notes contain SHA `1df130b00c359f646967a42dc60c9fb49c1696a8`. No tag/release was
+created. Run this again after final evidence/log append so the exact final HEAD
+is also covered.
+
+Append-only notation correction: the F1 inline sample in the prior entry
+shows four backslashes because of the string literal used to append it. The
+original workflow line contained two literal backslash characters (one before
+each inner quote), reproduced from the actual file. The test executes actual
+workflow text and is unaffected.
+
+
+## 2026-10-24 - final-documented candidate dry-run repeated
+
+Repeated the full command on committed candidate
+`a4eb464ecfe0bec96bb558b8755703847cbd3774` after appending the earlier result:
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+0.1.0-beta1 v0.1.0-beta1` exited 0. Check runner (typecheck/lint, 497 Vitest,
+105 notebook, 32 tools), build, 33/33 built-bundle integration checks, archive
+staging, manifest/SHA256SUMS, artifact validation and simulated downloaded
+validation all passed; the rendered notes contain the candidate SHA. This did
+not create a tag or release. A further documentation-only append is pending to
+record this repeat and final branch CI remains pending.
+
+
+## 2026-10-24 - branch CI completed (PR #21)
+
+After pushing `4767acfcd7f89b5f1844547079b45505f96f64b3` and opening Draft
+PR #21, watched GitHub run `40059116874`. All five jobs passed: Browser E2E
+(48s), Docker sandbox integration (24s), notebook tests (19s), typecheck/lint/
+test/build (1m7s), Windows launcher (47s). CodeRabbit passed too. This is
+independent verification on the session branch; the already-open PR #20 run
+was not used as a substitute. Local browser still cannot launch; no live model
+or Kaggle test ran. PR #21 remains unmerged/Draft. A docs-only CI evidence
+append follows; repeat CI and release dry-run on the resulting exact head.
+
+## 2026-10-24 - beta1 adversarial audit continuation
+
+- Continued on `arena/295bec84-kaggle-kit` from `80be4f1`; PR #21 remains
+  separate from PR #20. Before appending, SHA-256 was
+  `DESIGN_LOG.md=2d579da9ec0f989eb65db25b3a416f82bf27f0fb3763264dfbeec708ab31de57`,
+  `AGENTS_LOG.md=70bbf8e71e6fbf7b3edaa44ada6e7ca1be012ebae5f5510da479e498e568dfe3`.
+  Only appended bytes; previous content remains an exact prefix.
+- Reproduced two defects using injected mock completions: 500 valid calls
+  yielded 500 traces / 182,691 serialized bytes despite the eight-call cap;
+  two calls with a duplicate ID both executed. Fixed with bounded sampled plus
+  aggregate refusal traces and whole-batch refusal on duplicate correlation
+  IDs; bounded recovery remains the existing one-attempt policy. No approval
+  bypass reproduced.
+- Added permanent regressions for excess calls, mismatched finish reason,
+  duplicate IDs, execution count, and serialized result bound. Final local
+  Vitest at this working-tree state: **48 files / 500 passed**.
+- `npm run typecheck`, `npm run lint`, `npm run build`, `npm run check:integration`
+  (33/33), notebook tests (105/0 skipped), tools tests (32), npm audit
+  (0 vulnerabilities), offline prompt evaluation dry-run (17/36/45), and
+  `git diff --check` passed. Playwright local: blocked before assertions,
+  5 launch failures, missing Chromium headless executable; no pass claimed.
+- Updated beta1 release-note input and environment evidence. Final committed
+  release dry-run and this branch's post-fix CI are pending; scheduled nightly
+  rerun and all live deployment/provider/Docker/Windows environments are
+  unverified. No external call, live model, Kaggle deployment, tag, release,
+  merge, or publication occurred. Full detailed evidence is in `DESIGN_LOG.md`.
+
+### beta1 audit: committed-head dry-run and CI
+
+- `f1671d7dde24fea095fb8b50379fd3fc61341ee3` release dry-run exited 0:
+  typecheck/lint; 48 files / 500 Vitest tests; notebook 105; tools 32; build;
+  integration 33/33; staged and simulated-download artifact validation both
+  valid. No tag/release. Manifest artifact SHA-256 values and sizes are recorded
+  in `DESIGN_LOG.md`; they are local hashes, not published asset digests.
+- GitHub run `40060535716` on that exact PR #21 commit: all five jobs passed,
+  including hosted Browser E2E, real-Docker sandbox, Windows launcher, notebook
+  suite and typecheck/lint/test/build/integration. Informational Node 20 and
+  `ubuntu-latest` migration annotations only. PR #20 remains distinct.
+- PR #21 stays open/draft. The scheduled post-fix Nightly Release run is still
+  outstanding and was not triggered; no publication, merge, tag or deployment.
+  Final documentation-only head gets its own CI/dry-run check after commit.
+
+## 2026-10-24T05:03:27Z - beta1 fail-closed publication and batch preflight
+
+**Exact tested code SHA and branch.** `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`
+(`fix: gate publishers and preflight tool batches`) on
+`arena/295bec84-kaggle-kit`; base `main` at
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0`. PR #21 head was advanced from
+`8f57dfb16a6066a84fd46066d3393f7f8de3c44e` to this SHA and pushed only to the
+session branch. Before this append, `DESIGN_LOG.md` SHA-256 was
+`6d2b2a1a7030a0e32fff8f6089a8bd97faa56384581c82e0985c59879441238f` and
+`AGENTS_LOG.md` SHA-256 was
+`c5669aa89f6351ddf0bbb87874165e37f9f6d45196408369f02f783501446106`; this
+entry is appended after those byte prefixes.
+
+**Findings and changes.**
+
+- F1: nightly metadata quoting defect is fixed in both jobs; workflow tests
+  execute the actual assignments/validation with hostile IDs/attempts. The
+  schedule cannot reach the Nightly publisher; manual Nightly and Release
+  publication require their correct `workflow_dispatch` event and explicit
+  boolean `true`, default false. Release `v*` tag-push behavior is preserved;
+  write permissions are scoped to publisher jobs. Event matrix, command-location,
+  action pinning, shell-boundary and permission tests are included.
+- F2: historical Fahrenheit and speed conversion errors did not reproduce;
+  factors/arithmetic were not changed. An independently reproduced malformed
+  null-unit input raised `TypeError`; the calculator now rejects invalid direct
+  values/units/expressions through `CalculatorInputError`. Unit aliases and
+  numeric boundaries have regression coverage.
+- F3: `npm audit --json` after the pre-existing lockfile-only
+  `fast-uri@3.1.9` correction reported zero vulnerabilities (all severity
+  counts zero). No package change was made in this continuation.
+- F4: model tool-call batches are rejected as a whole for structural/schema
+  failures or duplicate IDs; every in-budget accepted call is preflighted
+  before dispatch. Empty/non-array protocol payloads are rejected and trace
+  output remains bounded. Regression evidence is mock-only.
+
+**Commands and local status on the committed code SHA.**
+
+- `npx vitest run server/tools/calculator.test.ts server/tools/chat.test.ts --reporter=dot`: PASS, 53/53; `npm run typecheck`: PASS.
+- `python3 -m unittest tools.test_workflow_security -v`: PASS, 14/14.
+- `npm test -- --reporter=dot`: PASS, 48 files / 506 tests.
+- `npm run lint`, typecheck, `npm run build`, and `npm run check:integration`: PASS; integration 33/33 against local mock upstream. Build emitted non-fatal optional PDF.js canvas/font warnings.
+- `PATH=/tmp/kaggle-kit-venv/bin:$PATH python3 -m unittest discover -s notebooks -p 'test_*.py' -v`: PASS, 105/105, no skips. Same command under `tools`: PASS, 36/36. Notebook test sockets emitted non-fatal `ResourceWarning`s.
+- `npm audit --json`: PASS, 0 vulnerabilities; `npm ls fast-uri --all`: `ajv@8.20.0 -> fast-uri@3.1.9`.
+- `python3 research/qwen-system-prompt/eval/run_eval.py --dry-run`: suite validation PASS, 17 cases / 36 automated checks / 45 manual criteria; no endpoint, model output or score.
+- PyYAML `BaseLoader` parse of `.github/workflows/nightly-release.yml`, `release.yml`, `ci.yml`: PASS. `git diff --check`: PASS.
+- `PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1`: PASS on exact committed SHA. Check runner, build, 33/33 integration, staging, manifest/checksum, staged validation and simulated downloaded-asset validation all passed. Ignored artifacts were backed up/restored. No tag/release/upload.
+
+**Hosted evidence and PR state.** GitHub Actions PR run `40064511238` on exact
+SHA `6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`: all five jobs PASS (Browser
+E2E 57s, Docker sandbox 25s, notebook tests 24s, typecheck/lint/test/build
+1m3s, Windows launcher 53s). Push run `40064507267` also passed all five.
+CodeRabbit passed. Kilo Code Review concluded `ACTION_REQUIRED`, title
+“Insufficient credits to run review”; Copilot reported insufficient remaining
+quota. Neither is approval. PR #21 was marked Ready for review and remains
+OPEN; `reviewDecision` is empty and `mergeStateStatus` is `UNSTABLE`.
+
+**Policy, tests not run, and side effects.** `main.protected` is reported false
+and repository rulesets list is empty, but detailed branch-protection API
+returns 403. `gh pr checks 21 --required` says no required checks were reported
+for the topic branch; inaccessible policy is not inferred. No merge or review
+bypass was attempted. Local Playwright was not rerun: the earlier attempt was
+blocked before assertions by the absent Chromium binary; hosted Browser E2E
+passed on this exact SHA. No local Docker or real Windows runtime was run.
+No post-fix Nightly schedule run or workflow dispatch (especially no
+publication-enabled dispatch), live model inference, Kaggle deployment/tunnel,
+external provider/MCP/HTTP call, tag, release, upload, package publication,
+deployment or merge occurred. Confirmed `git ls-remote --tags origin
+refs/tags/v0.1.0-beta1` returned no ref and `gh release view v0.1.0-beta1`
+returned “release not found”.
+
+**PR #20 comparison.** Re-fetched PR #20 at
+`d32e471194b756b720f389e8a5e98bc269afb7fd` and compared its tree and semantic
+changes to PR #21. Beta version/package metadata, `fast-uri` lockfile update,
+nightly fix, conversion examples and prior release/test evidence are retained
+in PR #21; PR #21 adds the chat and workflow hardening. No unique useful
+implementation was found missing. PR #20 remains OPEN because PR #21 has not
+merged; no PR was closed. PR #21 also remains OPEN/Ready because the quota-bound
+review check is unresolved and repository merge policy cannot be confirmed.
+
+## 2026-10-24T05:07:39Z - final documentation-head dry-run and CI
+
+**Exact final source/evidence SHA:**
+`e50c4198aba81ea2c99fde141c30e19865f45d18` on
+`arena/295bec84-kaggle-kit`; code implementation remains at
+`6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4`. Immediately before this append,
+`DESIGN_LOG.md` SHA-256 was
+`4329c40c63e4b87fb5046d7aabc3286ec543b148f91c9546563fb2ae07ee463e`,
+`AGENTS_LOG.md` SHA-256 was
+`aaca00047483236d6026d1441011c8d9831751fc463e25d78e786e668cfce0c0`, and
+`docs/release/environment.json` SHA-256 was
+`2462b84f1e946d87826d3aedc3aec9cea32721a3bd6152fe9e6a38457149211f`.
+This entry is appended after the exact log prefixes.
+
+**Local dry-run:**
+`PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1`
+on exact SHA `e50c4198aba81ea2c99fde141c30e19865f45d18` exited 0. The script's
+check runner passed typecheck, lint, full Vitest, notebook and release-tool
+tests; production build passed; built-bundle/mock integration was 33/33; the
+notebook, app and source ZIPs, report, manifest and checksums staged; both
+staged and simulated downloaded-asset validation passed. Rendered release notes
+contained the exact SHA. Generated files were local only; existing ignored
+artifacts were backed up/restored. No upload, tag or release occurred.
+
+**Hosted CI:** PR run `40064899655` on exact SHA
+`e50c4198aba81ea2c99fde141c30e19865f45d18`: all five GitHub Actions jobs
+PASS (Browser E2E 57s; Docker sandbox 19s; notebook tests 23s;
+typecheck/lint/test/build 53s; Windows launcher 56s). Push run `40064896180`
+also passed all five. CodeRabbit passed. Kilo Code Review was
+`ACTION_REQUIRED`; check-run output says “Review could not start because the
+account has insufficient credits.” This is not a completed review or approval.
+
+**Final state and blockers.** At this recheck PR #21 is OPEN/Ready at the exact
+SHA, `mergeStateStatus=UNSTABLE`, review decision empty, with no human approval.
+Kilo review is still blocked by credits. The main branch API reports
+`protected=false` and rulesets list is empty, but branch-protection detail still
+returns HTTP 403; no merge-policy inference is made. `gh pr checks --required`
+reports no required checks for the topic branch, which does not resolve the
+inaccessible policy. PR #20 remains OPEN because PR #21 has not merged. No
+merge, self-approval, review bypass or settings change occurred.
+
+No Nightly schedule test or workflow dispatch was run; manual publication input
+was never true. No live model, Kaggle deployment/tunnel, external provider/MCP/
+HTTP call, tag, release, upload, package publication or deployment occurred.
+No remote `v0.1.0-beta1` tag or GitHub release exists. Local Playwright was not
+rerun (prior attempt blocked before assertions by absent Chromium); hosted
+Browser E2E passed on this SHA. Live inference and Kaggle behavior remain
+NOT RUN, not verified by mock tests or hosted UI/Docker/Windows jobs.
+
+## 2026-10-24T05:33:11Z - CodeRabbit follow-up fixes and exact-source validation
+
+**Repository/PR preflight.** Work remained on `arena/295bec84-kaggle-kit`.
+Before changes, local HEAD, remote branch, and PR #21 all identified
+`c199b1fbbb08fa35ab6d79bf6bfc75e1e5136f4`; PR #21 was OPEN/Ready, base
+`main`, and not a draft. The topic branch has no configured Git upstream, so
+pushes used the explicit authorized branch name. The committed fixes below
+are exact source SHA `2ecf50031996c03a10150a3121647a4ab8691754`.
+
+**Findings and fixes (four review findings).**
+
+1. `README.md` showed the stale `v0.1.0-dev7` tag example while the candidate
+   package/release notes are beta1. Updated only the example to
+   `v0.1.0-beta1`; no tag was created.
+2. `.github/workflows/release.yml` described a false “defaults to validation
+   only” behavior. Manual dispatch with the default false skips the only job;
+   validation happens only on the preserved tag-push path or explicit manual
+   publication. Updated the input description to say manual publication needs
+   `publish_release: true` and the default is false. No workflow trigger,
+   permission, secret, or publication gate changed.
+3. `server/tools/chat.ts` emitted an “additional tool calls” aggregate trace
+   when the model said `finish_reason=tool_calls` but the payload was empty,
+   null, or absent. When there are no representative calls, the handler now
+   emits one generic failed `tool_call_batch` trace without an incorrect
+   additional-call count. `server/tools/chat.test.ts` covers all three shapes
+   and confirms execution is not invoked.
+4. `tools/test_workflow_security.py` used substring membership to prove
+   publication commands were in guarded jobs; duplicate commands outside the
+   job could evade that assertion. Added source-offset mapping/job spans and
+   compare every command match position against the guarded job bounds. A
+   synthetic workflow regression has one command inside the publisher and a
+   second outside it.
+
+**Failing-first evidence.** Before fixes, `npx vitest run
+server/tools/chat.test.ts --reporter=dot` failed the three new empty/null/missing
+payload cases because the old trace claimed “1 additional tool call(s)”. The
+first `python3 -m unittest tools.test_workflow_security -v` run also failed the
+new stale-tag and release-description assertions and errored because the
+source-span helper had not yet been implemented. These were expected
+regression failures; after the fixes, focused Vitest passed 2 files / 55 tests
+(calculator and chat), and the workflow-security suite passed 17/17.
+
+**Local checks on exact source SHA `2ecf50031996c03a10150a3121647a4ab8691754`.**
+
+- `npm run typecheck && npm run lint && npm test -- --reporter=dot`: PASS;
+  TypeScript, ESLint, and 48 Vitest files / 508 tests.
+- `PATH=/tmp/kaggle-kit-venv/bin:$PATH python -m unittest discover -s notebooks -p 'test_*.py' -v`: PASS, 105/105.
+- Same command with `-s tools`: PASS, 39/39 (including 17 workflow-security tests).
+- `npm audit --json`: PASS, zero vulnerabilities in all severities.
+- `python3 research/qwen-system-prompt/eval/run_eval.py --dry-run`: PASS
+  validation of 17 cases / 36 automated checks / 45 manual criteria. No
+  endpoint was supplied; no inference, model output, or score was produced.
+- PyYAML 6.0.3 `BaseLoader` in `/tmp/kaggle-kit-venv` parsed CI (5 jobs),
+  Nightly Release (2), and Release (1); release environment JSON parsing and
+  `git diff --check` passed. The system Python lacked PyYAML on the first
+  attempt; the isolated venv parse succeeded without changing project deps.
+- `PATH=/tmp/kaggle-kit-venv/bin:$PATH tools/release-dry-run.sh
+  0.1.0-beta1 v0.1.0-beta1`: PASS on the exact source SHA. The checks runner,
+  production build, 33/33 built-app/mock-upstream integration checks, staging,
+  manifest/checksums, staged validation, and simulated downloaded-asset
+  validation all passed. The rendered notes contained the exact SHA. Ignored
+  `dist/`, `release/`, `downloaded/`, `checks.json`, and `release-notes.md`
+  were backed up and restored. Optional PDF.js canvas/font warnings were
+  non-fatal. No upload or publication was part of this script.
+- `npm audit` found no advisories; no dependency suppression or extra project
+  dependency was introduced by these fixes.
+
+**Exact-source hosted evidence.** Push run
+`40066555290` (https://github.com/coderunknow/Kaggle-Kit/actions/runs/40066555290)
+and PR run `40066557948`
+(https://github.com/coderunknow/Kaggle-Kit/actions/runs/40066557948) both ran
+on exact SHA `2ecf50031996c03a10150a3121647a4ab8691754` and passed all five GitHub
+Actions jobs: Docker sandbox integration, notebook/release-tool tests,
+typecheck/lint/test/build/integration, Browser E2E, and Windows launcher.
+Hosted Browser E2E passed; local Playwright was NOT RUN because the local
+Chromium browser cache is absent. Kilo Code Review failed with
+`action_required` / “Insufficient credits to run review”; the review check is
+not an approval. The earlier CodeRabbit review is `COMMENTED`, not approval;
+its green check is not a new human review. Its included allowance was exhausted,
+so no repeat review was requested.
+
+**Current blockers and side effects.** Fresh PR #21 state after this push:
+OPEN, Ready (not draft), head `2ecf50031996c03a10150a3121647a4ab8691754`,
+`mergeStateStatus=UNSTABLE`, empty `reviewDecision`, no review requests and no
+human approval. `gh pr checks --required` reported no required checks on the
+topic branch, which does not resolve merge policy. The effective branch-rules
+endpoint returned HTTP 403 (“Resource not accessible by integration”); the
+rulesets endpoint returned an empty list. Do not infer policy is absent from
+these results. No merge, self-approval, review bypass, or policy/settings
+change occurred. PR #20 freshly remains OPEN/Draft at
+`d32e471194b756b720f389e8a5e98bc269afb7fd`; it was not closed because PR #21
+has not merged. `git ls-remote` returned no `v0.1.0-beta1` tag and GitHub
+reported no such release. No workflow dispatch, tag, release, asset upload,
+package/image publication, deployment, live model inference, Kaggle tunnel, or
+external provider/MCP/HTTP test occurred. All hosted integration evidence is
+mock or test-environment evidence, not live integration proof.
+
+The local and release-dry-run results in this section are tied to source SHA
+`2ecf50031996c03a10150a3121647a4ab8691754`; any later log-only commit requires
+fresh exact-HEAD verification before it can be reported as the final head.
+
+### Append-only policy-evidence correction (same audit timestamp)
+
+Correction to the wording above: the fresh effective branch-rules request
+`GET /repos/coderunknow/Kaggle-Kit/rules/branches/main` returned `[]`; the
+rulesets list returned length 0. `GET /branches/main` returned
+`protected:false`. The **branch-protection detail** endpoint and
+`/branches/main/protection/required_pull_request_reviews` each returned HTTP
+403 (`Resource not accessible by integration`). Thus the effective-rules
+endpoint did not return 403; detailed review/protection policy remains
+inaccessible. None of these results is used as permission to merge: PR #21 has
+no approval, Kilo's review check is credit-blocked, and the standing acceptance
+rule forbids merging while review or policy is unresolved.
+
+## 2026-10-24T08:19:00Z - PR #21 final policy and review-thread checkpoint
+
+This append-only checkpoint records a fresh pre-merge audit of PR #21 at source
+SHA `bb65378b57b7e8e2d97abc70641d55d32f1d35da` (base `main` SHA
+`1a864791f548e0a5fdb2267d49aefa6df36b3cd0`). The isolated audit clone was
+clean; the original local checkout at the base SHA, with its 14 tracked edits
+and untracked beta1 release note, was left untouched.
+
+- Re-read the changed tool-call batch/preflight paths, calculator conversion
+  changes, release/nightly publication gates, and workflow-security assertions.
+  No new defect was confirmed. The four current CodeRabbit findings were
+  checked against this exact source and fixed: manual Release wording, beta1
+  tag example, empty/missing/null tool-call trace wording, and positional
+  publisher-job assertions. Factual replies were added and all four threads
+  resolved; these author replies are not approvals. `python3 -m unittest
+  tools.test_workflow_security -v` passed 17/17 on the exact source. Earlier
+  full local checks and exact-SHA CI results are recorded above.
+- Refreshed PR #21: OPEN/Ready, exact head `bb65378...`, base `1a86479...`,
+  mergeable, `UNSTABLE`, empty review decision, no review requests, and no
+  merge-queue entry. Both PR run `40066780614` and push run `40066776488` passed
+  all five CI jobs. Kilo Code Review is the only non-success status and reports
+  `ACTION_REQUIRED` because of insufficient credits; CodeRabbit's green status
+  and the author replies are not approvals.
+- Refreshed effective policy evidence: `GET /branches/main` reports
+  `protected:false`; applicable branch rules are `[]`; parent-inclusive
+  rulesets count is 0; `gh pr checks 21 --required` reports no required checks;
+  the PR has no merge-queue entry. On that positive evidence, this audit found
+  no enforced approval count, eligible-independent-reviewer requirement,
+  required status check, stale-approval rule, or merge-queue requirement.
+  The detailed classic protection endpoint still returns HTTP 403, so its
+  hidden detail was not inspected; no policy/settings change or bypass was
+  made. The sole collaborator visible is the PR author/admin, and no
+  self-approval was submitted.
+- The PR description was changed only to replace its obsolete “open and draft”
+  sentence with “open and ready for review”; other technical/history text was
+  preserved. GitHub reports `UNSTABLE` while the only non-success check is the
+  credit-blocked Kilo status; that status is not reported as required by the
+  available effective-policy checks.
+
+This is a pre-merge record, not a claim that merge has happened. The next
+operation is the ordinary GitHub merge mechanism only after the appended-log
+head's exact CI is green; no admin/bypass option is authorized. No tag, release,
+publication, workflow dispatch, deployment, or live model call occurred.

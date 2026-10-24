@@ -62,6 +62,7 @@ function unary(args: number[], operation: (value: number) => number): number {
 }
 
 function tokenize(expression: string): Token[] {
+  if (typeof expression !== 'string') throw new CalculatorInputError('Expression must be a string.');
   if (expression.length === 0 || expression.length > 512) {
     throw new CalculatorInputError('Expression must contain between 1 and 512 characters.');
   }
@@ -230,7 +231,10 @@ function normalizeUnit(unit: string): string {
 }
 
 export function convert(value: number, from: string, to: string): { value: number; display: string; from: string; to: string; precision: string } {
-  if (!Number.isFinite(value) || Math.abs(value) > 1e100) throw new CalculatorInputError('Conversion value must be finite and within ±1e100.');
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1e100) throw new CalculatorInputError('Conversion value must be finite and within ±1e100.');
+  if (typeof from !== 'string' || typeof to !== 'string' || !from.trim() || !to.trim()) {
+    throw new CalculatorInputError('Source and target units must be non-empty strings.');
+  }
   const source = normalizeUnit(from);
   const target = normalizeUnit(to);
   if (['c', 'celsius', 'f', 'fahrenheit', 'k', 'kelvin'].includes(source) && ['c', 'celsius', 'f', 'fahrenheit', 'k', 'kelvin'].includes(target)) {

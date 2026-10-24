@@ -152,6 +152,27 @@ describe('bounded server-side tool chat', () => {
     expect(test.fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('passes calculator_convert value/from/to arguments to the conversion in the declared order', async () => {
+    const test = await harness(profile({ allowedTools: ['calculator_convert'] }), [
+      functionCall('calculator_convert', { value: 100, from: 'fahrenheit', to: 'celsius' }),
+      answer('100°F is about 37.78°C.'),
+    ]);
+
+    const result = await test.start();
+    const toolResults = (test.bodies[1]?.messages as Array<Record<string, unknown>> | undefined)
+      ?.filter((message) => message.role === 'tool') ?? [];
+
+    expect(result.status).toBe('complete');
+    expect(result.toolTrace[0]).toMatchObject({
+      toolName: 'calculator_convert',
+      status: 'succeeded',
+      approvalRequired: false,
+      resultSummary: expect.stringContaining('celsius'),
+    });
+    expect(JSON.stringify(toolResults)).toContain('37.7777777778');
+    expect(test.bodies[0]?.tools).toMatchObject([{ function: { name: 'calculator_convert' } }]);
+  });
+
   it('never sends the base prompt no-tools claim together with a tool list', async () => {
     const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
       functionCall('calculator_calculate', { expression: '2 + 2' }),
@@ -177,6 +198,195 @@ describe('bounded server-side tool chat', () => {
     expect(system?.content).not.toContain(QWEN_NO_TOOLS_CLAIM);
     expect(system?.content).not.toMatch(/you have no tools/i);
     expect(system?.content).toContain('Tool-use policy for this turn:');
+  });
+
+  it('bounds diagnostic traces when an endpoint exceeds the per-round tool-call limit', async () => {
+    const manyCalls: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: Array.from({ length: 500 }, (_, index) => ({
+            id: `call-${index}`,
+            type: 'function' as const,
+            function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: '1 + 1' }) },
+          })),
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [manyCalls, answer('Finished.')]);
+
+    const result = await test.start();
+    const successes = result.toolTrace.filter((entry) => entry.status === 'succeeded');
+    const refusals = result.toolTrace.filter((entry) => entry.status === 'failed');
+
+    expect(successes).toHaveLength(8);
+    expect(refusals).toHaveLength(9); // Eight sampled details plus one aggregate record.
+    expect(refusals.at(-1)).toMatchObject({
+      toolName: 'tool_call_batch',
+      failureKind: 'budget_exceeded',
+      error: expect.stringContaining('484 additional tool call(s)'),
+    });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(50_000);
+  });
+
+  it('bounds diagnostics for oversized tool-call data without a matching finish reason', async () => {
+    const inconsistentBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: Array.from({ length: 500 }, (_, index) => ({
+            id: `call-${index}`,
+            type: 'function' as const,
+            function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: '1 + 1' }) },
+          })),
+        },
+        finish_reason: 'stop',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [inconsistentBatch, answer('Nothing ran.')]);
+
+    const result = await test.start();
+
+    expect(result.content).toBe('Nothing ran.');
+    expect(result.toolTrace).toHaveLength(9); // Eight sampled details plus one aggregate record.
+    expect(result.toolTrace.at(-1)?.error).toContain('492 additional tool call(s)');
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(50_000);
+  });
+
+  it('refuses the entire tool-call batch when correlation IDs are duplicated', async () => {
+    const duplicateIdBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'duplicate-id', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"1 + 1"}' } },
+            { id: 'duplicate-id', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"2 + 2"}' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [duplicateIdBatch, answer('No calculation was run.')]);
+
+    const result = await test.start();
+
+    expect(result.content).toBe('No calculation was run.');
+    expect(result.toolTrace).toHaveLength(2);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(result.toolTrace.every((entry) => entry.error?.includes('duplicate tool-call IDs'))).toBe(true);
+    expect(test.fetchMock).toHaveBeenCalledTimes(2); // Single corrective request; neither tool was executed.
+  });
+
+  it('refuses the full structural batch before dispatch if any call is malformed', async () => {
+    const malformedBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'valid-call', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"2 + 2"}' } },
+            { id: 'malformed-call', type: 'not-a-function' as unknown as 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"3 + 3"}' } },
+            { id: undefined as unknown as string, type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"4 + 4"}' } },
+            { id: 'bad-json', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [malformedBatch, answer('No call in the malformed batch ran.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('No call in the malformed batch ran.');
+    expect(result.toolTrace.length).toBeGreaterThanOrEqual(1);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2); // One bounded protocol correction.
+  });
+
+  it('preflights every accepted call schema before dispatching any call in the batch', async () => {
+    const schemaInvalidBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'valid-call', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"2 + 2"}' } },
+            { id: 'invalid-arguments', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":42}' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [schemaInvalidBatch, answer('No call in the invalid batch ran.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('No call in the invalid batch ran.');
+    expect(result.toolTrace).toHaveLength(2);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(result.toolTrace.some((entry) => entry.error?.includes('invalid tool-call batch'))).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects non-array tool_calls protocol data before execution', async () => {
+    const malformed = {
+      model: 'mock-model',
+      choices: [{
+        message: { role: 'assistant', content: 'The calculation is finished.', tool_calls: { id: 'call-1' } },
+        finish_reason: 'stop',
+      }],
+    } as unknown as Completion;
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [malformed, answer('No tool was run.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.content).toBe('No tool was run.');
+    expect(result.toolTrace).toHaveLength(1);
+    expect(result.toolTrace[0]).toMatchObject({ status: 'failed', failureKind: 'invalid_arguments' });
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['an empty array', []],
+    ['null', null],
+    ['a missing payload', undefined],
+  ])('records an accurate failure for finish_reason tool_calls with %s', async (_label, payload) => {
+    const message: Record<string, unknown> = { role: 'assistant', content: null };
+    if (payload !== undefined) message.tool_calls = payload;
+    const malformed = {
+      model: 'mock-model',
+      choices: [{ message, finish_reason: 'tool_calls' }],
+    } as unknown as Completion;
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [malformed, answer('The empty batch ran nothing.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.content).toBe('The empty batch ran nothing.');
+    expect(result.toolTrace).toHaveLength(1);
+    expect(result.toolTrace[0]).toMatchObject({ toolName: 'tool_call_batch', status: 'failed' });
+    expect(result.toolTrace[0]?.error).toContain('malformed tool-call protocol');
+    expect(result.toolTrace[0]?.error).not.toMatch(/additional tool call/i);
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('refuses structured tool calls unless the endpoint marks finish_reason as tool_calls', async () => {
