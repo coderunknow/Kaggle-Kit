@@ -1401,3 +1401,14 @@ models/Kaggle GPU/TPU/tunnels: none, by instruction. The CI
 Browser/Docker/Windows jobs on the PR head are the evidence path; until
 they pass, this candidate is **not acceptance-complete** and the PR stays
 Draft. No merge, no tag, no release was performed.
+
+## 2026-10-24 - Correction/addendum to the preceding beta1 entry (release dry-run result)
+
+The preceding entry was written before the dry run executed. Result, on
+candidate head `4cb7604619ac6904ec30984062781ceb3f602a1d`:
+`tools/release-dry-run.sh 0.1.0-beta1 v0.1.0-beta1` exited **0** — checks,
+build, 33/33 built-bundle integration, staging, `The release
+v0.1.0-beta1 is valid` (staged and simulated-download validation), and the
+rendered notes contain the candidate commit. The dry run created no tag
+and no release; staged artifacts were removed afterwards and are
+git-ignored in any case.
