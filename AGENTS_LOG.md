@@ -2033,3 +2033,23 @@ cycle 1.
 No merge, no tag, no release, no publish/deploy, no workflow dispatch
 performed in this cycle. PR #22 remains open; the only push is to the
 existing branch `arena/b99be7de-kaggle-kit`.
+
+## 2026-10-24T13:59:42Z - Pre-release: correct stale status wording in the v0.1.0-beta1 release notes
+
+PR #22 merged into main at 2026-10-24T12:34:03Z (merge commit
+23cf2fa9457b0023c30045076cbe6dfadf4afd44), so the status line of
+`docs/release-notes/0.1.0-beta1.md` - "proposed beta candidate on an
+unmerged pull request" - was no longer accurate for the notes that would
+ship with the v0.1.0-beta1 prerelease. The independent release gate
+audit of 2026-10-24 (GO, no publication performed) recommended this
+one-paragraph correction before tagging.
+
+- Corrected the status paragraph of `docs/release-notes/0.1.0-beta1.md`
+  to state that the candidate is on main after the PR #22 merge
+  (2026-10-24) and that the change which added the template created no
+  tag and published no release. No other file content, code, test,
+  workflow, or version metadata was changed.
+- No tag, release, publication, or deployment was created by this change;
+  it is release preparation only. The tag `v0.1.0-beta1` and its
+  prerelease are created exclusively by the tag-triggered Release
+  workflow from the validated final commit.
