@@ -1,7 +1,8 @@
 # Nightly prerelease automation for Kaggle-Kit.
 #
 # Schedule: 19:00 UTC every day, which is 02:00 in Asia/Ho_Chi_Minh (UTC+7).
-# The workflow always publishes a prerelease tag in the form:
+# Scheduled runs verify and stage artifacts only. Publication is an explicit
+# workflow_dispatch opt-in (`publish_nightly: true`):
 #   nightly-YYYYMMDD-<run_id>-<attempt>
 
 name: Nightly Release
@@ -10,6 +11,12 @@ on:
   schedule:
     - cron: '0 19 * * *'
   workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: 'Publish the validated nightly prerelease (defaults to verification only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -185,6 +192,7 @@ jobs:
             --source-sha "$SOURCE_SHA"
 
   publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly == true
     name: publish nightly prerelease
     needs:
       - verify

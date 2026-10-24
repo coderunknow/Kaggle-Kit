@@ -284,7 +284,14 @@ for what each layer proves and what it cannot.
 A release is built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
 from the tagged commit: the workflow runs the checks, builds the application,
 stages the assets, validates them and uploads them to a prerelease of the same
-tag. Nothing is uploaded by hand.
+tag. Nothing is uploaded by hand. A tag push keeps this behavior; a manual
+release dispatch additionally requires `publish_release: true` (default:
+`false`).
+
+The scheduled Nightly Release workflow is verification-only: it validates and
+stages artifacts but never publishes on a schedule. Manual nightly publication
+requires the explicit `publish_nightly: true` dispatch input (default:
+`false`). Neither CI nor a local release dry-run publishes anything.
 
 ```bash
 git tag v0.1.0-dev7 <commit> && git push origin v0.1.0-dev7

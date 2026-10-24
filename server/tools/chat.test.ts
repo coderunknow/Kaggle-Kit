@@ -285,6 +285,102 @@ describe('bounded server-side tool chat', () => {
     expect(test.fetchMock).toHaveBeenCalledTimes(2); // Single corrective request; neither tool was executed.
   });
 
+  it('refuses the full structural batch before dispatch if any call is malformed', async () => {
+    const malformedBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'valid-call', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"2 + 2"}' } },
+            { id: 'malformed-call', type: 'not-a-function' as unknown as 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"3 + 3"}' } },
+            { id: undefined as unknown as string, type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"4 + 4"}' } },
+            { id: 'bad-json', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [malformedBatch, answer('No call in the malformed batch ran.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('No call in the malformed batch ran.');
+    expect(result.toolTrace.length).toBeGreaterThanOrEqual(1);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2); // One bounded protocol correction.
+  });
+
+  it('preflights every accepted call schema before dispatching any call in the batch', async () => {
+    const schemaInvalidBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'valid-call', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"2 + 2"}' } },
+            { id: 'invalid-arguments', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":42}' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [schemaInvalidBatch, answer('No call in the invalid batch ran.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.status).toBe('complete');
+    expect(result.content).toBe('No call in the invalid batch ran.');
+    expect(result.toolTrace).toHaveLength(2);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(result.toolTrace.some((entry) => entry.error?.includes('invalid tool-call batch'))).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects non-array tool_calls protocol data before execution', async () => {
+    const malformed = {
+      model: 'mock-model',
+      choices: [{
+        message: { role: 'assistant', content: 'The calculation is finished.', tool_calls: { id: 'call-1' } },
+        finish_reason: 'stop',
+      }],
+    } as unknown as Completion;
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [malformed, answer('No tool was run.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.content).toBe('No tool was run.');
+    expect(result.toolTrace).toHaveLength(1);
+    expect(result.toolTrace[0]).toMatchObject({ status: 'failed', failureKind: 'invalid_arguments' });
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects finish_reason tool_calls when the payload has no calls', async () => {
+    const emptyBatch = {
+      model: 'mock-model',
+      choices: [{ message: { role: 'assistant', content: null, tool_calls: [] }, finish_reason: 'tool_calls' }],
+    } as unknown as Completion;
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [emptyBatch, answer('The empty batch ran nothing.')]);
+    const execute = vi.spyOn(test.executor, 'execute');
+
+    const result = await test.start();
+
+    expect(result.content).toBe('The empty batch ran nothing.');
+    expect(result.toolTrace).toHaveLength(1);
+    expect(result.toolTrace[0]?.error).toContain('malformed tool-call protocol');
+    expect(execute).not.toHaveBeenCalled();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses structured tool calls unless the endpoint marks finish_reason as tool_calls', async () => {
     const inconsistent = functionCall('calculator_calculate', { expression: '2 + 2' });
     inconsistent.choices[0]!.finish_reason = 'stop';
