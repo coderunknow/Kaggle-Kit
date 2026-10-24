@@ -1453,3 +1453,30 @@ independent verification on the session branch; the already-open PR #20 run
 was not used as a substitute. Local browser still cannot launch; no live model
 or Kaggle test ran. PR #21 remains unmerged/Draft. A docs-only CI evidence
 append follows; repeat CI and release dry-run on the resulting exact head.
+
+## 2026-10-24 - beta1 adversarial audit continuation
+
+- Continued on `arena/295bec84-kaggle-kit` from `80be4f1`; PR #21 remains
+  separate from PR #20. Before appending, SHA-256 was
+  `DESIGN_LOG.md=2d579da9ec0f989eb65db25b3a416f82bf27f0fb3763264dfbeec708ab31de57`,
+  `AGENTS_LOG.md=70bbf8e71e6fbf7b3edaa44ada6e7ca1be012ebae5f5510da479e498e568dfe3`.
+  Only appended bytes; previous content remains an exact prefix.
+- Reproduced two defects using injected mock completions: 500 valid calls
+  yielded 500 traces / 182,691 serialized bytes despite the eight-call cap;
+  two calls with a duplicate ID both executed. Fixed with bounded sampled plus
+  aggregate refusal traces and whole-batch refusal on duplicate correlation
+  IDs; bounded recovery remains the existing one-attempt policy. No approval
+  bypass reproduced.
+- Added permanent regressions for excess calls, mismatched finish reason,
+  duplicate IDs, execution count, and serialized result bound. Final local
+  Vitest at this working-tree state: **48 files / 500 passed**.
+- `npm run typecheck`, `npm run lint`, `npm run build`, `npm run check:integration`
+  (33/33), notebook tests (105/0 skipped), tools tests (32), npm audit
+  (0 vulnerabilities), offline prompt evaluation dry-run (17/36/45), and
+  `git diff --check` passed. Playwright local: blocked before assertions,
+  5 launch failures, missing Chromium headless executable; no pass claimed.
+- Updated beta1 release-note input and environment evidence. Final committed
+  release dry-run and this branch's post-fix CI are pending; scheduled nightly
+  rerun and all live deployment/provider/Docker/Windows environments are
+  unverified. No external call, live model, Kaggle deployment, tag, release,
+  merge, or publication occurred. Full detailed evidence is in `DESIGN_LOG.md`.

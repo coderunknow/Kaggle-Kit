@@ -2123,3 +2123,107 @@ libraries, so browser verification came from CI. No live model/Kaggle check was
 run. Merge/tag/release/deployment remain unauthorized. A docs-only evidence
 commit follows; its exact head still needs CI and a repeated local dry-run
 before final reporting.
+
+## 2026-10-24 - beta1 adversarial audit continuation: tool-call batch integrity
+
+**Scope and starting point.** Continued the beta1 audit on the existing
+`arena/295bec84-kaggle-kit` branch, starting from HEAD
+`80be4f1a0b00adc73d5b7e86a563cb1ffe1edfd4` (PR #21 open/draft). PR #20
+remains a separate branch and was not modified. No credentials, external
+services, live model, Kaggle deployment, tunnel, Docker daemon, release
+workflow, tag, publication or merge were used. `AGENTS.md` and both historical
+logs were read before edits. The log files' pre-append SHA-256 values were
+`DESIGN_LOG.md=2d579da9ec0f989eb65db25b3a416f82bf27f0fb3763264dfbeec708ab31de57`
+and `AGENTS_LOG.md=70bbf8e71e6fbf7b3edaa44ada6e7ca1be012ebae5f5510da479e498e568dfe3`;
+the new text is appended after those exact byte prefixes.
+
+**Confirmed finding F4 - bounded tool-call diagnostics and correlation IDs.**
+Two controlled, local mock-upstream reproductions confirmed defects in
+`server/tools/chat.ts`:
+
+1. A completion containing 500 valid calls passed the eight-call execution
+   limit, but the old diagnostics loop retained one refusal trace for every
+   excess call. The server returned **500 trace records** (8 executed, 492
+   refusals) and a **182,691-byte serialized result** from a bounded upstream
+   response. The per-round execution cap therefore did not also bound the
+   user-visible trace/result size.
+2. A completion containing two distinct calculator calls with the same
+   correlation ID executed **both** and recorded two successful traces. A
+   duplicate ID makes the assistant/tool result correlation ambiguous. No
+   approval bypass was demonstrated: risky actions still require their normal
+   per-operation approval. The defect is malformed-protocol acceptance and
+   duplicate-dispatch risk, not an authorization bypass.
+
+**Minimal fix and regression resistance.**
+
+* `appendBoundedFailureTraces` retains at most eight individual diagnostics
+  per rejected batch and represents any omitted calls with one aggregate
+  failure record. This applies to over-limit calls, malformed calls, and
+  tool-call payloads without `finish_reason: "tool_calls"`; valid accepted
+  calls still pass through the existing execution and conversation budgets.
+* The service now checks valid call IDs for duplicates before dispatch. Any
+  duplicate in the batch refuses the entire valid batch and uses the existing
+  single bounded protocol-recovery path. No call in that batch is queued or
+  executed.
+* Permanent regressions in `server/tools/chat.test.ts` cover 500 excess calls,
+  500 unannounced calls, duplicate IDs, the bounded aggregate, execution count,
+  and serialized response size. Temporary reproduction test code was removed;
+  only the production fix and permanent tests remain.
+
+**Post-fix evidence.** In the regression, 500 valid calls result in exactly
+8 successful calls plus 8 sampled refusal details and one aggregate refusal
+(17 traces total; serialized result <50,000 bytes). A 500-call batch with an
+inconsistent finish reason results in nine bounded failure records and no
+execution. A duplicate-ID batch records failures only, sends one corrective
+request and then returns the supplied direct answer; no calculator trace
+succeeds. The test suite verifies these outcomes against injected mock
+completions only; this is not a live-model result.
+
+**Broader implementation review and evidence limits.** The continuation
+re-read the tool loop and response-size limit; policy/executor/approval and
+approval-cancellation flows; file extraction/vault; web/HTTP/MCP destination,
+redirect and DNS-pin paths; Docker invocation; prompt/output boundaries;
+client Markdown/raw-HTML handling and storage sanitizers; request origin/body
+policy; release/nightly workflow tests, manifest and release validation.
+The existing suite contains targeted adversarial cases for these boundaries
+(local/private DNS, rebinding, redirects, content type, origin, symlink/path
+containment, credential fields, stored secrets, untrusted outputs, upload
+limits, schema changes, approval replay/rotation/cancellation, and Docker
+fail-closed behavior). This review did not reproduce another defect in the
+covered local/mock paths; passing tests are not proof of all code paths or of
+external deployment behavior. No model prompt can guarantee resistance to
+prompt injection. Local model endpoints remain configurable and should be
+restricted with the documented allow-list when the proxy is reachable beyond
+the user's machine.
+
+**Local verification (working-tree candidate; final commit/CI/dry-run still
+pending at the time of this entry).**
+
+* `npm test -- --reporter=dot` - **48 files, 500 tests passed**.
+* `npm run typecheck` and `npm run lint` - passed.
+* `npm run build` - passed; Vite client and standalone server bundle built.
+  Existing PDF.js optional canvas/font warnings appeared in integration; the
+  bundle reports 5.6 MB because PDF.js is included. No build failure.
+* `npm run check:integration` - **33/33** against the local built application
+  and mock upstream.
+* `PATH=/tmp/kaggle-kit-venv/bin:$PATH python3 -m unittest discover -s
+  notebooks -p 'test_*.py'` - **105 passed, 0 skipped**; same command under
+  `tools` - **32 passed**. Two notebook ResourceWarnings reported test sockets
+  not closed; suites passed and no production/runtime claim follows.
+* `npm audit --json` - info/low/moderate/high/critical/total all **0**.
+  Prompt evaluation `python3 research/qwen-system-prompt/eval/run_eval.py
+  --dry-run` - 17 cases, 36 automated checks, 45 manual criteria; no model
+  output or score. `git diff --check` - clean.
+* `npm run test:e2e` - **blocked before assertions**: all five tests failed to
+  launch because the Playwright Chromium headless executable is absent. This
+  is not an E2E pass. CI is the required browser evidence path.
+* The local release dry-run and candidate-branch CI have not yet been run on
+  the post-fix committed head. The scheduled post-fix nightly run is also
+  outstanding. No merge, tag, release or publication occurred.
+
+**Readiness.** This remediation is locally tested against mocks. The beta1
+candidate is not release-ready until its exact committed head passes the local
+release dry-run and its own CI jobs; the browser job must be independently
+confirmed. The historical PR #20 checks are not a substitute. Live Kaggle,
+model, hosted provider, tunnel, Windows runtime, Docker isolation and external
+MCP/HTTP behavior remain unverified/out of scope for this offline pass.

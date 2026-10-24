@@ -559,9 +559,13 @@ export class ToolChatService {
         const rawCalls = message?.tool_calls;
         if (Array.isArray(rawCalls) && rawCalls.length > 0) {
           if (choice?.finish_reason !== 'tool_calls') {
-            for (const invalid of rawCalls) {
-              session.trace.push(makeFailureTrace(randomUUID(), invalid, 'The endpoint returned tool-call data without finish_reason=tool_calls; it was not run.'));
-            }
+            appendBoundedFailureTraces(
+              session,
+              rawCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              rawCalls.length,
+              'The endpoint returned tool-call data without finish_reason=tool_calls; it was not run.',
+              'invalid_arguments',
+            );
             // Protocol failures are recoverable once per episode: nothing was
             // executed, so a single corrective round with the failure evidence
             // cannot duplicate a side effect or bypass an approval.
@@ -576,14 +580,56 @@ export class ToolChatService {
             this.jobs.delete(session.jobId);
             return this.completeResult(session);
           }
-          const calls = rawCalls.filter(isValidToolCall);
-          for (const invalid of rawCalls.filter((call) => !isValidToolCall(call))) {
-            session.trace.push(makeFailureTrace(randomUUID(), invalid, 'The model returned malformed tool-call data; it was not run.'));
-          }
-          if (calls.length > MAX_TOOL_CALLS_PER_ROUND) {
-            for (const excess of calls.slice(MAX_TOOL_CALLS_PER_ROUND)) {
-              session.trace.push(makeFailureTrace(randomUUID(), excess, 'The model returned more than the per-round tool-call limit; this call was refused.'));
+          const calls: OpenAIToolCall[] = [];
+          const invalidExamples: unknown[] = [];
+          let invalidCount = 0;
+          for (const call of rawCalls) {
+            if (isValidToolCall(call)) calls.push(call);
+            else {
+              invalidCount += 1;
+              if (invalidExamples.length < MAX_TOOL_CALLS_PER_ROUND) invalidExamples.push(call);
             }
+          }
+          if (invalidCount > 0) {
+            appendBoundedFailureTraces(
+              session,
+              invalidExamples,
+              invalidCount,
+              'The model returned malformed tool-call data; it was not run.',
+              'invalid_arguments',
+            );
+          }
+
+          const callIds = new Set<string>();
+          const duplicateIds = new Set<string>();
+          for (const call of calls) {
+            if (callIds.has(call.id)) duplicateIds.add(call.id);
+            else callIds.add(call.id);
+          }
+          if (duplicateIds.size > 0) {
+            appendBoundedFailureTraces(
+              session,
+              calls.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              calls.length,
+              'The model returned duplicate tool-call IDs; the entire batch was refused.',
+              'invalid_arguments',
+            );
+            if (this.beginRecovery(session, 'The model returned duplicate tool-call IDs; no tool in the batch was executed.')) continue;
+            session.recoveryFailed = session.recoveryAttempts > 0;
+            session.lastAssistantContent = 'The endpoint returned duplicate tool-call IDs. No tool was executed.';
+            this.jobs.delete(session.jobId);
+            return this.completeResult(session);
+          }
+
+          if (calls.length > MAX_TOOL_CALLS_PER_ROUND) {
+            const excess = calls.slice(MAX_TOOL_CALLS_PER_ROUND);
+            appendBoundedFailureTraces(
+              session,
+              excess.slice(0, MAX_TOOL_CALLS_PER_ROUND),
+              excess.length,
+              'The model returned more than the per-round tool-call limit; this call was refused.',
+              'budget_exceeded',
+            );
           }
           const accepted = calls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
           session.lastAssistantContent = typeof message?.content === 'string' ? message.content : '';
@@ -828,6 +874,28 @@ function wrapUntrustedOutput(content: string, maximumBytes: number): string {
   let excerpt = bytes.subarray(0, remaining).toString('utf8');
   while (Buffer.byteLength(excerpt, 'utf8') > remaining) excerpt = excerpt.slice(0, -1);
   return `${prefix}${excerpt}`;
+}
+
+function appendBoundedFailureTraces(
+  session: ToolChatSession,
+  examples: unknown[],
+  totalCount: number,
+  error: string,
+  failureKind: ToolFailureKind,
+): void {
+  const detailLimit = MAX_TOOL_CALLS_PER_ROUND;
+  for (const call of examples.slice(0, detailLimit)) {
+    session.trace.push(makeFailureTrace(randomUUID(), call, error, { failureKind }));
+  }
+  const omitted = Math.max(0, totalCount - Math.min(examples.length, detailLimit));
+  if (omitted > 0) {
+    session.trace.push(makeFailureTrace(
+      randomUUID(),
+      { function: { name: 'tool_call_batch' } },
+      `${omitted} additional tool call(s) were refused and omitted from individual traces. ${error}`,
+      { failureKind },
+    ));
+  }
 }
 
 function makeFailureTrace(

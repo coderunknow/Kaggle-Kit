@@ -200,6 +200,91 @@ describe('bounded server-side tool chat', () => {
     expect(system?.content).toContain('Tool-use policy for this turn:');
   });
 
+  it('bounds diagnostic traces when an endpoint exceeds the per-round tool-call limit', async () => {
+    const manyCalls: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: Array.from({ length: 500 }, (_, index) => ({
+            id: `call-${index}`,
+            type: 'function' as const,
+            function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: '1 + 1' }) },
+          })),
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [manyCalls, answer('Finished.')]);
+
+    const result = await test.start();
+    const successes = result.toolTrace.filter((entry) => entry.status === 'succeeded');
+    const refusals = result.toolTrace.filter((entry) => entry.status === 'failed');
+
+    expect(successes).toHaveLength(8);
+    expect(refusals).toHaveLength(9); // Eight sampled details plus one aggregate record.
+    expect(refusals.at(-1)).toMatchObject({
+      toolName: 'tool_call_batch',
+      failureKind: 'budget_exceeded',
+      error: expect.stringContaining('484 additional tool call(s)'),
+    });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(50_000);
+  });
+
+  it('bounds diagnostics for oversized tool-call data without a matching finish reason', async () => {
+    const inconsistentBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: Array.from({ length: 500 }, (_, index) => ({
+            id: `call-${index}`,
+            type: 'function' as const,
+            function: { name: 'calculator_calculate', arguments: JSON.stringify({ expression: '1 + 1' }) },
+          })),
+        },
+        finish_reason: 'stop',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [inconsistentBatch, answer('Nothing ran.')]);
+
+    const result = await test.start();
+
+    expect(result.content).toBe('Nothing ran.');
+    expect(result.toolTrace).toHaveLength(9); // Eight sampled details plus one aggregate record.
+    expect(result.toolTrace.at(-1)?.error).toContain('492 additional tool call(s)');
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(50_000);
+  });
+
+  it('refuses the entire tool-call batch when correlation IDs are duplicated', async () => {
+    const duplicateIdBatch: Completion = {
+      model: 'mock-model',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'duplicate-id', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"1 + 1"}' } },
+            { id: 'duplicate-id', type: 'function', function: { name: 'calculator_calculate', arguments: '{"expression":"2 + 2"}' } },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [duplicateIdBatch, answer('No calculation was run.')]);
+
+    const result = await test.start();
+
+    expect(result.content).toBe('No calculation was run.');
+    expect(result.toolTrace).toHaveLength(2);
+    expect(result.toolTrace.every((entry) => entry.status === 'failed')).toBe(true);
+    expect(result.toolTrace.every((entry) => entry.error?.includes('duplicate tool-call IDs'))).toBe(true);
+    expect(test.fetchMock).toHaveBeenCalledTimes(2); // Single corrective request; neither tool was executed.
+  });
+
   it('refuses structured tool calls unless the endpoint marks finish_reason as tool_calls', async () => {
     const inconsistent = functionCall('calculator_calculate', { expression: '2 + 2' });
     inconsistent.choices[0]!.finish_reason = 'stop';
