@@ -2450,3 +2450,26 @@ After the corrected configuration loaded in CodeRabbit's in-progress review for 
 **Branch protection.** `main` is unprotected (`GET /branches/main` → `protected: false`, `rulesets` `[]`, `rules/branches/main` `[]`); the branch-protection detail endpoint returns HTTP 403 (`Resource not accessible by integration`) for the credential available here, which is a token-scope limitation rather than evidence that rules exist. This task attempted the solo-maintainer policy (pull request required, zero required approvals, the five CI checks, conversation resolution, no force-push, no deletion) and the outcome, including any refusal, is recorded in the PR description and the evidence entry.
 
 **Safety.** No merge, tag, release, asset upload, publication, deployment, force-push or history rewrite was performed; PR #24 and PR #25 were left closed and untouched, and no existing review thread was resolved or dismissed.
+
+---
+
+## 2026-10-25 – Evidence for the beta2 readiness fix (code commit 5c66841)
+
+**Code commit.** `5c66841d888ccaeea12e9c813bd51eecf7d58717` on `arena/73c56742-kaggle-kit`, one commit on top of `19ea1b74cf0807b60b1c8943cdaf5175d86b65cc`, opened as PR #26 (base `main`, head `arena/73c56742-kaggle-kit`). This entry is documentation only: it records the runs of that code commit, which existed before this text was written. The commit that contains *this* entry is verified separately and cannot be cited from inside itself.
+
+**Hosted CI on `5c66841` (exact head).** Both event runs completed with conclusion `success` and all five jobs green:
+
+| Run | Event | URL | Jobs |
+| --- | --- | --- | --- |
+| `40183275096` | `push` | https://github.com/coderunknow/Kaggle-Kit/actions/runs/40183275096 | typecheck, lint, test and build; Browser end-to-end; docker sandbox integration; notebook tests; windows launcher — all `success` |
+| `40183294559` | `pull_request` | https://github.com/coderunknow/Kaggle-Kit/actions/runs/40183294559 | same five jobs — all `success` (10:05:01Z–10:05:56Z) |
+
+The job names above are the display names reported by the API for this head, not the names from an older run. The `Browser end-to-end` job runs `npm run test:e2e` (Playwright, seven specs) and exits non-zero on any failure, so its success is the first verification of the new browser assertions (the fixture's extracted length and the `marketing,800` row) — those specs had never been executed locally in this environment. Limitation: the per-job log files are served from `productionresultssa4.blob.core.windows.net`, which this sandbox cannot reach, so the conclusions above are job-level results and the per-assertion output was not read.
+
+**Review on PR #26.** No independent review is available, and none is claimed. Kilo Code Review reports `action_required` with "Review could not start because the account has insufficient credits" and zero annotations. GitHub Copilot submitted a `COMMENTED` review whose entire body is "unable to review this pull request because the user who requested the review has insufficient remaining quota" — no findings, no inline comments. CodeRabbit's status for `5c66841` is `success` with the description "Review skipped: manual review required for this OSS repository", which is a skip and is not counted as a review. `reviewDecision` is empty. The substitute is the local evidence plus the mutation checks recorded in the previous entry; the pull request states plainly that the change is unreviewed by a second party.
+
+**Branch protection: not applied.** The solo-maintainer policy (pull request required, required approvals `0`, the five status checks above, conversation resolution required, force-push and deletion forbidden, no auto-merge) was attempted with `PUT /repos/coderunknow/Kaggle-Kit/branches/main/protection`. The API answered `403 Resource not accessible by integration`; the response header `X-Accepted-Github-Permissions: administration=write` (and `administration=read` on the `GET`) with an empty `X-OAuth-Scopes` shows the credential lacks the Administration permission for this repository. The state was re-read afterwards and is unchanged: `GET /branches/main` → `protected: false`, `GET /rulesets` → `[]`, `GET /rules/branches/main` → `[]`. `main` is therefore still unprotected, and this task does not claim otherwise. The maintainer can apply the same policy by hand: repository Settings → Branches → Add branch protection rule for `main`, tick "Require a pull request before merging" with required approvals `0`, "Require status checks to pass before merging" with the five job names listed above (strict/up-to-date branch enabled), "Require conversation resolution before merging", and leave "Allow force pushes" and "Allow deletions" unticked; or send the same JSON body documented in PR #26 with a token that has Administration write.
+
+**Environment note.** A local, untracked `.git/hooks/commit-msg` in this sandbox appends `Co-authored-by: arena-agent <…>` to every commit. It is not part of the repository and adds no content, and the already-pushed commit was not rewritten to remove it, because rewriting published history is out of scope for this task.
+
+**Safety.** No merge, tag, release, asset upload, publication, deployment, force-push or history rewrite; PR #24 and PR #25 remain closed and untouched, and no review thread was resolved or dismissed.
