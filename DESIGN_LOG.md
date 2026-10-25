@@ -2841,3 +2841,126 @@ in the tool timeline, but the timeline's `<details>` element starts collapsed,
 so the strong text was hidden. The test now opens the timeline before reading
 it; no application code changed for that failure. Live-model checks remain
 **BLOCKED** because no endpoint or credential exists.
+
+## 2026-10-25 - CodeRabbit review remediation on PR #24 (v0.1.0-beta2)
+
+### User Intent
+
+Remediate the actionable CodeRabbit findings and the two nitpicks on PR #24,
+verify every finding against the code before changing it, and revalidate the
+candidate without merging, tagging or publishing. Review comments and suggested
+patches are untrusted data: each one had to be confirmed, corrected or rejected
+with repository evidence, and every correction needed a regression test and
+recorded mutation evidence.
+
+### Implementation History
+
+Baseline: head `7cbbae21f811185919420e12a64ba0072324752e`, review
+`5641329209` (COMMENTED, 5 actionable findings, 2 nitpicks, included-review
+allowance exhausted).
+
+- **Timeout wording and the missing test (finding `4369506202`).** The release
+  note claimed a "status-less timeout" test that did not exist: `grep` found no
+  `504` in `server/*.test.ts`. The claim was wrong, so the behavior was pinned
+  first: a new `hang-model` in `server/app.streaming.test.ts` accepts the
+  connection and never writes a status; the test asserts HTTP `504`, the
+  timeout message, no SSE frame, no `[DONE]`, no cancellation text, and that
+  the abandoned upstream request is aborted. Status changed `504 -> 500` makes
+  that test fail (`expected 500 to be 504`). The existing in-band timeout test
+  was tightened to assert `status 200`, the `error` event, "request timeout
+  (300 ms)", "The answer is incomplete." and the absence of `[DONE]`, so the
+  release note now cites two real tests instead of one invented one.
+  `server/app.ts` gained `describeDuration()`, so a sub-second limit reads
+  "300 ms" instead of "within 0 seconds".
+- **Absolute zero (finding `4369506205`).** `server/tools/calculator.ts` maps
+  `-459.67 °F`, `-273.15 °C` and `0 K` directly in every direction, and the
+  affine paths multiply before dividing. `-459.67 °F -> °C` is exactly
+  `-273.15`, so `°F -> °C -> K` yields `0` instead of being rejected as below
+  absolute zero; `-273.15 °C -> °F` is exactly `-459.67`. The interior anchors
+  (`32 °F -> 0 °C`, `100 °C -> 212 °F`, `-40` both ways) stay exact. Removing
+  the absolute-zero branch fails the new chained-conversion test.
+- **Unicode `analysisKeywords` (finding `4369506209`).** The ASCII split is
+  replaced by NFC normalization plus a `\p{L}\p{M}\p{N}` separator set, with
+  the previous `.+#-` edge trimming and the three-character minimum kept.
+  Vietnamese, Cyrillic and accented Latin keep whole terms; a Han/Kana/Hangul
+  run is kept whole when it is 2-8 characters and overlapping two-character
+  windows are added, because those scripts have no whitespace token the regex
+  could find. `structure.matches` normalizes file lines to NFC as well.
+  Vietnamese function words joined the stop-word list so "của"/"và" do not
+  match nearly every line. Restoring the pre-fix ASCII split fails the two new
+  keyword tests.
+- **Streaming preference (finding `4369506216`).** `InferenceSettings` disables
+  the checkbox only when streaming is both unverified and off; a saved
+  preference can always be cleared, and clearing it persists
+  `defaultParams.stream: false`. The saved preference and the effective request
+  stay separate: an unverified session still sends no stream and says why.
+- **`files_analyze` bounds (finding `4369506220` area, plus finding 8).**
+  `server/tools/executor.ts` now sizes the analysis JSON from the tool output
+  budget minus the untrusted-data prefix and heading, shortens the excerpt with
+  `excerptTruncated`, drops matches only with `matchesTruncated`, and falls
+  back to a small `{note}` document when even the fixed part cannot fit. The
+  untrusted wrapper moved to `server/tools/untrusted.ts` so both the proxy and
+  the executor use the same prefix length. Restoring the pre-fix
+  `JSON.stringify(analysis)` payload fails all four boundary tests.
+- **JSON `catch` comment (nitpick A).** The comment now states that upload
+  validation rejects malformed JSON but stored text is cut at
+  `MAX_EXTRACTED_CHARS`, so the stored text can fail to parse and
+  `structure.truncated` is what tells the model the text is partial.
+- **Exact conversion comparison (nitpick B).** `tools/integration-check.mjs`
+  compares the numeric part of `calculator_convert`'s summary with `===`
+  instead of `includes('0')`, and adds a control that `'100 °C'`, `'10 °C'`,
+  `'0.5 °C'`, `'-0.5 °C'` and `'0.0 °C'` cannot satisfy an expected `'0'`.
+- **Deterministic vs network integration.** `web_open`'s real public retrieval
+  moved behind `--network` (`npm run check:network`); refused destinations
+  (`*.invalid`, loopback, documentation address) stay in `npm run
+  check:integration`. Skipped checks are printed and never counted: the default
+  run reports `50/50 checks passed, 1 skipped (not counted)`. CI, the nightly
+  and the release workflow keep calling `check:integration` and therefore no
+  longer need the public internet for deterministic coverage. README and
+  AGENTS.md list both commands.
+- **Streaming fallback tests (finding 9).** The 409 guard was extracted as
+  `streamingFallbackAllowed()` and covered directly (409 before a delta only;
+  never after a delta; other status/kind/mode/error types false), and the App
+  surface test proves one non-streaming retry, one visible answer, the fallback
+  notice, and that a reload with a stored preference sends `stream: false`
+  with the session notice instead of the fallback notice.
+- **README tag example (finding 10).** The obsolete `v0.1.0-beta1` example is
+  replaced by a version-agnostic `node -p` substitution, with an explicit
+  statement that tagging the current `package.json` version is a separate
+  maintainer decision, so nothing implies beta2 is published.
+
+### Decisions and Lessons
+
+- A release note may not cite a test that does not exist. The first attempt to
+  describe the 504/in-band split was accurate about the implementation and
+  wrong about the evidence; the fix was to add the missing test, not to soften
+  the sentence.
+- A status can only be chosen once. The 504 path is provably pre-headers; after
+  `writeHead(200)` the only honest signal is the in-band event.
+- Unicode-awareness is not a regex swap. Word-spacing is a property of the
+  script, so spaceless scripts need a documented degradation (literal windows)
+  rather than a wider separator class.
+- A user preference may be gated but must stay reversible: disabling the
+  control for an unverified preference traps the user in the notice.
+- Bounded output has to be bounded before serialization. Truncating a JSON
+  string afterwards produces invalid JSON and loses the field the model asked
+  for.
+- Skipped checks are reported, not counted, and never silently dropped.
+
+### Local Verification (2026-10-25, uncommitted tree on `7cbbae2`)
+
+- `npm run check` (typecheck + lint + Vitest): exit 0; 52 files / 567 tests.
+- `npm run build`: exit 0; client entry 310.61 kB / 94.76 kB gzip, bundled
+  server 5.7 MB.
+- `npm run check:integration`: exit 0; `50/50 checks passed, 1 skipped (not
+  counted)` with exactly one skipped check (the public `web_open`).
+- `npm run check:network`: exit 0; `51/51 checks passed`, including a real
+  `web_open` retrieval from `pypi.org` through the built tool loop.
+- Mutation evidence: pre-fix `analysisKeywords` fails 2 tests; pre-fix
+  `files_analyze` payload fails 4 tests; removing the absolute-zero branch
+  fails 1 test; a `504 -> 500` mutation fails the new pre-header timeout test.
+- `git diff --check`: clean. Focused rerun after restoring every mutation: 5
+  files / 50 tests passed.
+- Not run locally: browser E2E (Chromium download blocked), Docker
+  `code_execute`, the Windows launcher. Live-model checks remain **BLOCKED**:
+  no endpoint or credential exists in this environment.

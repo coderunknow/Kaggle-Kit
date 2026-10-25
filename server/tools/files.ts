@@ -126,7 +126,9 @@ export class FileVault {
     for (let index = 0; index < lines.length && matches.length < 20; index += 1) {
       const line = lines[index]!;
       if (!line.trim()) continue;
-      const lowered = line.toLowerCase();
+      // The same NFC form the keywords use: decomposed text in the file must
+      // match a precomposed question (and the reverse).
+      const lowered = line.normalize('NFC').toLowerCase();
       if (!keywords.some((keyword) => lowered.includes(keyword))) continue;
       matches.push({ line: index + 1, text: line.trim().slice(0, 200) });
     }
@@ -151,8 +153,11 @@ export class FileVault {
             ? { topLevel: 'object', entries: Object.keys(parsed as Record<string, unknown>).length }
             : { topLevel: 'scalar', entries: 1 };
       } catch {
-        // Upload-time extraction already rejected malformed JSON, so this is
-        // unreachable in practice. Report no JSON shape rather than a wrong one.
+        // Upload-time extraction rejected malformed JSON, but it stores at most
+        // MAX_EXTRACTED_CHARS characters. A larger document is cut there and the
+        // cut text no longer parses; `structure.truncated` already tells the
+        // model that the stored text is partial. Report no JSON shape rather
+        // than a shape derived from a partial parse.
       }
     }
     return { file: publicReference(file), question: trimmedQuestion, structure, excerpt: read.content, matches };
@@ -177,16 +182,55 @@ const ANALYSIS_STOP_WORDS = new Set([
   'then', 'them', 'they', 'you', 'your', 'our', 'its', 'all', 'any', 'each', 'many', 'much',
   'list', 'show', 'tell', 'give', 'please', 'summarize', 'summary', 'file', 'files', 'document',
   'contents', 'content', 'explain', 'describe', 'according', 'based', 'using', 'between',
+  // Vietnamese question function words: a literal search would otherwise match
+  // nearly every line of a Vietnamese file through "của" or "và".
+  'của', 'và', 'là', 'có', 'cho', 'với', 'những', 'các', 'một', 'không', 'được',
+  'trong', 'khi', 'thì', 'này', 'đó', 'nhiêu', 'bao',
 ]);
 
-/** Literal, lower-case search terms; bounded so a long question stays cheap. */
+/** Punctuation that stays part of a term (decimals, C++, C#, email-like names). */
+const TERM_EDGE_PUNCTUATION = /^[.+#-]+|[.+#-]+$/gu;
+/** Everything else separates terms: letters, marks and numbers stay together. */
+const TERM_SEPARATOR = /[^\p{L}\p{M}\p{N}.+#-]+/u;
+/**
+ * Scripts written without spaces between words. Their whole question becomes a
+ * single run, so a whitespace token is rarely a literal term found in a file.
+ */
+const UNSPACED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const MAX_KEYWORDS = 6;
+
+/**
+ * Literal, lower-case search terms; bounded so a long question stays cheap.
+ *
+ * The question is NFC-normalized first: decomposed Vietnamese (or Indic) input
+ * must yield the same terms as the precomposed text stored in the file, and
+ * combining marks must not act as separators. Unicode letter/number classes
+ * keep non-ASCII terms intact, so `café` stays `café` instead of `caf`.
+ *
+ * For scripts without spaces the intended behavior is different rather than a
+ * wider regex: a Han/Kana/Hangul run is kept whole when it is a short phrase,
+ * and overlapping two-character windows are added because two characters are
+ * the smallest literal unit that still identifies a term. A script the tool
+ * has no word segmentation for therefore degrades to literal windows instead
+ * of silently returning no matches; matching stays literal either way.
+ */
 export function analysisKeywords(question: string): string[] {
-  const words = question
-    .toLowerCase()
-    .split(/[^a-z0-9.+#-]+/)
-    .map((word) => word.replace(/^[.+#-]+|[.+#-]+$/g, ''))
-    .filter((word) => word.length >= 3 && !ANALYSIS_STOP_WORDS.has(word));
-  return [...new Set(words)].slice(0, 6);
+  const normalized = question.normalize('NFC').toLowerCase();
+  const terms: string[] = [];
+  for (const raw of normalized.split(TERM_SEPARATOR)) {
+    const term = raw.replace(TERM_EDGE_PUNCTUATION, '');
+    if (!term) continue;
+    const characters = [...term];
+    if (UNSPACED_SCRIPT.test(term)) {
+      if (characters.length >= 2 && characters.length <= 8) terms.push(term);
+      for (let index = 0; index + 1 < characters.length; index += 1) {
+        terms.push(`${characters[index]}${characters[index + 1]}`);
+      }
+      continue;
+    }
+    if (characters.length >= 3 && !ANALYSIS_STOP_WORDS.has(term)) terms.push(term);
+  }
+  return [...new Set(terms)].slice(0, MAX_KEYWORDS);
 }
 
 /** Comma count outside double quotes, plus one (a minimal but honest CSV header). */

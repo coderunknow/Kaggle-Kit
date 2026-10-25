@@ -125,6 +125,25 @@ export function droppedToolJobIds(messages: readonly ChatMessage[], fromIndex: n
     .filter((jobId): jobId is string => Boolean(jobId));
 }
 
+/**
+ * A streamed request may be retried without streaming only when the proxy
+ * refused it before any answer existed: the refusal is the documented 409
+ * (streaming not verified for this endpoint), nothing streamed yet, and the
+ * request itself asked for a stream. A 409 after a delta would mean a partial
+ * answer already exists, so retrying could duplicate it.
+ */
+export function streamingFallbackAllowed(input: {
+  wantsStream: boolean;
+  receivedDelta: boolean;
+  error: unknown;
+}): boolean {
+  return input.wantsStream
+    && !input.receivedDelta
+    && input.error instanceof ApiError
+    && input.error.httpStatus === 409
+    && input.error.kind === 'bad_request';
+}
+
 export interface ChatController {
   sendMessage: (conversationId: string, content: string) => Promise<void>;
   resendMessage: (conversationId: string, userMessageId: string) => Promise<void>;
@@ -305,14 +324,7 @@ export function useChat(): ChatController {
         try {
           result = await run(wantsStream);
         } catch (error) {
-          const canFallBack =
-            wantsStream &&
-            !receivedDelta &&
-            error instanceof ApiError &&
-            error.httpStatus === 409 &&
-            error.kind === 'bad_request';
-
-          if (!canFallBack) throw error;
+          if (!streamingFallbackAllowed({ wantsStream, receivedDelta, error })) throw error;
 
           // The proxy refused streaming because it could not verify the
           // transport (for example after a restart). The request produced no

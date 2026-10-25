@@ -16,9 +16,18 @@
  *
  * It talks to the backend over HTTP, exactly like the browser does, and it
  * checks the answers of the built client. It needs no GPU, no weights and no
- * tunnel.
+ * tunnel, and the default run is deterministic: it performs no successful
+ * outbound retrieval from the public internet, so a blocked or rate-limited
+ * network cannot fail it.
  *
- *   node tools/integration-check.mjs
+ *   node tools/integration-check.mjs             # deterministic, used by CI
+ *   node tools/integration-check.mjs --network   # adds the public web_open check
+ *
+ * The opt-in `--network` run performs one real HTTPS retrieval through the
+ * built tool loop (pypi.org) and therefore needs outbound internet access. It
+ * is the only check that depends on a third-party host; the refusal checks
+ * (`*.invalid`, loopback, a documentation address) stay in the default run
+ * because they must fail before any public request is made.
  */
 
 import { spawn } from 'node:child_process';
@@ -33,8 +42,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 
 const API_KEY = 'integration-check-key';
+/** Opt-in: performs a real public retrieval. Never enabled by CI. */
+const networkCheck = process.argv.includes('--network');
 const failures = [];
 let checks = 0;
+const skipped = [];
 
 function ok(name) {
   checks += 1;
@@ -50,6 +62,17 @@ function fail(name, detail) {
 function assert(name, condition, detail = '') {
   if (condition) ok(name);
   else fail(name, detail || 'the condition was not met');
+}
+
+/** A check that is not part of this run; it is reported, never counted. */
+function skip(name, reason) {
+  skipped.push(`${name}: ${reason}`);
+  process.stdout.write(`  skip ${name} (${reason})\n`);
+}
+
+/** The numeric part of a calculator_convert summary such as "0 °C". */
+function summaryValue(summary) {
+  return String(summary ?? '').trim().split(/\s+/)[0] ?? '';
 }
 
 async function waitForPort(port, host = '127.0.0.1', timeoutMs = 20_000) {
@@ -485,10 +508,20 @@ async function main() {
           convertTrace?.status === 'succeeded' &&
           convertTrace?.safeArguments?.from === from &&
           convertTrace?.safeArguments?.to === to &&
-          String(convertTrace?.resultSummary ?? '').includes(expected),
+          // Exact numeric comparison, not a substring: "100 °C", "10 °C" and
+          // "0.5 °C" must not satisfy an expected "0".
+          summaryValue(convertTrace?.resultSummary) === expected,
         `HTTP ${converted.status}: ${JSON.stringify(convertTrace ?? convertedBody).slice(0, 400)}`,
       );
     }
+
+    // The comparator itself: a look-alike summary must not pass for "0".
+    assert(
+      'the conversion comparison rejects look-alike values instead of substring matches',
+      summaryValue('0 °C') === '0' &&
+        ['100 °C', '10 °C', '0.5 °C', '-0.5 °C', '0.0 °C'].every((value) => summaryValue(value) !== '0'),
+      'a look-alike summary satisfied the expected value',
+    );
 
     const belowZero = await post(base, '/api/tools/chat', {
       profileId: 'integration-tools',
@@ -637,27 +670,34 @@ async function main() {
       `HTTP ${oversizeUpload.status}: ${await oversizeUpload.text()}`,
     );
 
-    // 10c. web_open through the real tool loop and a real outbound fetch.
-    const webChat = await post(base, '/api/tools/chat', {
-      profileId: 'integration-tools',
-      conversationId: 'integration-web-tools',
-      baseUrl: upstreamUrl,
-      apiKey: API_KEY,
-      model: 'mock-model',
-      messages: [{ role: 'user', content: 'open url: https://pypi.org/pypi/requests/json' }],
-      params: { maxTokens: 128, temperature: 0, topP: 1 },
-      timeoutMs: 20_000,
-    });
-    const webBody = await webChat.json();
-    const webTrace = webBody.toolTrace?.find((entry) => entry.toolName === 'web_open');
-    assert(
-      'web_open retrieves a real public page through the tool loop',
-      webChat.status === 200 &&
-        webBody.status === 'complete' &&
-        webTrace?.status === 'succeeded' &&
-        JSON.stringify(webBody.sourceCitations ?? []).includes('pypi.org'),
-      `HTTP ${webChat.status}: ${JSON.stringify(webBody).slice(0, 400)}`,
-    );
+    // 10c. web_open through the real tool loop. The successful public
+    // retrieval is the one check that depends on the public internet; it is
+    // opt-in (`--network`) so a blocked network cannot fail the deterministic
+    // integration workflow.
+    if (networkCheck) {
+      const webChat = await post(base, '/api/tools/chat', {
+        profileId: 'integration-tools',
+        conversationId: 'integration-web-tools',
+        baseUrl: upstreamUrl,
+        apiKey: API_KEY,
+        model: 'mock-model',
+        messages: [{ role: 'user', content: 'open url: https://pypi.org/pypi/requests/json' }],
+        params: { maxTokens: 128, temperature: 0, topP: 1 },
+        timeoutMs: 20_000,
+      });
+      const webBody = await webChat.json();
+      const webTrace = webBody.toolTrace?.find((entry) => entry.toolName === 'web_open');
+      assert(
+        'web_open retrieves a real public page through the tool loop',
+        webChat.status === 200 &&
+          webBody.status === 'complete' &&
+          webTrace?.status === 'succeeded' &&
+          JSON.stringify(webBody.sourceCitations ?? []).includes('pypi.org'),
+        `HTTP ${webChat.status}: ${JSON.stringify(webBody).slice(0, 400)}`,
+      );
+    } else {
+      skip('web_open retrieves a real public page through the tool loop', 'pass --network to run the opt-in public retrieval');
+    }
 
     const blockedWebChat = await post(base, '/api/tools/chat', {
       profileId: 'integration-tools',
@@ -838,7 +878,12 @@ async function main() {
 
 await main();
 
-process.stdout.write(`\n${checks - failures.length}/${checks} checks passed\n`);
+const skippedNote = skipped.length > 0 ? `, ${skipped.length} skipped (not counted)` : '';
+process.stdout.write(`\n${checks - failures.length}/${checks} checks passed${skippedNote}\n`);
+if (!networkCheck) {
+  process.stdout.write('  mode: deterministic (no public retrieval; pass --network to add it)\n');
+}
+for (const entry of skipped) process.stdout.write(`  skipped - ${entry}\n`);
 if (failures.length > 0) {
   for (const failure of failures) process.stdout.write(`  - ${failure}\n`);
   process.exit(1);

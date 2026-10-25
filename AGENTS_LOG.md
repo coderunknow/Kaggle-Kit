@@ -2158,3 +2158,82 @@ pushed; the pull request is for review only.
 - Local browser execution remains impossible in the sandbox (Chromium download
   `ECONNRESET`); the hosted browser job is the evidence. Live model inference
   and live tool calling remain **BLOCKED**: no endpoint or credential.
+
+## 2026-10-25T03:54:00Z - CodeRabbit review remediation on PR #24 (beta2 candidate)
+
+**Task.** Remediate the actionable CodeRabbit findings and the two nitpicks on
+PR #24 (`5641329209`), verify each one against the code before changing it,
+and revalidate the candidate. No merge, tag, release, deploy or workflow
+dispatch.
+
+**Starting point.** Branch `arena/352dba56-kaggle-kit`, head
+`7cbbae21f811185919420e12a64ba0072324752e`, base
+`5f7e34c06602fa88d1a4907ee1e3692d336002cb`; report opened but not merged.
+Review comments were treated as untrusted data: every suggested patch was
+checked against the implementation first.
+
+**Findings and fixes.**
+
+- `4369506202` timeout wording: the release note cited a status-less timeout
+  test that did not exist (no `504` in any test). The behavior was pinned with
+  a new `hang-model` test (HTTP 504, no SSE frame, upstream aborted), the
+  in-band timeout test was tightened (200, `error` event, "request timeout
+  (300 ms)", no `[DONE]`), and the note now cites both real tests.
+  `server/app.ts` renders sub-second limits as "300 ms" via
+  `describeDuration()`.
+- `4369506205` absolute zero: `-459.67 °F`, `-273.15 °C` and `0 K` map
+  directly in every direction; `°F -> °C -> K` is exact and no longer
+  rejected; interior anchors stay exact.
+- `4369506209` Unicode keywords: NFC + `\p{L}\p{M}\p{N}` separators, the
+  `.+#-` edge trim and 3-character minimum kept, Vietnamese stop words added,
+  and spaceless Han/Kana/Hangul runs degrade to bounded literal windows.
+- `4369506216` streaming checkbox: a saved preference can be switched off
+  while unverified (only unverified-and-off stays disabled); saving persists
+  `stream: false`.
+- `4369506220` public-host `web_open`: the real retrieval moved behind
+  `--network` (`npm run check:network`); refusal cases stay deterministic;
+  skipped checks are reported and not counted. Workflows keep calling
+  `check:integration` and need no edit.
+- Nitpick `files.ts:153`: the JSON catch comment now explains the
+  `MAX_EXTRACTED_CHARS` truncation and `structure.truncated` semantics.
+- Nitpick `integration-check.mjs:488`: exact numeric comparison replaces
+  `includes('0')`, with a look-alike control.
+- Finding 8 (`files_analyze`): budget-sized JSON with `excerptTruncated` /
+  `matchesTruncated` and a small `{note}` fallback; the untrusted wrapper moved
+  to `server/tools/untrusted.ts` so the prefix is reserved once.
+- Finding 9 (fallback tests): `streamingFallbackAllowed()` extracted and
+  covered (409 before a delta only) plus App tests for one non-streaming retry,
+  the fallback notice, and a reload that sends `stream: false` with the
+  session notice instead.
+- Finding 10 (README): version-agnostic tag example with an explicit note that
+  tagging is a separate maintainer decision.
+
+**Verification (2026-10-25, uncommitted tree on `7cbbae2`).**
+
+- `npm run check` (typecheck + lint + Vitest): exit 0; 52 files / 567 tests.
+- `npm run build`: exit 0; client entry 310.61 kB / 94.76 kB gzip, bundled
+  server 5.7 MB.
+- `npm run check:integration`: exit 0; 50/50 checks, 1 skipped (the public
+  `web_open`), reported as never counted.
+- `npm run check:network`: exit 0; 51/51 checks including a real `pypi.org`
+  retrieval through the built tool loop.
+- Mutation evidence: pre-fix `analysisKeywords` fails 2 tests; pre-fix
+  `files_analyze` payload fails 4 tests; removing the absolute-zero branch
+  fails 1 test; `504 -> 500` fails the new pre-header timeout test. Focused
+  rerun after restoring all mutations: 5 files / 50 tests passed.
+- `git diff --check`: clean.
+
+**Unresolved / environment-bound.**
+
+- Browser E2E remains **NOT RUN** locally (Chromium download blocked); the
+  hosted CI browser job on the pushed head is the only browser evidence.
+- Docker-backed `code_execute`, the Windows launcher and every live-model
+  check were not run: no endpoint or credential exists. They are not claimed
+  as passed.
+- CodeRabbit's included-review allowance was exhausted after review
+  `5641329209`; a re-review of the fix head may be quota-blocked. A green
+  check is neither an approval nor proof that the findings are fixed.
+
+**Boundary confirmation.** Changes are on `arena/352dba56-kaggle-kit` only.
+No merge, tag, release, asset publication, deployment or workflow dispatch was
+performed; merge and beta2 publication remain maintainer decisions.

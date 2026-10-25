@@ -246,7 +246,8 @@ npm run lint           # eslint
 npm test               # vitest (unit, integration and component tests)
 npm run check          # all three
 npm run build          # type check, build the client, bundle the backend
-npm run check:integration   # drives the built application against the mock upstream
+npm run check:integration   # drives the built application against the mock upstream (deterministic)
+npm run check:network       # the same run plus one real public web_open retrieval (opt-in)
 python3 -m unittest discover -s notebooks -p "test_*.py"   # deployment script tests
 python3 -m unittest discover -s tools -p "test_*.py"        # tests of the release tools
 ```
@@ -255,6 +256,14 @@ The same checks run on every push and pull request in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml). They need no secret,
 no GPU, no weights and no tunnel. The notebook tests need the `requests`
 package (`pip install requests`).
+
+`npm run check:integration` is deterministic and performs no successful
+outbound retrieval from the public internet: a blocked or rate-limited network
+cannot fail it. The successful `web_open` retrieval against a real public host
+lives in `npm run check:network` (the same script with `--network`), which needs
+outbound HTTPS and is not part of CI, the nightly or the release workflow. The
+refusal cases (`*.invalid`, loopback, documentation addresses) stay in the
+deterministic run because they fail before any public request is made.
 
 ### Live-model tool-calling benchmark
 
@@ -294,11 +303,14 @@ requires the explicit `publish_nightly: true` dispatch input (default:
 `false`). Neither CI nor a local release dry-run publishes anything.
 
 ```bash
-git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1
+git tag "v$(node -p "require('./package.json').version")" <commit> \
+  && git push origin "v$(node -p "require('./package.json').version")"
 ```
 
 The version of `package.json` has to match the tag and the release notes have
-to exist in `docs/release-notes/<version>.md`. Every release contains the
+to exist in `docs/release-notes/<version>.md`. No tag has to be created for the
+version currently in `package.json`; tagging is a separate decision by the
+maintainer. Every release contains the
 notebook with the deployment cell, the application bundle, the source archive,
 a `manifest.json` with the size and the SHA-256 of every asset, a
 `SHA256SUMS` file and a `verification-report.json` with the checks that were

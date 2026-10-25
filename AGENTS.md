@@ -69,7 +69,8 @@ npm run typecheck    # tsc for the client and for the backend
 npm run lint         # eslint
 npm test             # vitest
 npm run build        # typecheck + vite build + esbuild bundle of the backend
-npm run check:integration   # the built application against the mock upstream
+npm run check:integration   # the built application against the mock upstream (deterministic)
+npm run check:network       # opt-in: check:integration plus one real public web_open retrieval
 python3 -m unittest discover -s notebooks -p "test_*.py"
 python3 -m unittest discover -s tools -p "test_*.py"
 ```

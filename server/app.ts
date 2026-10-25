@@ -67,6 +67,15 @@ export interface App {
   toolChat: ToolChatService;
 }
 
+/** Human readable request timeout; sub-second limits stay readable. */
+function describeDuration(milliseconds: number): string {
+  if (milliseconds >= 1_000) {
+    const seconds = milliseconds / 1_000;
+    return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
+  }
+  return `${Math.round(milliseconds)} ms`;
+}
+
 export function createApp(options: AppOptions = {}): App {
   const config = options.config ?? loadServerConfig();
   const logger = options.logger ?? createLogger({ verbose: config.verbose });
@@ -501,7 +510,7 @@ export function createApp(options: AppOptions = {}): App {
         throw timedOut
           ? new HttpError(
             504,
-            `The endpoint did not answer the streaming request within ${Math.round(timeoutMs / 1000)} seconds.`,
+            `The endpoint did not answer the streaming request within ${describeDuration(timeoutMs)}.`,
             'timeout',
             'Raise the request timeout, or turn streaming off for this endpoint.',
           )
@@ -587,7 +596,7 @@ export function createApp(options: AppOptions = {}): App {
           `data: ${JSON.stringify({
             error: {
               message: timedOut
-                ? `The generation exceeded the ${Math.round(timeoutMs / 1000)}-second request timeout. The answer is incomplete.`
+                ? `The generation exceeded its request timeout (${describeDuration(timeoutMs)}). The answer is incomplete.`
                 : aborted
                   ? 'The request was cancelled.'
                   : 'The upstream connection failed while the answer was streamed.',

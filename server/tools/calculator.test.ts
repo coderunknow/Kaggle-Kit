@@ -173,11 +173,40 @@ describe('deterministic calculator tools', () => {
     expect(convert(-273.15, 'celsius', 'kelvin').value).toBe(0);
   });
 
+  it('keeps absolute zero exact in every direction and through chained conversions', () => {
+    // -459.67 °F, -273.15 °C and 0 K are the same defining point. The decimal
+    // offsets are not binary-exact, so the numeric result (not only the
+    // display) has to land on the anchor: a value slightly below -273.15 would
+    // make the follow-up Celsius conversion fail as "below absolute zero".
+    const celsius = convert(-459.67, 'fahrenheit', 'celsius').value;
+    expect(celsius).toBe(-273.15);
+    expect(convert(celsius, 'celsius', 'kelvin').value).toBe(0);
+    expect(convert(-459.67, 'fahrenheit', 'celsius').display).toBe('-273.15');
+
+    expect(convert(-273.15, 'celsius', 'fahrenheit').value).toBe(-459.67);
+    expect(convert(-273.15, 'celsius', 'kelvin').value).toBe(0);
+    expect(convert(0, 'kelvin', 'celsius').value).toBe(-273.15);
+    expect(convert(0, 'kelvin', 'fahrenheit').value).toBe(-459.67);
+    expect(convert(-459.67, 'fahrenheit', 'kelvin').value).toBe(0);
+
+    // The same anchors with aliases, and a full chain in both directions.
+    expect(convert(-459.67, '°F', '°C').value).toBe(-273.15);
+    expect(convert(convert(-459.67, 'fahrenheit', 'celsius').value, 'celsius', 'kelvin').value).toBe(0);
+    expect(convert(convert(-273.15, 'celsius', 'fahrenheit').value, 'fahrenheit', 'celsius').value).toBe(-273.15);
+    const chained = convert(-459.67, 'fahrenheit', 'celsius').value;
+    expect(convert(convert(chained, 'celsius', 'kelvin').value, 'kelvin', 'fahrenheit').value).toBe(-459.67);
+
+    // One ulp below the anchor is still refused, so the exactness above does
+    // not loosen the physical bound.
+    expect(() => convert(-459.6700001, 'fahrenheit', 'celsius')).toThrow(/absolute zero/i);
+    expect(() => convert(-273.1500001, 'celsius', 'kelvin')).toThrow(/absolute zero/i);
+  });
+
   it('round trips every dimension with justified floating-point tolerances', () => {
     // Temperature uses absolute tolerance: 0.1 °C is a meaningful bound for a
     // double-precision offset conversion; relative tolerance would be wrong
     // near the zero crossing (-40 °C).
-    for (const value of [-40, -17.5, 0, 21.3, 98.6, 212]) {
+    for (const value of [-273.15, -40, -17.5, 0, 21.3, 98.6, 212]) {
       const fahrenheit = convert(value, 'celsius', 'fahrenheit').value;
       expect(convert(fahrenheit, 'fahrenheit', 'celsius').value).toBeCloseTo(value, 9);
       const kelvin = convert(value, 'celsius', 'kelvin').value;

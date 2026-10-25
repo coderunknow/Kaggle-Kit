@@ -47,7 +47,11 @@
     "2026-10-25 web_open evidence: pypi.org project page (text/html, 20000 chars, 95 ms), pypi.org JSON (19 ms), registry.npmjs.org/left-pad (77 ms), registry.npmjs.org/-/ping (47 ms); blocked: .invalid host, loopback port 8080, 192.0.2.1, files.pythonhosted.org 404",
     "2026-10-25 git diff --check: clean",
     "2026-10-25 GitHub CI run 40156351115 (PR) and 40156348998 (push) on exact head 9b5e9c48a350248a3ad754956c3ee0f01351b864: all five jobs passed (Browser E2E with seven Chromium specs including incremental rendering and upload -> files_list -> files_read, Docker sandbox, notebook tests, typecheck/lint/test/build, Windows launcher)",
-    "2026-10-25 first browser run 40156158148 on 9a3f20f3458abba5d256542f24edc82aeeb7b591: 6/7 specs passed; the upload spec failed only because the collapsed <details> tool timeline hid the resolved files_read text. Test fixed in 9b5e9c4; no application change"
+    "2026-10-25 first browser run 40156158148 on 9a3f20f3458abba5d256542f24edc82aeeb7b591: 6/7 specs passed; the upload spec failed only because the collapsed <details> tool timeline hid the resolved files_read text. Test fixed in 9b5e9c4; no application change",
+    "2026-10-25 CodeRabbit remediation on arena/352dba56-kaggle-kit (uncommitted tree on 7cbbae21f811185919420e12a64ba0072324752e): npm run check exit 0; 52 files / 567 Vitest tests passed",
+    "2026-10-25 CodeRabbit remediation: npm run build exit 0; client entry 310.61 kB / 94.76 kB gzip, bundled server 5.7 MB; npm run check:integration exit 0 with 50/50 checks passed, 1 skipped (not counted); npm run check:network exit 0 with 51/51 checks including a real pypi.org web_open retrieval",
+    "2026-10-25 CodeRabbit remediation mutation evidence: pre-fix analysisKeywords fails 2 tests; pre-fix files_analyze payload fails 4 boundary tests; removing the absolute-zero branch fails the chained conversion test; 504->500 fails the new pre-header timeout test; new tests assert HTTP 504 before any status and the in-band error event with status 200 after headers",
+    "2026-10-25 CodeRabbit remediation: git diff --check clean; focused rerun of calculator/files/executor/streaming/useChat tests 50/50 passed after restoring every mutation"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
@@ -75,6 +79,8 @@
     "2026-10-25 beta2 candidate: no live model endpoint or credential exists; live inference, live tool calling, real-model streaming render and model prose about tool results are BLOCKED and not represented as passed",
     "2026-10-25 beta2 candidate: local browser E2E NOT RUN; npx playwright install chromium failed with ECONNRESET because the browser CDN is unreachable. The two new browser specs require hosted CI",
     "2026-10-25 beta2 candidate: Docker-backed code_execute and the Windows launcher were not run locally; local release dry-run was not run; no tag, release or publication",
-    "2026-10-25 environment restriction: api.github.com, github.com and example.com fail from Node with ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE in this sandbox (system-CA curl returns 200); this is not the reported 12-second web_open timeout"
+    "2026-10-25 environment restriction: api.github.com, github.com and example.com fail from Node with ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE in this sandbox (system-CA curl returns 200); this is not the reported 12-second web_open timeout",
+    "2026-10-25 CodeRabbit remediation: browser E2E not run locally (Playwright Chromium download blocked); hosted CI is the only browser evidence for this fix head",
+    "2026-10-25 CodeRabbit remediation: Docker-backed code_execute, the Windows launcher and all live-model checks were not run; no endpoint or credential exists and none is claimed as verified"
   ]
 }

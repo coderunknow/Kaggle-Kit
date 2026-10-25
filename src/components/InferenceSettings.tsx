@@ -617,7 +617,11 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
             id="streaming-enabled"
             type="checkbox"
             checked={savedStream}
-            disabled={!streamingEnabled}
+            // The control only stays disabled when turning streaming on would
+            // promise something this session cannot do. A saved preference can
+            // always be cleared, otherwise the user is locked into the
+            // streamUnverified notice until a probe succeeds.
+            disabled={!streamingEnabled && !savedStream}
             onChange={(event) => update('stream', event.target.checked)}
           />
           <span>
@@ -626,7 +630,7 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
               {streamingEnabled
                 ? 'The endpoint delivered a text/event-stream response during verification. This proves the upstream transport, not the rendering of this page.'
                 : savedStream
-                  ? 'Saved as enabled, but disabled until streaming is verified for this endpoint in this browser session. Answers are requested without streaming until then.'
+                  ? 'Saved as enabled, but this browser session has not verified streaming for this endpoint, so answers are requested without streaming. Turn it off here at any time, or verify streaming support to use it.'
                   : 'Disabled until streaming is verified for this endpoint in this session.'}
             </span>
           </span>

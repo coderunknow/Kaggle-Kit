@@ -67,6 +67,13 @@ function startMockUpstream(redirectTarget = 'http://127.0.0.1:1/v1'): Promise<Mo
         }
       });
 
+      if (state.model === 'hang-model') {
+        // The endpoint accepts the connection but never sends a status or a
+        // byte. The proxy has to time out before any status exists and answer
+        // with a plain HTTP error, not with a stream.
+        return;
+      }
+
       if (state.model === 'redirect-model') {
         // A redirect to a host that must not be reached by the proxy.
         response.writeHead(302, { Location: `${redirectTarget}/chat/completions` });
@@ -289,12 +296,35 @@ describe('the streaming lifecycle of the proxy', () => {
     expect(sequence).toBe(Array.from({ length: 40 }, (_, index) => String((index + 1) % 10)).join(''));
   });
 
+  it('answers HTTP 504 when the timeout happens before any status was sent', async () => {
+    await probe('mock-model');
+    const before = upstream.streams.length;
+    const result = await readStreamTimed('hang-model', 300);
+
+    // No SSE frame can exist yet: the whole answer is the HTTP error.
+    expect(result.status).toBe(504);
+    expect(result.text).toContain('did not answer the streaming request');
+    expect(result.text).toContain('300 ms');
+    expect(result.text).not.toContain('data:');
+    expect(result.text).not.toContain('[DONE]');
+    expect(result.text).not.toContain('The request was cancelled.');
+
+    // The abandoned upstream request is aborted, not left open.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(upstream.streams[before]?.aborted).toBe(true);
+  });
+
   it('reports a proxy timeout as a timeout instead of a user cancellation', async () => {
     await probe('slow-model');
     const result = await readStreamTimed('slow-model', 300);
 
-    expect(result.text).toContain('timeout');
-    expect(result.text).toContain('incomplete');
+    // The status was already sent as 200 text/event-stream, so the timeout can
+    // only be reported inside the stream. The event names the timeout and says
+    // the answer is partial; it must not be confused with a cancellation.
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('"error"');
+    expect(result.text).toContain('request timeout (300 ms)');
+    expect(result.text).toContain('The answer is incomplete.');
     expect(result.text).not.toContain('The request was cancelled.');
     expect(result.text).not.toContain('[DONE]');
   });

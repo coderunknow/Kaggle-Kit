@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ApiError } from '../../shared/api/errors';
 import type { ChatMessage } from '../../shared/domain';
 import type { ToolTraceRecord } from '../../shared/tools/types';
-import { approvalFailureStates, droppedToolJobIds, markToolTraceCancelled } from './useChat';
+import { approvalFailureStates, droppedToolJobIds, markToolTraceCancelled, streamingFallbackAllowed } from './useChat';
 
 function trace(overrides: Partial<ToolTraceRecord> = {}): ToolTraceRecord {
   return {
@@ -127,5 +127,35 @@ describe('dropped tool job ids', () => {
     expect(droppedToolJobIds(messages, 0)).toEqual(['job-kept', 'job-dropped', 'job-dropped-2']);
     expect(droppedToolJobIds(messages, 4)).toEqual([]);
     expect(droppedToolJobIds([], 0)).toEqual([]);
+  });
+});
+
+describe('streaming fallback guard', () => {
+  const refusal = new ApiError('bad_request', 'Streaming has not been verified for this endpoint.');
+
+  it('retries without streaming only for a 409 refusal before any delta', () => {
+    const refused = new ApiError('bad_request', 'Streaming has not been verified for this endpoint.', { httpStatus: 409 });
+    expect(streamingFallbackAllowed({ wantsStream: true, receivedDelta: false, error: refused })).toBe(true);
+  });
+
+  it('never retries after a delta, because a partial answer already exists', () => {
+    const refused = new ApiError('bad_request', 'Streaming has not been verified for this endpoint.', { httpStatus: 409 });
+    expect(streamingFallbackAllowed({ wantsStream: true, receivedDelta: true, error: refused })).toBe(false);
+  });
+
+  it('refuses every other status, kind, request mode and error type', () => {
+    expect(streamingFallbackAllowed({ wantsStream: false, receivedDelta: false, error: refusal })).toBe(false);
+    expect(streamingFallbackAllowed({ wantsStream: true, receivedDelta: false, error: refusal })).toBe(false);
+    expect(streamingFallbackAllowed({
+      wantsStream: true,
+      receivedDelta: false,
+      error: new ApiError('server', 'failed', { httpStatus: 409 }),
+    })).toBe(false);
+    expect(streamingFallbackAllowed({
+      wantsStream: true,
+      receivedDelta: false,
+      error: new ApiError('bad_request', 'bad', { httpStatus: 400 }),
+    })).toBe(false);
+    expect(streamingFallbackAllowed({ wantsStream: true, receivedDelta: false, error: new Error('boom') })).toBe(false);
   });
 });

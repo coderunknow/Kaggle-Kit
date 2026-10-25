@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { FileProcessingError, FileVault, MAX_UPLOAD_BYTES } from './files';
+import { analysisKeywords, FileProcessingError, FileVault, MAX_EXTRACTED_CHARS, MAX_UPLOAD_BYTES } from './files';
 
 describe('conversation-scoped upload vault', () => {
   it('extracts bounded plain text and only returns upload metadata', async () => {
@@ -97,6 +97,88 @@ describe('bounded file analysis', () => {
       bytes: new TextEncoder().encode('{"alpha":1,"beta":[2,3]}'), conversationId: 'conv-json',
     });
     expect(vault.analyze('conv-json', json.id, 'beta').structure.json).toEqual({ topLevel: 'object', entries: 2 });
+  });
+
+  it('keeps non-ASCII terms intact, including decomposed Vietnamese input', () => {
+    // The old ASCII split turned "lương" into "l" + "ng" and "café" into "caf",
+    // so a Vietnamese or accented question silently matched nothing.
+    expect(analysisKeywords('Lương tháng của nhân viên')).toContain('lương');
+    expect(analysisKeywords('café au lait')).toContain('café');
+    expect(analysisKeywords('Tổng doanh thu của marketing là bao nhiêu?')).toEqual(
+      expect.arrayContaining(['tổng', 'doanh', 'thu', 'marketing']),
+    );
+    // NFC and NFD spellings of the same question must produce the same terms.
+    const composed = 'Lương tháng của nhân viên';
+    expect(analysisKeywords(composed.normalize('NFD'))).toEqual(analysisKeywords(composed));
+    // Space-separated non-Latin scripts keep whole words.
+    expect(analysisKeywords('Какой бюджет у маркетинга?')).toEqual(
+      expect.arrayContaining(['бюджет', 'маркетинга']),
+    );
+    // Bounded: a long question still yields at most six terms, measured in code points.
+    expect(analysisKeywords('doanh thu lợi nhuận chi phí nhân viên khách hàng thị trường').length).toBeLessThanOrEqual(6);
+    expect(analysisKeywords('预算和销售额是多少？'.repeat(20)).length).toBeLessThanOrEqual(6);
+  });
+
+  it('matches accented Vietnamese and a script without spaces through literal terms', async () => {
+    const vault = new FileVault();
+    const vietnamese = await vault.upload({
+      name: 'doanh-thu.csv',
+      mediaType: 'text/csv',
+      bytes: new TextEncoder().encode('phòng ban,số tiền\nkỹ thuật,1200\ntiếp thị,800\n'),
+      conversationId: 'conv-vi',
+    });
+    const vietnameseAnalysis = vault.analyze('conv-vi', vietnamese.id, 'Số tiền của tiếp thị là bao nhiêu?');
+    expect(vietnameseAnalysis.matches).toContainEqual({ line: 3, text: 'tiếp thị,800' });
+    // The unrelated engineering row matches no term and stays out.
+    expect(vietnameseAnalysis.matches).not.toContainEqual({ line: 2, text: 'kỹ thuật,1200' });
+
+    // Decomposed text in the file must match the precomposed question.
+    const decomposed = await vault.upload({
+      name: 'nfd.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('lương tháng 12\nlương tháng 13\n'.normalize('NFD')),
+      conversationId: 'conv-vi',
+    });
+    // The stored text keeps its own spelling; only the comparison is
+    // normalized, so the match reports the decomposed bytes from the file.
+    expect(vault.analyze('conv-vi', decomposed.id, 'lương tháng 13').matches).toContainEqual({
+      line: 2,
+      text: 'lương tháng 13'.normalize('NFD'),
+    });
+
+    // Han runs have no spaces, so the tool searches literal two-character
+    // windows instead of the whole question.
+    const chinese = await vault.upload({
+      name: 'yusuan.csv',
+      mediaType: 'text/csv',
+      bytes: new TextEncoder().encode('预算,1000\n销售,800\n其他,500\n'),
+      conversationId: 'conv-zh',
+    });
+    const chineseAnalysis = vault.analyze('conv-zh', chinese.id, '预算和销售额是多少？');
+    expect(chineseAnalysis.matches).toContainEqual({ line: 1, text: '预算,1000' });
+    // Two-character windows are broad by design (no word segmentation): they
+    // can match several lines, which is why the result is capped and literal.
+    expect(chineseAnalysis.matches).toContainEqual({ line: 2, text: '销售,800' });
+    expect(chineseAnalysis.matches).not.toContainEqual({ line: 3, text: '其他,500' });
+  });
+
+  it('reports no JSON shape when the stored text was cut at the extraction limit', async () => {
+    const vault = new FileVault();
+    const entries = Array.from({ length: 3_000 }, (_, index) => ({ id: index, label: `item-${index}` }));
+    const file = await vault.upload({
+      name: 'large.json',
+      mediaType: 'application/json',
+      bytes: new TextEncoder().encode(JSON.stringify(entries)),
+      conversationId: 'conv-large-json',
+    });
+
+    // Pretty-printing expands the document past MAX_EXTRACTED_CHARS; the cut
+    // text no longer parses, which is the real (documented) trigger of the
+    // catch in analyze().
+    expect(file.extractedCharacters).toBe(MAX_EXTRACTED_CHARS);
+    const analysis = vault.analyze('conv-large-json', file.id, 'label');
+    expect(analysis.structure.truncated).toBe(true);
+    expect(analysis.structure.json).toBeUndefined();
   });
 
   it('bounds the excerpt and refuses an empty question, a foreign file and an oversized question', async () => {

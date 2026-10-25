@@ -257,14 +257,25 @@ export function convert(value: number, from: string, to: string): { value: numbe
   return conversionResult(value * fromUnit.factor / toUnit.factor, from, to);
 }
 
+const CELSIUS_ABSOLUTE_ZERO = -273.15;
+const FAHRENHEIT_ABSOLUTE_ZERO = -459.67;
+const KELVIN_ABSOLUTE_ZERO = 0;
+
 /**
  * Temperature conversion between the four spellings of the three scales.
  *
- * Each pair uses the defining two-point relation of its scales instead of a
- * shared path through Kelvin: 32 °F -> °C and 212 °F -> °C are then exactly 0
- * and 100, and 100 °C -> °F is exactly 212, rather than 5.68e-14, 100.00000000000006
- * and 211.99999999999994. The Kelvin pairs keep their exact offsets, so
- * -459.67 °F -> K and 0 K -> °F stay exact as well.
+ * The interior anchors use the defining two-point relation of their scales
+ * instead of a shared path through Kelvin: 32 °F -> °C and 212 °F -> °C are
+ * then exactly 0 and 100, and 100 °C -> °F is exactly 212, rather than
+ * 5.68e-14, 100.00000000000006 and 211.99999999999994.
+ *
+ * Absolute zero is a defining point of all three scales, and the decimal
+ * offsets 273.15 and 459.67 are not binary-exact: no single affine ordering is
+ * exact at the two-point anchors and at absolute zero at once (for example
+ * -273.15 °C * 9 / 5 + 32 rounds to -459.66999999999996). The zero point is
+ * therefore mapped directly, so -459.67 °F -> °C returns exactly -273.15 and a
+ * subsequent °C -> K conversion accepts it instead of rejecting it as "below
+ * absolute zero". Every other value still goes through the affine relation.
  */
 function temperatureValue(value: number, source: string, target: string): number {
   const fromF = source === 'f' || source === 'fahrenheit';
@@ -274,8 +285,17 @@ function temperatureValue(value: number, source: string, target: string): number
   if (!fromF && !fromK && !toF && !toK) return value; // C -> C (and the celsius aliases)
   if (fromF && toF) return value;
   if (fromK && toK) return value;
+  const absoluteZero =
+    (fromF && value === FAHRENHEIT_ABSOLUTE_ZERO) ||
+    (fromK && value === KELVIN_ABSOLUTE_ZERO) ||
+    (!fromF && !fromK && value === CELSIUS_ABSOLUTE_ZERO);
+  if (absoluteZero) {
+    return toF ? FAHRENHEIT_ABSOLUTE_ZERO : toK ? KELVIN_ABSOLUTE_ZERO : CELSIUS_ABSOLUTE_ZERO;
+  }
   if (fromF) {
-    return toK ? (value + 459.67) * (5 / 9) : (value - 32) * (5 / 9);
+    // Multiplication before division keeps the -459.67 °F anchor exact even
+    // outside the explicit branch above.
+    return toK ? (value + 459.67) * 5 / 9 : (value - 32) * 5 / 9;
   }
   if (fromK) {
     return toF ? value * (9 / 5) - 459.67 : value - 273.15;

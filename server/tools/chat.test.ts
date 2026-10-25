@@ -228,6 +228,49 @@ describe('bounded server-side tool chat', () => {
     expect(result.content).toContain('three departments');
   });
 
+  it('keeps the file analysis JSON parseable after the untrusted-data wrapper', async () => {
+    const completions: Completion[] = [];
+    const { start, vault, bodies } = await harness(
+      profile({ allowedTools: ['files_analyze'] }),
+      completions,
+    );
+    const rows = Array.from(
+      { length: 300 },
+      (_, index) => `dept${index},${1000 + index},owner${index},${'note '.repeat(45)}`,
+    );
+    const uploaded = await vault.upload({
+      name: 'wide.csv',
+      mediaType: 'text/csv',
+      bytes: new TextEncoder().encode(['department,amount,owner,note', ...rows].join('\n')),
+      conversationId: 'conversation-1',
+    });
+    completions.push(
+      functionCall('files_analyze', { file_id: uploaded.id, question: 'dept299' }, 'call-files'),
+      answer('The wide file contains one matching row.'),
+    );
+
+    const result = await start();
+
+    expect(result.status).toBe('complete');
+    expect(result.toolTrace[0]?.status).toBe('succeeded');
+    const toolMessages = ((bodies[1]?.messages ?? []) as Array<{ role: string; content: string }>)
+      .filter((message) => message.role === 'tool');
+    expect(toolMessages).toHaveLength(1);
+    const content = toolMessages[0]!.content;
+    // The wrapper prefix counts against the same limit; the JSON below it must
+    // still be complete and parseable at the default 24 kB boundary.
+    expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(24_000);
+    expect(content.startsWith('UNTRUSTED TOOL OUTPUT')).toBe(true);
+    const payload = JSON.parse(content.slice(content.indexOf('{'))) as {
+      matches: Array<{ line: number; text: string }>;
+      excerptTruncated: boolean;
+      matchesTruncated?: boolean;
+    };
+    expect(payload.matches).toEqual([{ line: 301, text: expect.stringContaining('dept299') }]);
+    expect(payload.matchesTruncated).toBeUndefined();
+    expect(payload.excerptTruncated).toBe(true);
+  });
+
   it('never sends the base prompt no-tools claim together with a tool list', async () => {
     const test = await harness(profile({ allowedTools: ['calculator_calculate'] }), [
       functionCall('calculator_calculate', { expression: '2 + 2' }),
