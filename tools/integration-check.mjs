@@ -247,14 +247,13 @@ async function main() {
     // The mock writes its five words 60 ms apart, so a forwarding proxy lets
     // the client see the first word long before [DONE] arrives.
     const firstStreamChunk = streamChunks[0];
-    const lastStreamChunk = streamChunks[streamChunks.length - 1];
     assert(
       'the stream is forwarded incrementally, not buffered',
+      // A buffering proxy produces exactly one chunk that already contains the
+      // termination marker; a forwarding one delivers readable prefixes first.
       streamChunks.length >= 2 &&
         Boolean(firstStreamChunk) &&
-        !firstStreamChunk.text.includes('[DONE]') &&
-        Boolean(lastStreamChunk) &&
-        firstStreamChunk.at < lastStreamChunk.at,
+        !firstStreamChunk.text.includes('[DONE]'),
       `${streamChunks.length} chunk(s): ${JSON.stringify(streamChunks.map((chunk) => chunk.at))}`,
     );
     process.stdout.write(

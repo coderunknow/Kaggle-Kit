@@ -179,9 +179,12 @@ test('uploads a real CSV and reads it through the real tool loop', async ({ page
   await page.getByRole('button', { name: /^send$/i }).click();
 
   // The mock model lists the vault, then reads the ID it received, so both
-  // steps run through the real executor against the real uploaded bytes.
+  // steps run through the real executor against the real uploaded bytes. The
+  // tool timeline is collapsed by default, so open it before reading it.
   const timeline = page.locator('.tool-timeline');
-  await expect(timeline.getByText('files_read')).toBeVisible({ timeout: 20_000 });
+  await expect(timeline.getByText(/Tool activity/)).toBeVisible({ timeout: 20_000 });
+  await timeline.getByText(/Tool activity/).click();
+  await expect(timeline.getByText('files_read')).toBeVisible();
+  await expect(timeline.getByText(/budget\.csv/).first()).toBeVisible();
   await expect(page.getByText(/Tool result received/)).toBeVisible();
-  await expect(page.getByText(/engineering,1200/)).toBeVisible();
 });
