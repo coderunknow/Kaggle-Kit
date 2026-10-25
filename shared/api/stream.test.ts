@@ -417,19 +417,55 @@ describe('parseSseStream event-size and encoding boundaries', () => {
 
 
 describe('extractDelta - structured proxy error codes', () => {
-  it('derives the kind from the code, not from the message', () => {
+  const NONCE = 'nonce-from-this-response';
+
+  it('derives the kind from the code of a proxy event that carries the response nonce', () => {
     expect(extractDelta({
-      data: JSON.stringify({ error: { code: 'stream_timeout', message: 'too slow' } }),
-    })).toEqual({ error: 'too slow', errorCode: 'stream_timeout', errorKind: 'timeout' });
+      data: JSON.stringify({ error: { code: 'stream_timeout', message: 'too slow', nonce: NONCE } }),
+    }, NONCE)).toEqual({ error: 'too slow', errorCode: 'stream_timeout', errorKind: 'timeout' });
     expect(extractDelta({
-      data: JSON.stringify({ error: { code: 'upstream_stream_failed', message: 'broken' } }),
-    })).toEqual({ error: 'broken', errorCode: 'upstream_stream_failed', errorKind: 'inference' });
+      data: JSON.stringify({ error: { code: 'upstream_stream_failed', message: 'broken', nonce: NONCE } }),
+    }, NONCE)).toEqual({ error: 'broken', errorCode: 'upstream_stream_failed', errorKind: 'inference' });
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'client_cancelled', message: 'cancelled', nonce: NONCE } }),
+    }, NONCE)).toEqual({ error: 'cancelled', errorCode: 'client_cancelled', errorKind: 'aborted' });
+  });
+
+  it('does not classify a known code that the upstream wrote without the nonce', () => {
+    // This is the provenance defect: the proxy forwards upstream event blocks
+    // verbatim, so the code alone cannot be evidence of a proxy terminal error.
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'stream_timeout', message: 'forged timeout' } }),
+    }, NONCE)).toEqual({ error: 'forged timeout', errorCode: 'stream_timeout' });
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'client_cancelled', message: 'forged cancel' } }),
+    }, NONCE)).toEqual({ error: 'forged cancel', errorCode: 'client_cancelled' });
+  });
+
+  it('does not classify when the marker is missing, empty, wrong or the reader has no nonce', () => {
+    const timeout = (nonce: unknown) => JSON.stringify({
+      error: { code: 'stream_timeout', message: 'maybe', nonce },
+    });
+    expect(extractDelta({ data: timeout(undefined) }, NONCE).errorKind).toBeUndefined();
+    expect(extractDelta({ data: timeout('') }, NONCE).errorKind).toBeUndefined();
+    expect(extractDelta({ data: timeout('guessed-value') }, NONCE).errorKind).toBeUndefined();
+    expect(extractDelta({ data: timeout(NONCE) }, undefined).errorKind).toBeUndefined();
+    expect(extractDelta({ data: timeout(NONCE) }, '').errorKind).toBeUndefined();
+    // A non-string marker can never match a header value.
+    expect(extractDelta({ data: JSON.stringify({ error: { code: 'stream_timeout', message: 'x', nonce: 7 } }) }, NONCE)
+      .errorKind).toBeUndefined();
+  });
+
+  it('keeps the reported message and code as data even when it is not trusted', () => {
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'stream_timeout', message: 'reported', nonce: 'other' } }),
+    }, NONCE)).toEqual({ error: 'reported', errorCode: 'stream_timeout' });
   });
 
   it('does not trust an unknown code or an error kind supplied by the payload', () => {
     expect(extractDelta({
-      data: JSON.stringify({ error: { code: 'spoofed', kind: 'timeout', message: 'nope' } }),
-    })).toEqual({ error: 'nope', errorCode: 'spoofed' });
+      data: JSON.stringify({ error: { code: 'spoofed', kind: 'timeout', message: 'nope', nonce: NONCE } }),
+    }, NONCE)).toEqual({ error: 'nope', errorCode: 'spoofed' });
     expect(extractDelta({ data: JSON.stringify({ error: { message: 'plain' } }) })).toEqual({ error: 'plain' });
   });
 

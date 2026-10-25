@@ -58,6 +58,42 @@ describe('browser storage', () => {
     expect(loadPreferences().theme).toBe('dark');
   });
 
+  it('round trips the optional streamUnverified flag and defaults a legacy payload without it', () => {
+    // The beta2 candidate added an optional persisted message field. It must be
+    // additive: a message written by an older version (no field at all) has to
+    // load unchanged, and no migration may be required.
+    const legacy = {
+      ...conversation,
+      messages: [
+        {
+          id: 'm-legacy', role: 'user', content: 'old', status: 'complete',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'm-legacy-assistant', role: 'assistant', content: 'old answer', status: 'complete',
+          createdAt: '2026-01-01T00:00:01.000Z', transport: 'complete',
+        },
+      ],
+    };
+    window.localStorage.setItem(STORAGE_KEYS.conversations, JSON.stringify([legacy]));
+    const restoredLegacy = loadConversations();
+    expect(restoredLegacy[0]?.messages).toHaveLength(2);
+    expect(restoredLegacy[0]?.messages[1]?.content).toBe('old answer');
+    expect(restoredLegacy[0]?.messages[1]?.streamUnverified).toBeUndefined();
+
+    saveConversations([{
+      ...conversation,
+      messages: [
+        { id: 'm2', role: 'assistant', content: 'new', status: 'complete', createdAt: '2026-01-01T00:00:02.000Z', streamUnverified: true },
+        // Anything other than `true` is not the flag and is dropped.
+        { id: 'm3', role: 'assistant', content: 'odd', status: 'complete', createdAt: '2026-01-01T00:00:03.000Z', streamUnverified: 'yes' as unknown as boolean },
+      ],
+    }]);
+    const restored = loadConversations()[0]?.messages ?? [];
+    expect(restored[0]?.streamUnverified).toBe(true);
+    expect(restored[1]?.streamUnverified).toBeUndefined();
+  });
+
   it('never persists a session credential', () => {
     saveProfiles([profile]);
     saveBrowserKeys({});

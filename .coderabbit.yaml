@@ -1,3 +1,12 @@
+# Two rules in this file are load-bearing and easy to break:
+#   1. Every `path_instructions[].path` is ONE minimatch glob. A comma-joined
+#      list is a literal pattern that matches nothing.
+#   2. A default-ignored path (for example the npm lockfile) is only reviewed
+#      after its exact default pattern is repeated without the leading `!`.
+# Reference: https://docs.coderabbit.ai/reference/configuration and
+# https://docs.coderabbit.ai/configuration/path-instructions (checked
+# 2026-10-25). tools/test_review_config.py fails if either rule is broken.
+
 language: en-US
 early_access: false
 enable_free_tier: true
@@ -25,9 +34,16 @@ reviews:
     enabled: true
     auto_incremental_review: true
     drafts: false
-    auto_pause_after_reviewed_commits: 5
+    # 0 disables the pause, so every intentional push gets an incremental
+    # review instead of silently stopping after five reviewed commits.
+    auto_pause_after_reviewed_commits: 0
   path_filters:
+    # `**/*` alone does not override CodeRabbit's default ignored paths, so the
+    # lockfile is added with its exact default pattern (minus the `!`) to force
+    # it into review scope: dependency changes are part of this project's
+    # release evidence.
     - "**/*"
+    - "**/package-lock.json"
   finishing_touches:
     docstrings:
       enabled: false
@@ -91,7 +107,7 @@ reviews:
         resource boundaries, deterministic behavior, valid skip reasons, and
         whether tests distinguish mocks from real Kaggle GPU/model/endpoint
         verification. Confirm raw output supports reported pass counts.
-    - path: "docs/**,**/*.md,DESIGN_LOG.md,AGENTS_LOG.md"
+    - path: "{docs/**,**/*.md}"
       instructions: >-
         Reconcile release notes, implementation claims, test counts, limitations,
         and checked-in evidence with code and actual outputs. Verify exact
@@ -99,7 +115,7 @@ reviews:
         distinguish local, hosted, mocked, and live-model checks. Flag stale,
         contradictory, or unsupported claims. Preserve append-only history in
         the design and implementation logs.
-    - path: ".github/workflows/**,package.json,package-lock.json,requirements*.txt"
+    - path: "{.github/workflows/**,package.json,package-lock.json,requirements*.txt}"
       instructions: >-
         Review dependency and lockfile integrity, reproducible installs, action
         pinning, permissions, secrets, untrusted pull request inputs, and trigger

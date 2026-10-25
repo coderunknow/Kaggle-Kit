@@ -204,7 +204,12 @@ export const gateway = {
     const contentType = response.headers.get('content-type') ?? '';
 
     if (contentType.toLowerCase().includes('text/event-stream') && response.body) {
-      return this.readStream(response.body, options);
+      // The marker proves which terminal errors this proxy wrote. The parser is
+      // loaded lazily, so the header name is read from the same module rather
+      // than duplicated here.
+      const { PROXY_STREAM_NONCE_HEADER } = await import('../../shared/api/stream');
+      const nonce = response.headers.get(PROXY_STREAM_NONCE_HEADER) ?? undefined;
+      return this.readStream(response.body, { ...options, nonce });
     }
 
     const payload = (await response.json()) as { response?: ChatCompletionResponse };
@@ -226,9 +231,17 @@ export const gateway = {
     };
   },
 
+  /**
+   * Read a proxied event stream.
+   *
+   * `nonce` must be the value of the response's `PROXY_STREAM_NONCE_HEADER`.
+   * Without it no terminal error is classified as a proxy error, which is the
+   * safe default: an unknown payload is reported as an inference failure
+   * rather than as a timeout the proxy never produced.
+   */
   async readStream(
     body: ReadableStream<Uint8Array>,
-    options: { signal?: AbortSignal; callbacks?: StreamCallbacks } = {},
+    options: { signal?: AbortSignal; callbacks?: StreamCallbacks; nonce?: string } = {},
   ): Promise<ChatResult> {
     const { parseSseStream, extractDelta } = await import('../../shared/api/stream');
     let content = '';
@@ -238,12 +251,12 @@ export const gateway = {
 
     try {
       for await (const event of parseSseStream(body, options.signal)) {
-        const delta = extractDelta(event);
+        const delta = extractDelta(event, options.nonce);
         if (delta.error) {
           // The proxy reports a broken upstream stream as an event. Stopping
           // here is what keeps a truncated answer from being shown as complete.
-          // Only a classified proxy error code may change the kind; an ordinary
-          // upstream error event stays an inference failure.
+          // Only an error that carries this response's proxy nonce may change
+          // the kind; every other upstream error stays an inference failure.
           streamError = { message: delta.error, kind: delta.errorKind ?? 'inference' };
           break;
         }

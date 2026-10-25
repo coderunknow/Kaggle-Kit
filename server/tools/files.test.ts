@@ -367,6 +367,12 @@ describe('F7 - CSV structure counts records, not physical lines', () => {
     expect(file.truncated).toBe(true);
     const analysis = vault.analyze('conv-csv', file.id, 'record');
     expect(analysis.structure.truncated).toBe(true);
-    expect(analysis.structure.csv?.dataRows).toBeLessThan(MAX_EXTRACTED_CHARS);
+    // Assert the exact contract instead of a looser bound: a scan of the
+    // untruncated text would report 60,000 rows and still satisfy
+    // `< MAX_EXTRACTED_CHARS`, so the old assertion could not fail on the
+    // defect it was written to catch. The bounded text is the 4-character
+    // header plus 24,999 complete rows.
+    expect(analysis.structure.extractedCharacters).toBe(MAX_EXTRACTED_CHARS);
+    expect(analysis.structure.csv?.dataRows).toBe(24_999);
   });
 });

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app';
 import { loadServerConfig, type ServerConfig } from './config';
 import { createLogger } from './logger';
-import { MAX_SSE_EVENT_BYTES } from '../shared/api/stream';
+import { MAX_SSE_EVENT_BYTES, parseSseStream } from '../shared/api/stream';
 import { gateway } from '../src/lib/gateway';
 import { ApiError, withHint } from '../shared/api/errors';
 
@@ -138,6 +138,25 @@ function startMockUpstream(redirectTarget = 'http://127.0.0.1:1/v1'): Promise<Mo
         return;
       }
 
+      if (state.model === 'forged-error-model') {
+        // An untrusted upstream writing the proxy's own terminal-error shape.
+        // It cannot know the per-response nonce, so the browser must treat it
+        // as an upstream failure, not as a proxy timeout or cancellation.
+        response.write('data: {"choices":[{"delta":{"content":"F"}}]}\n\n');
+        state.chunks += 1;
+        response.write(`data: ${JSON.stringify({
+          error: {
+            code: 'stream_timeout',
+            message: 'The generation exceeded its request timeout (1 ms). The answer is incomplete.',
+            nonce: 'guessed-nonce',
+          },
+        })}\n\n`);
+        response.write('data: [DONE]\n\n');
+        state.completed = true;
+        response.end();
+        return;
+      }
+
       if (state.model === 'crlf-model') {
         // CRLF event separators must be split exactly like LF ones.
         response.write('data: {"choices":[{"delta":{"content":"C"}}]}\r\n\r\n');
@@ -252,8 +271,13 @@ describe('the streaming lifecycle of the proxy', () => {
     });
 
   /** Read a streamed answer completely. */
+  const streamNonce = (response: http.IncomingMessage): string | undefined => {
+    const value = response.headers['x-kaggle-kit-stream-nonce'];
+    return Array.isArray(value) ? value[0] : value;
+  };
+
   const readStream = (model: string, stopAfterFirstChunk = false) =>
-    new Promise<{ text: string; status: number; aborted: boolean }>((resolve, reject) => {
+    new Promise<{ text: string; status: number; aborted: boolean; nonce?: string }>((resolve, reject) => {
       const payload = JSON.stringify({
         baseUrl: upstream.url,
         apiKey: API_KEY,
@@ -276,11 +300,11 @@ describe('the streaming lifecycle of the proxy', () => {
             text += chunk;
             if (stopAfterFirstChunk) {
               request.destroy();
-              resolve({ text, status: response.statusCode ?? 0, aborted: true });
+              resolve({ text, status: response.statusCode ?? 0, aborted: true, nonce: streamNonce(response) });
             }
           });
           response.on('end', () => {
-            resolve({ text, status: response.statusCode ?? 0, aborted: false });
+            resolve({ text, status: response.statusCode ?? 0, aborted: false, nonce: streamNonce(response) });
           });
           response.on('error', (error) => {
             if (stopAfterFirstChunk) return;
@@ -301,7 +325,7 @@ describe('the streaming lifecycle of the proxy', () => {
   const readStreamTimed = (
     model: string,
     timeoutMs = 20_000,
-  ) => new Promise<{ text: string; status: number; chunks: Array<{ at: number; text: string }> }>((resolve, reject) => {
+  ) => new Promise<{ text: string; status: number; chunks: Array<{ at: number; text: string }>; nonce?: string }>((resolve, reject) => {
     const payload = JSON.stringify({
       baseUrl: upstream.url,
       apiKey: API_KEY,
@@ -325,7 +349,7 @@ describe('the streaming lifecycle of the proxy', () => {
           text += chunk;
           chunks.push({ at: Date.now() - startedAt, text: chunk });
         });
-        response.on('end', () => resolve({ text, status: response.statusCode ?? 0, chunks }));
+        response.on('end', () => resolve({ text, status: response.statusCode ?? 0, chunks, nonce: streamNonce(response) }));
         response.on('error', reject);
       },
     );
@@ -479,7 +503,7 @@ describe('the streaming lifecycle of the proxy', () => {
 
 describe('F1/F5 - terminal stream errors survive partial upstream frames', () => {
   /** Run the exact browser read path over the bytes the proxy produced. */
-  const readViaGateway = async (text: string) => {
+  const readViaGateway = async (text: string, nonce?: string) => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(text));
@@ -488,7 +512,7 @@ describe('F1/F5 - terminal stream errors survive partial upstream frames', () =>
     });
     const deltas: string[] = [];
     const error = await gateway
-      .readStream(body, { callbacks: { onDelta: (delta) => { if (delta.content) deltas.push(delta.content); } } })
+      .readStream(body, { nonce, callbacks: { onDelta: (delta) => { if (delta.content) deltas.push(delta.content); } } })
       .catch((caught: unknown) => caught);
     return { deltas, error };
   };
@@ -503,7 +527,8 @@ describe('F1/F5 - terminal stream errors survive partial upstream frames', () =>
     expect(result.text).not.toContain('[DONE]');
     expect(result.text).not.toContain('finish_reason');
 
-    const { deltas, error } = await readViaGateway(result.text);
+    expect(result.nonce).toMatch(/^[A-Za-z0-9_-]{20,}$/);
+    const { deltas, error } = await readViaGateway(result.text, result.nonce);
     expect(deltas.join('')).toBe('P');
     expect(error).toBeInstanceOf(ApiError);
     const apiError = error as ApiError;
@@ -522,7 +547,7 @@ describe('F1/F5 - terminal stream errors survive partial upstream frames', () =>
     expect(result.text).not.toContain('condata:');
     expect(result.text).not.toContain('[DONE]');
 
-    const { deltas, error } = await readViaGateway(result.text);
+    const { deltas, error } = await readViaGateway(result.text, result.nonce);
     expect(deltas.join('')).toBe('B');
     expect(error).toBeInstanceOf(ApiError);
     const apiError = error as ApiError;
@@ -542,14 +567,51 @@ describe('F1/F5 - terminal stream errors survive partial upstream frames', () =>
     expect(result.text).not.toContain('[DONE]');
   });
 
-  it('still forwards complete CRLF-framed events incrementally', async () => {
+  it('forwards CRLF-framed events as separate complete frames', async () => {
     await probe('crlf-model');
     const result = await readStreamTimed('crlf-model');
     expect(result.status).toBe(200);
-    expect(result.text).toContain('"content":"C"');
-    expect(result.text).toContain('"content":"R"');
-    expect(result.text).toContain('[DONE]');
-    expect(result.chunks.length).toBeGreaterThan(1);
+
+    // The previous assertion counted transport chunks, which the loopback
+    // stack may coalesce: it could fail without any change in behaviour. What
+    // matters is that CRLF separators end frames exactly like LF ones, so the
+    // frames are parsed and compared instead of counted.
+    const events: string[] = [];
+    for await (const event of parseSseStream(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(result.text));
+          controller.close();
+        },
+      }),
+    )) {
+      events.push(event.data);
+    }
+    expect(events).toHaveLength(3);
+    expect(JSON.parse(events[0]!).choices[0].delta.content).toBe('C');
+    expect(JSON.parse(events[1]!).choices[0].delta.content).toBe('R');
+    expect(events[2]).toBe('[DONE]');
+    // The proxy forwards the upstream framing verbatim: three CRLF terminators.
+    expect(result.text.split('\r\n\r\n')).toHaveLength(4);
+  });
+
+  it('does not let an upstream forge a proxy terminal error code', async () => {
+    await probe('forged-error-model');
+    const result = await readStream('forged-error-model');
+    expect(result.status).toBe(200);
+    expect(result.nonce).toBeDefined();
+
+    // The frame the upstream wrote is forwarded unchanged...
+    expect(result.text).toContain('"code":"stream_timeout"');
+    expect(result.text).toContain('guessed-nonce');
+
+    // ... and the browser ignores its code because the nonce does not match.
+    const { deltas, error } = await readViaGateway(result.text, result.nonce);
+    expect(deltas.join('')).toBe('F');
+    expect(error).toBeInstanceOf(ApiError);
+    const apiError = error as ApiError;
+    expect(apiError.kind).toBe('inference');
+    expect(apiError.hint).toMatch(/partial answer was kept/i);
   });
 });
 });
