@@ -2274,3 +2274,18 @@ performed; merge and beta2 publication remain maintainer decisions.
   `SOURCE_SHA` rendered as `7198327`).
 - Checked into the same branch; CI is rechecked on the resulting head rather
   than the failed runs.
+
+### Addendum - final CI and review state (2026-10-25T04:03:15Z)
+
+- Exact head `453aedbed1b036bb30358dd7e8a7158533d5140c`: push run
+  `40160350023` and PR run `40160353262` both passed all five jobs
+  (typecheck/lint/test/build, Docker sandbox integration, notebook plus
+  release-tool tests, Windows launcher, browser end-to-end).
+- CodeRabbit did not re-review the fix head: reviews on PR #24 remain
+  `5641243950` (Copilot, head `9a3f20f`) and `5641329209` (CodeRabbit, head
+  `7cbbae2`), and its included-review allowance was exhausted. No CodeRabbit
+  status check exists on the new head. Five review threads are unresolved
+  (four outdated, one current); they were not resolved by hand.
+- Kilo Code Review is `action_required` (account out of credits); Qodo reports
+  its trial ended. `reviewDecision` is empty, merge state
+  `MERGEABLE`/`UNSTABLE`, no human approval. CI green is not an approval.

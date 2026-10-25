@@ -3020,3 +3020,23 @@ for the working tree, not for a later commit.
 The lesson repeated: the Python tests read the documentation and the
 environment report, so editing those files requires the Python suites (and the
 release dry run) before claiming a green change set.
+
+### Addendum - CI and review state on the final fix head (2026-10-25T04:03:15Z)
+
+Exact head `453aedbed1b036bb30358dd7e8a7158533d5140c`: push run
+`40160350023` and pull-request run `40160353262` passed all five jobs
+(typecheck/lint/test/build, real-Docker sandbox integration, notebook and
+release-tool tests, Windows launcher, browser end-to-end). The two earlier fix
+heads failed only the release-tool step, for the two documentation regressions
+recorded above; those runs are not cited as green.
+
+Review state at that head: CodeRabbit has not produced a second review. The
+only reviews are `5641243950` (Copilot, on `9a3f20f`) and `5641329209`
+(CodeRabbit, on `7cbbae2`), and CodeRabbit's included-review allowance was
+already exhausted after the latter, so the fix head is **not** re-reviewed;
+this is a quota limitation, not a pass. All five CodeRabbit threads are
+unresolved (four outdated by the edits, one still current at
+`InferenceSettings.tsx`); they were deliberately not resolved by hand. Kilo
+Code Review is `action_required` because that account is out of credits and
+Qodo reports its trial ended. `reviewDecision` is empty and the PR is
+`MERGEABLE`/`UNSTABLE` with no approval; a green check is not an approval.
