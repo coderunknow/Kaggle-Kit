@@ -350,9 +350,20 @@ class WorkflowSecurityAndPublicationGates(unittest.TestCase):
         self.assertIn("publish_release: true", description)
         self.assertNotRegex(description, r"(?i)validation only")
 
-    def test_beta1_release_example_matches_the_candidate_package_version(self) -> None:
+    def test_release_example_matches_the_candidate_package_version(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1", text)
+        version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+
+        # The example derives the tag from package.json, so it cannot name an
+        # older candidate. A hard-coded tag would go stale exactly like the
+        # v0.1.0-beta1 example did.
+        self.assertIn(
+            """git tag "v$(node -p "require('./package.json').version")" <commit>""",
+            text,
+        )
+        self.assertIn(f"v{version}", text)
+        self.assertIn("docs/release-notes/<version>.md", text)
+        self.assertIsNone(re.search(r"git tag v[0-9]+\.[0-9]+\.[0-9]+-", text))
         self.assertNotIn("git tag v0.1.0-dev7", text)
 
     def test_publication_command_spans_distinguish_duplicate_commands_outside_the_guard(self) -> None:

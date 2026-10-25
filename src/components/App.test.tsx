@@ -3,7 +3,9 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ApiProfile } from '../../shared/domain';
 import { App } from '../App';
+import { STORAGE_KEYS } from '../lib/storage';
 import { AppProvider } from '../state/AppProvider';
 
 const API_KEY = 'test-key-not-to-be-persisted';
@@ -20,6 +22,8 @@ interface FetchMockOptions {
   testResponses?: unknown[];
   /** Answer the chat request with an event stream. */
   streaming?: boolean;
+  /** Report streaming as verified without answering the chat with a stream. */
+  verifiedStreaming?: boolean;
 }
 
 const calls: RecordedCall[] = [];
@@ -72,7 +76,7 @@ function installFetchMock(options: FetchMockOptions = {}): void {
         ],
         testedAt: '2026-10-19T00:00:00.000Z',
         capabilities: {
-          streamingVerified: Boolean(options.streaming),
+          streamingVerified: Boolean(options.streaming || options.verifiedStreaming),
           reasoningEffortSupported: false,
           notes: [],
         },
@@ -915,5 +919,89 @@ describe('the chat surface', () => {
     const prefs = JSON.parse(window.localStorage.getItem('kaggle-kit.prefs.v1') ?? '{}');
     expect(prefs.theme).toBe(second);
     expect(window.localStorage.getItem('kaggle-kit.browser-keys.v1')).toBe('{}');
+  });
+});
+
+describe('streaming preference without a verified transport', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    calls.length = 0;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  async function enableStreaming(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    const panel = await openSettings(user);
+    await user.click(panel.getByRole('tab', { name: /^inference$/i }));
+    await user.click(panel.getByRole('checkbox', { name: /stream the answer/i }));
+    await user.click(panel.getByRole('button', { name: /save parameters/i }));
+    await closeSettings(user);
+  }
+
+  it('retries one refused streamed request without streaming and shows the fallback notice', async () => {
+    installFetchMock({
+      verifiedStreaming: true,
+      chatResponses: [
+        {
+          status: 409,
+          body: { error: { message: 'Streaming has not been verified for this endpoint.', kind: 'bad_request' } },
+        },
+        { status: 200, body: defaultCompletion('Answer without streaming') },
+      ],
+    });
+    const user = userEvent.setup();
+    renderApp();
+
+    // The connection test verified streaming for the client, so the request is
+    // sent as a stream. The proxy then refuses it with the documented 409.
+    await createProfile(user);
+    await enableStreaming(user);
+    await startConversation(user, 'Hello there');
+
+    await screen.findByText('Answer without streaming');
+
+    const chatCalls = calls.filter((call) => call.url === '/api/proxy/chat');
+    expect(chatCalls).toHaveLength(2);
+    expect((chatCalls[0]!.body as { params: { stream: boolean } }).params.stream).toBe(true);
+    // The retry is non-streaming: one retry, not a second answer.
+    expect((chatCalls[1]!.body as { params: { stream: boolean } }).params.stream).toBe(false);
+    expect(screen.getAllByText('Answer without streaming')).toHaveLength(1);
+    expect(screen.getByText(/had not verified streaming for this endpoint, so the answer was fetched with a regular request/i))
+      .toBeInTheDocument();
+    // A server-side refusal is not the browser-session notice.
+    expect(screen.queryByText(/it had not been verified for this endpoint/i)).toBeNull();
+  });
+
+  it('keeps a saved preference unverified across a reload, sends no stream and explains why', async () => {
+    installFetchMock();
+    let user = userEvent.setup();
+    renderApp();
+
+    // The connection test does not verify streaming, so the profile is saved
+    // with the preference off and the client cannot request a stream.
+    await createProfile(user);
+
+    // A preference saved in an earlier session: capabilities are in-memory
+    // only, so a remount reproduces "saved, but not verified in this session".
+    const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEYS.profiles) ?? '[]') as ApiProfile[];
+    stored[0]!.defaultParams.stream = true;
+    window.localStorage.setItem(STORAGE_KEYS.profiles, JSON.stringify(stored));
+    cleanup();
+
+    user = userEvent.setup();
+    renderApp();
+    await startConversation(user, 'Hello again');
+
+    await screen.findByText('Hello from the model');
+
+    const chatCalls = calls.filter((call) => call.url === '/api/proxy/chat');
+    expect(chatCalls).toHaveLength(1);
+    expect((chatCalls[0]!.body as { params: { stream: boolean } }).params.stream).toBe(false);
+    expect(screen.getByText(/it had not been verified for this endpoint/i)).toBeInTheDocument();
+    // No refusal happened, so the fallback notice must not appear.
+    expect(screen.queryByText(/had not verified streaming for this endpoint/i)).toBeNull();
   });
 });

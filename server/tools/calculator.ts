@@ -248,21 +248,64 @@ export function convert(value: number, from: string, to: string): { value: numbe
     if (value < (isFahrenheit ? -459.67 : isKelvin ? 0 : -273.15)) {
       throw new CalculatorInputError('Temperature is below absolute zero.');
     }
-    // Convert through Kelvin using offsets that preserve the exact physical
-    // lower bounds (for example, -459.67°F must become exactly 0 K).
-    const kelvin = isFahrenheit ? (value + 459.67) * (5 / 9) : isKelvin ? value : value + 273.15;
-    const converted = target === 'f' || target === 'fahrenheit'
-      ? kelvin * (9 / 5) - 459.67
-      : target === 'k' || target === 'kelvin'
-        ? kelvin
-        : kelvin - 273.15;
-    return conversionResult(converted, from, to);
+    return conversionResult(temperatureValue(value, source, target), from, to);
   }
   const fromUnit = UNITS[source];
   const toUnit = UNITS[target];
   if (!fromUnit || !toUnit) throw new CalculatorInputError(`Unsupported conversion unit. Supported sets: length, mass, time, volume, speed, and temperature.`);
   if (fromUnit.category !== toUnit.category) throw new CalculatorInputError(`Cannot convert ${fromUnit.category} to ${toUnit.category}.`);
   return conversionResult(value * fromUnit.factor / toUnit.factor, from, to);
+}
+
+const CELSIUS_ABSOLUTE_ZERO = -273.15;
+const FAHRENHEIT_ABSOLUTE_ZERO = -459.67;
+const KELVIN_ABSOLUTE_ZERO = 0;
+
+/**
+ * Temperature conversion between the four spellings of the three scales.
+ *
+ * The interior anchors use the defining two-point relation of their scales
+ * instead of a shared path through Kelvin: 32 °F -> °C and 212 °F -> °C are
+ * then exactly 0 and 100, and 100 °C -> °F is exactly 212, rather than
+ * 5.68e-14, 100.00000000000006 and 211.99999999999994.
+ *
+ * Absolute zero is a defining point of all three scales, and the decimal
+ * offsets 273.15 and 459.67 are not binary-exact: no single affine ordering is
+ * exact at the two-point anchors and at absolute zero at once (for example
+ * -273.15 °C * 9 / 5 + 32 rounds to -459.66999999999996). The zero point is
+ * therefore mapped directly, so -459.67 °F -> °C returns exactly -273.15 and a
+ * subsequent °C -> K conversion accepts it instead of rejecting it as "below
+ * absolute zero". Every other value still goes through the affine relation.
+ */
+function temperatureValue(value: number, source: string, target: string): number {
+  const fromF = source === 'f' || source === 'fahrenheit';
+  const fromK = source === 'k' || source === 'kelvin';
+  const toF = target === 'f' || target === 'fahrenheit';
+  const toK = target === 'k' || target === 'kelvin';
+  if (!fromF && !fromK && !toF && !toK) return value; // C -> C (and the celsius aliases)
+  if (fromF && toF) return value;
+  if (fromK && toK) return value;
+  const absoluteZero =
+    (fromF && value === FAHRENHEIT_ABSOLUTE_ZERO) ||
+    (fromK && value === KELVIN_ABSOLUTE_ZERO) ||
+    (!fromF && !fromK && value === CELSIUS_ABSOLUTE_ZERO);
+  if (absoluteZero) {
+    return toF ? FAHRENHEIT_ABSOLUTE_ZERO : toK ? KELVIN_ABSOLUTE_ZERO : CELSIUS_ABSOLUTE_ZERO;
+  }
+  if (fromF) {
+    // Both Kelvin paths start from the defining 32 °F anchor. Going through
+    // `(value + 459.67) * 5 / 9` instead leaves 212 °F at
+    // 373.15000000000003 K, and `value * (9/5) - 459.67` leaves 273.15 K at
+    // 31.999999999999943 °F: the shared Kelvin offset is not binary-exact.
+    const celsius = (value - 32) * 5 / 9;
+    return toK ? celsius + 273.15 : celsius;
+  }
+  if (fromK) {
+    const celsius = value - 273.15;
+    return toF ? celsius * 9 / 5 + 32 : celsius;
+  }
+  // Celsius source.
+  return toF ? value * (9 / 5) + 32 : value + 273.15;
 }
 
 function conversionResult(value: number, from: string, to: string) {

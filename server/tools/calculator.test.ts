@@ -155,4 +155,111 @@ describe('deterministic calculator tools', () => {
     expect(convert(0, 'kelvin', 'fahrenheit').value).toBe(-459.67);
     expect(() => convert(-459.670001, 'fahrenheit', 'kelvin')).toThrow(/absolute zero/i);
   });
+
+  it('uses the defining two-point temperature relations exactly', () => {
+    // These are exact by definition of the scales, not by floating point luck:
+    // 32 °F = 0 °C, 212 °F = 100 °C, 100 °C = 212 °F, -459.67 °F = 0 K.
+    expect(convert(32, 'fahrenheit', 'celsius').value).toBe(0);
+    expect(convert(32, 'F', 'C').display).toBe('0');
+    expect(convert(212, 'fahrenheit', 'celsius').value).toBe(100);
+    expect(convert(212, 'fahrenheit', 'celsius').display).toBe('100');
+    expect(convert(100, 'celsius', 'fahrenheit').value).toBe(212);
+    expect(convert(0, 'celsius', 'fahrenheit').value).toBe(32);
+    expect(convert(100, 'fahrenheit', 'celsius').value).toBeCloseTo((100 - 32) * 5 / 9, 12);
+    expect(convert(100, 'fahrenheit', 'celsius').display).toBe('37.7777777778');
+    expect(convert(-459.67, 'fahrenheit', 'kelvin').value).toBe(0);
+    expect(convert(0, 'kelvin', 'fahrenheit').value).toBe(-459.67);
+    expect(convert(0, 'kelvin', 'celsius').value).toBe(-273.15);
+    expect(convert(-273.15, 'celsius', 'kelvin').value).toBe(0);
+  });
+
+  it('keeps absolute zero exact in every direction and through chained conversions', () => {
+    // -459.67 °F, -273.15 °C and 0 K are the same defining point. The decimal
+    // offsets are not binary-exact, so the numeric result (not only the
+    // display) has to land on the anchor: a value slightly below -273.15 would
+    // make the follow-up Celsius conversion fail as "below absolute zero".
+    const celsius = convert(-459.67, 'fahrenheit', 'celsius').value;
+    expect(celsius).toBe(-273.15);
+    expect(convert(celsius, 'celsius', 'kelvin').value).toBe(0);
+    expect(convert(-459.67, 'fahrenheit', 'celsius').display).toBe('-273.15');
+
+    expect(convert(-273.15, 'celsius', 'fahrenheit').value).toBe(-459.67);
+    expect(convert(-273.15, 'celsius', 'kelvin').value).toBe(0);
+    expect(convert(0, 'kelvin', 'celsius').value).toBe(-273.15);
+    expect(convert(0, 'kelvin', 'fahrenheit').value).toBe(-459.67);
+    expect(convert(-459.67, 'fahrenheit', 'kelvin').value).toBe(0);
+
+    // The same anchors with aliases, and a full chain in both directions.
+    expect(convert(-459.67, '°F', '°C').value).toBe(-273.15);
+    expect(convert(convert(-459.67, 'fahrenheit', 'celsius').value, 'celsius', 'kelvin').value).toBe(0);
+    expect(convert(convert(-273.15, 'celsius', 'fahrenheit').value, 'fahrenheit', 'celsius').value).toBe(-273.15);
+    const chained = convert(-459.67, 'fahrenheit', 'celsius').value;
+    expect(convert(convert(chained, 'celsius', 'kelvin').value, 'kelvin', 'fahrenheit').value).toBe(-459.67);
+
+    // One ulp below the anchor is still refused, so the exactness above does
+    // not loosen the physical bound.
+    expect(() => convert(-459.6700001, 'fahrenheit', 'celsius')).toThrow(/absolute zero/i);
+    expect(() => convert(-273.1500001, 'celsius', 'kelvin')).toThrow(/absolute zero/i);
+  });
+
+  it('round trips every dimension with justified floating-point tolerances', () => {
+    // Temperature uses absolute tolerance: 0.1 °C is a meaningful bound for a
+    // double-precision offset conversion; relative tolerance would be wrong
+    // near the zero crossing (-40 °C).
+    for (const value of [-273.15, -40, -17.5, 0, 21.3, 98.6, 212]) {
+      const fahrenheit = convert(value, 'celsius', 'fahrenheit').value;
+      expect(convert(fahrenheit, 'fahrenheit', 'celsius').value).toBeCloseTo(value, 9);
+      const kelvin = convert(value, 'celsius', 'kelvin').value;
+      expect(convert(kelvin, 'kelvin', 'celsius').value).toBeCloseTo(value, 9);
+      const backFromF = convert(convert(value, 'celsius', 'fahrenheit').value, 'fahrenheit', 'kelvin').value;
+      expect(convert(backFromF, 'kelvin', 'celsius').value).toBeCloseTo(value, 9);
+    }
+    expectRelativeClose(convert(convert(100, 'km/h', 'mph').value, 'mph', 'km/h').value, 100);
+    expectRelativeClose(convert(convert(1, 'mile', 'km').value, 'km', 'mile').value, 1);
+    expectRelativeClose(convert(convert(2.5, 'kg', 'lb').value, 'lb', 'kg').value, 2.5);
+    expectRelativeClose(convert(convert(3.75, 'gal', 'l').value, 'l', 'gal').value, 3.75);
+  });
+});
+
+
+describe('F8 - every defining temperature anchor is bit-exact', () => {
+  it('returns exactly 32 at 273.15 K -> F and exactly 373.15 at 212 F -> K', () => {
+    // These two pairs regressed to 31.999999999999943 and
+    // 373.15000000000003 when the conversion went through a shared Kelvin
+    // offset. The rounded `display` hid the drift from summary-based tests.
+    expect(convert(273.15, 'k', 'f').value).toBe(32);
+    expect(convert(273.15, 'kelvin', 'fahrenheit').value).toBe(32);
+    expect(convert(212, 'f', 'k').value).toBe(373.15);
+    expect(convert(212, 'fahrenheit', 'kelvin').value).toBe(373.15);
+    expect(convert(373.15, 'k', 'f').value).toBe(212);
+    expect(convert(373.15, 'k', 'c').value).toBe(100);
+  });
+
+  it('keeps all other defining anchors and aliases exact', () => {
+    const anchors: Array<[number, string, string, number]> = [
+      [32, 'f', 'c', 0], [212, 'f', 'c', 100], [0, 'c', 'f', 32], [100, 'c', 'f', 212],
+      [-40, 'c', 'f', -40], [-40, 'f', 'c', -40], [0, 'c', 'k', 273.15],
+      [273.15, 'k', 'c', 0], [32, 'f', 'k', 273.15], [100, 'c', 'k', 373.15],
+      [-459.67, 'f', 'c', -273.15], [-459.67, 'f', 'k', 0], [-273.15, 'c', 'k', 0],
+      [0, 'k', 'c', -273.15], [0, 'k', 'f', -459.67], [-273.15, 'c', 'f', -459.67],
+      [32, '°F', '°C', 0], [273.15, 'K', 'F', 32], [212, '°F', 'K', 373.15],
+    ];
+    for (const [value, from, to, expected] of anchors) {
+      expect(convert(value, from, to).value, `${value} ${from} -> ${to}`).toBe(expected);
+    }
+    expect(convert(273.15, ' K ', ' f ').value).toBe(32);
+  });
+
+  it('preserves absolute-zero validation and round trips', () => {
+    expect(() => convert(-0.0001, 'k', 'c')).toThrow(/absolute zero/i);
+    expect(() => convert(-459.6700001, 'f', 'c')).toThrow(/absolute zero/i);
+    expect(() => convert(-273.1500001, 'c', 'k')).toThrow(/absolute zero/i);
+    for (const celsiusValue of [-273.15, -40, -17.5, 0, 21.3, 98.6, 212]) {
+      const kelvin = convert(celsiusValue, 'c', 'k').value;
+      expect(convert(kelvin, 'k', 'c').value).toBeCloseTo(celsiusValue, 9);
+      const fahrenheit = convert(celsiusValue, 'c', 'f').value;
+      expect(convert(fahrenheit, 'f', 'c').value).toBeCloseTo(celsiusValue, 9);
+      expect(convert(convert(fahrenheit, 'f', 'k').value, 'k', 'c').value).toBeCloseTo(celsiusValue, 9);
+    }
+  });
 });

@@ -10,8 +10,9 @@
  * credential ever appears in a URL.
  */
 
-import { ApiError } from '../../shared/api/errors';
-import type { ServerCapabilities } from '../../shared/api/requests';
+import { ApiError, withHint } from '../../shared/api/errors';
+import type { ApiErrorKind } from '../../shared/api/errors';
+import type { ServerCapabilities, StreamingEvidence } from '../../shared/api/requests';
 import type { InferenceParams } from '../../shared/api/requests';
 import type { ChatCompletionResponse, ChatMessageInput } from '../../shared/api/types';
 import type { ConnectionTestResult } from '../../shared/domain';
@@ -155,8 +156,8 @@ export const gateway = {
   async probeStreaming(
     target: TargetRequest,
     signal?: AbortSignal,
-  ): Promise<{ supported: boolean; detail: string }> {
-    return requestJson<{ supported: boolean; detail: string }>(
+  ): Promise<{ supported: boolean; detail: string; evidence?: StreamingEvidence }> {
+    return requestJson<{ supported: boolean; detail: string; evidence?: StreamingEvidence }>(
       '/api/proxy/probe-stream',
       { ...target },
       signal,
@@ -233,7 +234,7 @@ export const gateway = {
     let content = '';
     let reasoning = '';
     let finishReason: string | undefined;
-    let streamError: string | undefined;
+    let streamError: { message: string; kind: ApiErrorKind } | undefined;
 
     try {
       for await (const event of parseSseStream(body, options.signal)) {
@@ -241,7 +242,9 @@ export const gateway = {
         if (delta.error) {
           // The proxy reports a broken upstream stream as an event. Stopping
           // here is what keeps a truncated answer from being shown as complete.
-          streamError = delta.error;
+          // Only a classified proxy error code may change the kind; an ordinary
+          // upstream error event stays an inference failure.
+          streamError = { message: delta.error, kind: delta.errorKind ?? 'inference' };
           break;
         }
         if (delta.content) {
@@ -271,9 +274,12 @@ export const gateway = {
     }
 
     if (streamError) {
-      throw new ApiError('inference', streamError, {
-        hint: 'The connection broke while the answer was streamed. The partial answer was kept; retry the request.',
-      });
+      const hint = streamError.kind === 'timeout'
+        ? withHint('timeout')
+        : streamError.kind === 'aborted'
+          ? withHint('aborted')
+          : 'The connection broke while the answer was streamed. The partial answer was kept; retry the request.';
+      throw new ApiError(streamError.kind, streamError.message, { hint });
     }
 
     // Some servers close the stream without [DONE] but with a finish reason.

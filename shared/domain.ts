@@ -72,6 +72,13 @@ export interface ChatMessage {
    * the answer was fetched with a regular request instead.
    */
   streamFellBack?: boolean;
+  /**
+   * True when the profile asks for streaming but this browser session has not
+   * verified streaming for the endpoint, so the answer was requested without
+   * streaming. Kept apart from `streamFellBack`, which records a server-side
+   * refusal after a streamed request.
+   */
+  streamUnverified?: boolean;
   /** Runtime tool trace; persistence is filtered by the conversation policy. */
   toolTrace?: ToolTraceRecord[];
   /** Server job used only while a specific approval is pending; never persisted. */
@@ -154,6 +161,11 @@ export interface ConnectionTestResult {
   modelId?: string;
   /** ISO timestamp of the test, produced by the proxy. */
   testedAt?: string;
+  /**
+   * True only when the connection test actually sent a credential. A keyless
+   * endpoint may pass the `auth` stage, but that does not verify authentication.
+   */
+  credentialUsed?: boolean;
   stages: ConnectionStageResult[];
   capabilities?: ServerCapabilities;
   errorKind?: ApiErrorKind;

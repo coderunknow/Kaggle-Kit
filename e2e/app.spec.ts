@@ -122,3 +122,69 @@ test('grants reviewed built-ins in Basic mode and executes a calculator through 
   await page.locator('summary').filter({ hasText: /Tool activity/ }).click();
   await expect(page.getByText(/Result: 84/)).toBeVisible();
 });
+
+test('shows streamed words before the answer is complete', async ({ page }) => {
+  await createProfile(page);
+
+  // Verify streaming against the real probe, then enable it for the profile.
+  const dialog = await openSettings(page);
+  await dialog.getByRole('tab', { name: /^inference$/i }).click();
+  await dialog.getByRole('button', { name: /verify streaming support/i }).click();
+  await expect(dialog.getByText(/^streaming verified$/i)).toBeVisible();
+  await dialog.getByRole('checkbox', { name: /stream the answer/i }).check();
+  await dialog.getByRole('button', { name: /save parameters/i }).click();
+  await dialog.getByRole('button', { name: /close settings/i }).click();
+
+  // The mock writes six words 200 ms apart for this prompt.
+  await startConversation(page, 'stream slowly: prove it');
+
+  await expect(page.getByText(/This is a slow/)).toBeVisible();
+  // The rest of the answer cannot be on screen yet: if the proxy, the gateway
+  // or the interface buffered the stream, the complete sentence would already
+  // be visible and this assertion would fail.
+  expect(await page.locator('body').innerText()).not.toContain('streamed answer.');
+  await expect(page.getByText(/Still writing/)).toBeVisible();
+
+  await expect(page.getByText(/slow streamed answer\./)).toBeVisible();
+  const body = await page.locator('body').innerText();
+  // Complete, ordered and not duplicated.
+  expect(body.split('This is a slow streamed answer.').length).toBe(2);
+});
+
+test('uploads a real CSV and reads it through the real tool loop', async ({ page }) => {
+  await createProfile(page);
+
+  const dialog = await openSettings(page);
+  await dialog.getByRole('tab', { name: /tools & approvals/i }).click();
+  await dialog.getByRole('button', { name: /allow reviewed keyless built-ins/i }).click();
+  await expect(dialog.getByText(/7 tool\(s\) selected/)).toBeVisible();
+  await dialog.getByRole('button', { name: /save tool settings/i }).click();
+  await dialog.getByRole('button', { name: /verify native tool calling/i }).click();
+  await expect(dialog.getByText('supported_verified')).toBeVisible();
+  await dialog.getByRole('button', { name: /close settings/i }).click();
+
+  await page
+    .getByRole('complementary', { name: /conversations/i })
+    .getByRole('button', { name: /^new conversation$/i })
+    .click();
+  const csv = 'department,amount\nengineering,1200\nmarketing,800\nsupport,400\n';
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'budget.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(csv, 'utf8'),
+  });
+  await expect(page.getByText(/budget\.csv/).first()).toBeVisible();
+
+  await page.getByLabel(/^message$/i).fill('read my uploaded file');
+  await page.getByRole('button', { name: /^send$/i }).click();
+
+  // The mock model lists the vault, then reads the ID it received, so both
+  // steps run through the real executor against the real uploaded bytes. The
+  // tool timeline is collapsed by default, so open it before reading it.
+  const timeline = page.locator('.tool-timeline');
+  await expect(timeline.getByText(/Tool activity/)).toBeVisible({ timeout: 20_000 });
+  await timeline.getByText(/Tool activity/).click();
+  await expect(timeline.getByText('files_read')).toBeVisible();
+  await expect(timeline.getByText(/budget\.csv/).first()).toBeVisible();
+  await expect(page.getByText(/Tool result received/)).toBeVisible();
+});

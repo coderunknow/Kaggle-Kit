@@ -6,6 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from './app';
 import { loadServerConfig, type ServerConfig } from './config';
 import { createLogger } from './logger';
+import { MAX_SSE_EVENT_BYTES } from '../shared/api/stream';
+import { gateway } from '../src/lib/gateway';
+import { ApiError, withHint } from '../shared/api/errors';
 
 const API_KEY = 'stream-test-key';
 
@@ -38,7 +41,7 @@ function startMockUpstream(redirectTarget = 'http://127.0.0.1:1/v1'): Promise<Mo
     request.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
       requests.push({ path: request.url ?? '', body });
-      const parsed = JSON.parse(body || '{}') as { model?: string; stream?: boolean };
+      const parsed = JSON.parse(body || '{}') as { model?: string; stream?: boolean; messages?: Array<{ content?: unknown }> };
 
       if (request.url === '/v1/models') {
         response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -67,6 +70,30 @@ function startMockUpstream(redirectTarget = 'http://127.0.0.1:1/v1'): Promise<Mo
         }
       });
 
+      const isCapabilityProbe = parsed.messages?.some(
+        (message) => typeof message.content === 'string' && message.content.includes('Reply with exactly: OK'),
+      ) === true;
+      if (isCapabilityProbe) {
+        // The selected model verifies normally; the model-specific request
+        // under test below then exercises its failure/edge behaviour.
+        response.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+        });
+        response.write('data: {"choices":[{"delta":{"content":"O"}}]}\n\n');
+        response.write('data: [DONE]\n\n');
+        response.end();
+        state.completed = true;
+        return;
+      }
+
+      if (state.model === 'hang-model') {
+        // The endpoint accepts the connection but never sends a status or a
+        // byte. The proxy has to time out before any status exists and answer
+        // with a plain HTTP error, not with a stream.
+        return;
+      }
+
       if (state.model === 'redirect-model') {
         // A redirect to a host that must not be reached by the proxy.
         response.writeHead(302, { Location: `${redirectTarget}/chat/completions` });
@@ -84,6 +111,43 @@ function startMockUpstream(redirectTarget = 'http://127.0.0.1:1/v1'): Promise<Mo
         response.write(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`);
         state.chunks += 1;
       };
+
+      if (state.model === 'partial-timeout-model') {
+        // One complete frame, then an unterminated one, then silence: the
+        // proxy must drop the half frame and still emit a terminal error.
+        response.write('data: {"choices":[{"delta":{"content":"P"}}]}\n\n');
+        state.chunks += 1;
+        response.write('data: {"choices":[{"delta":{"con');
+        return;
+      }
+
+      if (state.model === 'partial-broken-model') {
+        response.write('data: {"choices":[{"delta":{"content":"B"}}]}\n\n');
+        state.chunks += 1;
+        response.write('data: {"choices":[{"delta":{"con');
+        setTimeout(() => {
+          if (!state.aborted && !response.writableEnded) response.destroy();
+        }, 30);
+        return;
+      }
+
+      if (state.model === 'oversized-event-model') {
+        // A complete event can exceed the parser cap in one network read too;
+        // it must be refused before it is forwarded to the client.
+        response.write(`data: ${'x'.repeat(MAX_SSE_EVENT_BYTES + 1)}\n\n`);
+        return;
+      }
+
+      if (state.model === 'crlf-model') {
+        // CRLF event separators must be split exactly like LF ones.
+        response.write('data: {"choices":[{"delta":{"content":"C"}}]}\r\n\r\n');
+        response.write('data: {"choices":[{"delta":{"content":"R"}}]}\r\n\r\n');
+        response.write('data: [DONE]\r\n\r\n');
+        response.end();
+        state.completed = true;
+        return;
+      }
+
 
       if (state.model === 'slow-model') {
         let sent = 0;
@@ -233,6 +297,95 @@ describe('the streaming lifecycle of the proxy', () => {
       request.end(payload);
     });
 
+  /** Collect the proxied stream with the arrival time of every chunk. */
+  const readStreamTimed = (
+    model: string,
+    timeoutMs = 20_000,
+  ) => new Promise<{ text: string; status: number; chunks: Array<{ at: number; text: string }> }>((resolve, reject) => {
+    const payload = JSON.stringify({
+      baseUrl: upstream.url,
+      apiKey: API_KEY,
+      model,
+      messages: [{ role: 'user', content: 'hi' }],
+      params: { stream: true, maxTokens: 64 },
+      timeoutMs,
+    });
+    const startedAt = Date.now();
+    const request = http.request(
+      `${baseUrl}/api/proxy/chat`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      },
+      (response) => {
+        let text = '';
+        const chunks: Array<{ at: number; text: string }> = [];
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          text += chunk;
+          chunks.push({ at: Date.now() - startedAt, text: chunk });
+        });
+        response.on('end', () => resolve({ text, status: response.statusCode ?? 0, chunks }));
+        response.on('error', reject);
+      },
+    );
+    request.on('error', reject);
+    request.end(payload);
+  });
+
+  it('forwards chunks to the client while the answer is still being generated', async () => {
+    await probe('slow-model');
+    const result = await readStreamTimed('slow-model');
+
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('[DONE]');
+    // The mock writes 40 frames 20 ms apart; a proxy that buffered the body
+    // would deliver one chunk at the end instead.
+    expect(result.chunks.length).toBeGreaterThan(3);
+    const first = result.chunks[0]!;
+    const last = result.chunks[result.chunks.length - 1]!;
+    expect(first.text).not.toContain('[DONE]');
+    expect(first.at).toBeLessThan(last.at - 200);
+
+    // Ordered, complete and not duplicated: the mock writes the counter
+    // values 1..40 as single digits, in order.
+    const sequence = [...result.text.matchAll(/"content":"(\d)"/g)].map((match) => match[1]).join('');
+    expect(sequence).toBe(Array.from({ length: 40 }, (_, index) => String((index + 1) % 10)).join(''));
+  });
+
+  it('answers HTTP 504 when the timeout happens before any status was sent', async () => {
+    await probe('hang-model');
+    const before = upstream.streams.length;
+    const result = await readStreamTimed('hang-model', 300);
+
+    // No SSE frame can exist yet: the whole answer is the HTTP error.
+    expect(result.status).toBe(504);
+    expect(result.text).toContain('did not answer the streaming request');
+    expect(result.text).toContain('300 ms');
+    expect(result.text).not.toContain('data:');
+    expect(result.text).not.toContain('[DONE]');
+    expect(result.text).not.toContain('The request was cancelled.');
+
+    // The abandoned upstream request is aborted, not left open.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(upstream.streams[before]?.aborted).toBe(true);
+  });
+
+  it('reports a proxy timeout as a timeout instead of a user cancellation', async () => {
+    await probe('slow-model');
+    const result = await readStreamTimed('slow-model', 300);
+
+    // The status was already sent as 200 text/event-stream, so the timeout can
+    // only be reported inside the stream. The event names the timeout and says
+    // the answer is partial; it must not be confused with a cancellation.
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('"error"');
+    expect(result.text).toContain('request timeout (300 ms)');
+    expect(result.text).toContain('The answer is incomplete.');
+    expect(result.text).not.toContain('The request was cancelled.');
+    expect(result.text).not.toContain('[DONE]');
+  });
+
   it('delivers the complete stream including the termination marker', async () => {
     await probe('mock-model');
     const before = upstream.streams.length;
@@ -285,7 +438,7 @@ describe('the streaming lifecycle of the proxy', () => {
 
   it('does not follow a redirect of the upstream', async () => {
     // The endpoint is verified with a normal model ...
-    await probe('mock-model');
+    await probe('redirect-model');
 
     // ... and answers the streaming request with a redirect to a second
     // server that must not be reached.
@@ -294,7 +447,7 @@ describe('the streaming lifecycle of the proxy', () => {
     const before = target.requests.length;
 
     // The endpoint answers normally until it is asked for the redirect model.
-    await probe('mock-model', redirecting.url);
+    await probe('redirect-model', redirecting.url);
 
     const response = await fetch(`${baseUrl}/api/proxy/chat`, {
       method: 'POST',
@@ -323,4 +476,80 @@ describe('the streaming lifecycle of the proxy', () => {
     expect(result.text).toContain('error');
     expect(result.text).not.toContain('[DONE]');
   });
+
+describe('F1/F5 - terminal stream errors survive partial upstream frames', () => {
+  /** Run the exact browser read path over the bytes the proxy produced. */
+  const readViaGateway = async (text: string) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    });
+    const deltas: string[] = [];
+    const error = await gateway
+      .readStream(body, { callbacks: { onDelta: (delta) => { if (delta.content) deltas.push(delta.content); } } })
+      .catch((caught: unknown) => caught);
+    return { deltas, error };
+  };
+
+  it('classifies a mid-frame request timeout as a timeout and keeps the preceding content', async () => {
+    await probe('partial-timeout-model');
+    const result = await readStreamTimed('partial-timeout-model', 400);
+
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('"code":"stream_timeout"');
+    expect(result.text).not.toContain('condata:'); // the half frame was dropped
+    expect(result.text).not.toContain('[DONE]');
+    expect(result.text).not.toContain('finish_reason');
+
+    const { deltas, error } = await readViaGateway(result.text);
+    expect(deltas.join('')).toBe('P');
+    expect(error).toBeInstanceOf(ApiError);
+    const apiError = error as ApiError;
+    expect(apiError.kind).toBe('timeout');
+    expect(apiError.message).toMatch(/request timeout/i);
+    expect(apiError.message).toMatch(/incomplete/i);
+    expect(apiError.hint).toBe(withHint('timeout'));
+  });
+
+  it('classifies a mid-frame upstream abort as an inference failure, not a timeout', async () => {
+    await probe('partial-broken-model');
+    const result = await readStream('partial-broken-model');
+
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('"code":"upstream_stream_failed"');
+    expect(result.text).not.toContain('condata:');
+    expect(result.text).not.toContain('[DONE]');
+
+    const { deltas, error } = await readViaGateway(result.text);
+    expect(deltas.join('')).toBe('B');
+    expect(error).toBeInstanceOf(ApiError);
+    const apiError = error as ApiError;
+    expect(apiError.kind).toBe('inference');
+    expect(apiError.message).toMatch(/upstream connection failed/i);
+    expect(apiError.hint).toMatch(/partial answer was kept/i);
+  });
+
+  it('refuses an oversized complete upstream event before forwarding it', async () => {
+    await probe('oversized-event-model');
+    const result = await readStream('oversized-event-model');
+
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('"code":"stream_event_too_large"');
+    expect(result.text).toContain('maximum size of a single SSE event');
+    expect(result.text.length).toBeLessThan(1_000);
+    expect(result.text).not.toContain('[DONE]');
+  });
+
+  it('still forwards complete CRLF-framed events incrementally', async () => {
+    await probe('crlf-model');
+    const result = await readStreamTimed('crlf-model');
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('"content":"C"');
+    expect(result.text).toContain('"content":"R"');
+    expect(result.text).toContain('[DONE]');
+    expect(result.chunks.length).toBeGreaterThan(1);
+  });
+});
 });

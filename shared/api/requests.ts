@@ -55,9 +55,35 @@ export interface InferenceParams {
   stream: boolean;
 }
 
+/**
+ * What a streaming probe actually observed on the wire.
+ *
+ * `streamingVerified` alone cannot distinguish "the endpoint accepted
+ * `stream=true` and returned one buffered body" from "the endpoint delivered
+ * incremental events". This record keeps the observation, so diagnostics can
+ * report it instead of a bare boolean. It never claims anything about the
+ * browser rendering path: that is verified by the browser end-to-end test.
+ */
+export interface StreamingEvidence {
+  /** ISO timestamp of the probe that produced this evidence. */
+  verifiedAt: string;
+  /** Complete SSE events read from the upstream response. */
+  events: number;
+  /** Events that carried answer text or reasoning (keep-alive comments do not count). */
+  contentEvents: number;
+  /** Milliseconds from request start to the first content event. */
+  firstContentMs: number;
+  /** Whole probe duration in milliseconds. */
+  durationMs: number;
+  /** Human readable summary of the observation, never of an inference. */
+  detail: string;
+}
+
 export interface ServerCapabilities {
   /** True only after a real SSE request succeeded against the endpoint. */
   streamingVerified: boolean;
+  /** Wire-level evidence behind `streamingVerified`; absent when not verified. */
+  streamingEvidence?: StreamingEvidence;
   /** True when the server accepts a per request `reasoning_effort`. */
   reasoningEffortSupported: boolean;
   /**

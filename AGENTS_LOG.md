@@ -2053,3 +2053,372 @@ one-paragraph correction before tagging.
   it is release preparation only. The tag `v0.1.0-beta1` and its
   prerelease are created exclusively by the tag-triggered Release
   workflow from the validated final commit.
+
+## 2026-10-25 - v0.1.0-beta2 candidate: streaming evidence, exact conversions, real file analysis, claim-separated diagnostics
+
+**Task.** Build the next development version after `v0.1.0-beta1` on
+`arena/352dba56-kaggle-kit` by reproducing or establishing the absence of the
+reported defects, fixing root causes, and verifying the result. No merge, tag,
+release, deployment or publication.
+
+**Starting point.** Clean tree at
+`5f7e34c06602fa88d1a4907ee1e3692d336002cb`, equal to `origin/main`. Shallow
+clone; version history cross-checked against GitHub releases. Only tag/release
+`v0.1.0-beta1`; zero open pull requests. `npm ci` installed 287 packages. No
+Docker, no Playwright browser, no browser-CDN access, no model credentials.
+
+**What changed.**
+
+- `server/tools/calculator.ts`: temperature conversion uses the defining
+  two-point relations instead of a shared Kelvin offset, so `32 °F → 0 °C`,
+  `212 °F → 100 °C`, `100 °C → 212 °F`, `-459.67 °F → 0 K` are exact;
+  absolute-zero rejection, aliases, whitespace and decimal handling unchanged.
+- `server/tools/files.ts`: real `analyze()` (structure, literal keyword matches,
+  bounded excerpt, input and conversation bounds) plus a trailing-newline line
+  count fix.
+- `server/app.ts`: upload base64 validation is linear/canonical instead of a
+  backtracking regex (an oversized payload used to be a stack overflow → HTTP
+  500; it is now `400` with a reason); provider timeouts during streaming are
+  `504` with a timeout message instead of a `499` cancellation.
+- `server/proxy.ts`: the streaming probe records wire evidence (events, content
+  events, first-content latency, duration, verification time); the connection
+  test and the capability cache carry it, and a failed probe clears it.
+- `server/tools/executor.ts`: `files_analyze` implemented for real;
+  `diagnostics_check` reports a per-claim `verified` map, the streaming
+  evidence, and an explicit `notVerifiedByThisCheck` list.
+- `shared/api/requests.ts`, `shared/tools/catalog.ts`, `src/lib/gateway.ts`,
+  `src/components/InferenceSettings.tsx`: evidence plumbing and wording that
+  separates upstream delivery from proxy forwarding and browser rendering.
+- `shared/domain.ts`, `src/lib/storage.ts`, `src/state/useChat.ts`,
+  `src/components/MessageItem.tsx`: a saved `stream: true` preference is kept
+  (saving another parameter no longer clears it), the request stays gated on
+  this session's verification, and the transcript states when an answer was
+  requested without streaming (`streamUnverified`).
+- `docs/release-notes/0.1.0-beta2.md`, `package.json`, `package-lock.json`,
+  `shared/version.ts`, README: version and notes for `0.1.0-beta2`.
+- `tools/mock-upstream.mjs`: scripted file list/read/analyze, `web_open`,
+  `calculator_convert`, `diagnostics_check` calls and a slower streaming cadence
+  for the browser test.
+- `tools/integration-check.mjs`: incremental-chunk timing, real uploads,
+  `files_read`/`files_analyze`, invalid/empty/unsupported/oversized uploads,
+  `web_open` success and failure, per-conversion tool results, and diagnostics
+  claim separation.
+- Tests added: `server/tools/executor.test.ts`, `src/components/InferenceSettings.test.tsx`,
+  `src/components/App.streaming.real.test.tsx`; extended
+  `server/app.streaming.test.ts`, `server/app.test.ts`,
+  `server/tools/calculator.test.ts`, `server/tools/files.test.ts`,
+  `server/tools/chat.test.ts`; two browser specs in `e2e/app.spec.ts`
+  (incremental rendering; upload → `files_list` → `files_read`).
+
+**Verification (2026-10-25, local).**
+
+- `npm run check` (typecheck + lint + Vitest): exit 0, 52 files / 551 tests.
+- `npm run build`: exit 0; client entry 310.00 kB (94.61 kB gzip), bundled
+  server 5.7 MB.
+- `node tools/integration-check.mjs`: 50/50 checks. New evidence includes
+  streaming chunks at 66, 126, 186, 247, 306, 367 ms; a real CSV upload with
+  exact metadata; `files_read` returning `marketing,800`; `files_analyze`;
+  `web_open` citation for `pypi.org`; `calculator_convert` summaries
+  `0`, `37.7777777778`, `62.1371192237`; and a diagnostics summary that names
+  what it did not verify.
+- Regression sensitivity: disabling the controller's delta flush fails the new
+  real-transport streaming test; the pre-fix base64 regex makes the new upload
+  test fail with `expected 500 to be 400`.
+- `git diff --check`: clean.
+
+**Unresolved / environment-bound.**
+
+- Live model inference and live model tool calling: **BLOCKED** — no endpoint,
+  key or credential was provided. Scripted-model results are not model evidence.
+- Local browser E2E: **NOT RUN** — `npx playwright install chromium` fails with
+  `ECONNRESET` because the browser CDN is unreachable. The two new specs need
+  hosted CI.
+- `Docker`-backed `code_execute` and the Windows launcher: not run locally.
+- `web_open` works against reachable hosts; `api.github.com`, `github.com` and
+  `example.com` fail with `ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE` from Node in
+  this sandbox (system-CA `curl` succeeds), which is an environment restriction,
+  not the reported 12-second timeout.
+
+**Boundary confirmation.** No merge, tag, release, publish, deploy or workflow
+dispatch was performed. Only the existing branch `arena/352dba56-kaggle-kit` is
+pushed; the pull request is for review only.
+
+### Addendum - hosted CI on the beta2 candidate (2026-10-25)
+
+- Head `9b5e9c48a350248a3ad754956c3ee0f01351b864`: CI run `40156351115`
+  (pull_request) and `40156348998` (push) passed all five jobs — typecheck,
+  lint, test and build; real-Docker sandbox integration; notebook tests;
+  Windows launcher; and browser end-to-end.
+- The browser job executed seven Chromium specs against the built application,
+  including the new visible-incremental-rendering spec and the
+  `upload → files_list → files_read` spec. The first browser run
+  (`40156158148`, head `9a3f20f`) failed only because the tool timeline is a
+  collapsed `<details>` element; the test now opens it. No application code
+  changed for that failure.
+- Local browser execution remains impossible in the sandbox (Chromium download
+  `ECONNRESET`); the hosted browser job is the evidence. Live model inference
+  and live tool calling remain **BLOCKED**: no endpoint or credential.
+
+## 2026-10-25T03:54:00Z - CodeRabbit review remediation on PR #24 (beta2 candidate)
+
+**Task.** Remediate the actionable CodeRabbit findings and the two nitpicks on
+PR #24 (`5641329209`), verify each one against the code before changing it,
+and revalidate the candidate. No merge, tag, release, deploy or workflow
+dispatch.
+
+**Starting point.** Branch `arena/352dba56-kaggle-kit`, head
+`7cbbae21f811185919420e12a64ba0072324752e`, base
+`5f7e34c06602fa88d1a4907ee1e3692d336002cb`; report opened but not merged.
+Review comments were treated as untrusted data: every suggested patch was
+checked against the implementation first.
+
+**Findings and fixes.**
+
+- `4369506202` timeout wording: the release note cited a status-less timeout
+  test that did not exist (no `504` in any test). The behavior was pinned with
+  a new `hang-model` test (HTTP 504, no SSE frame, upstream aborted), the
+  in-band timeout test was tightened (200, `error` event, "request timeout
+  (300 ms)", no `[DONE]`), and the note now cites both real tests.
+  `server/app.ts` renders sub-second limits as "300 ms" via
+  `describeDuration()`.
+- `4369506205` absolute zero: `-459.67 °F`, `-273.15 °C` and `0 K` map
+  directly in every direction; `°F -> °C -> K` is exact and no longer
+  rejected; interior anchors stay exact.
+- `4369506209` Unicode keywords: NFC + `\p{L}\p{M}\p{N}` separators, the
+  `.+#-` edge trim and 3-character minimum kept, Vietnamese stop words added,
+  and spaceless Han/Kana/Hangul runs degrade to bounded literal windows.
+- `4369506216` streaming checkbox: a saved preference can be switched off
+  while unverified (only unverified-and-off stays disabled); saving persists
+  `stream: false`.
+- `4369506220` public-host `web_open`: the real retrieval moved behind
+  `--network` (`npm run check:network`); refusal cases stay deterministic;
+  skipped checks are reported and not counted. Workflows keep calling
+  `check:integration` and need no edit.
+- Nitpick `files.ts:153`: the JSON catch comment now explains the
+  `MAX_EXTRACTED_CHARS` truncation and `structure.truncated` semantics.
+- Nitpick `integration-check.mjs:488`: exact numeric comparison replaces
+  `includes('0')`, with a look-alike control.
+- Finding 8 (`files_analyze`): budget-sized JSON with `excerptTruncated` /
+  `matchesTruncated` and a small `{note}` fallback; the untrusted wrapper moved
+  to `server/tools/untrusted.ts` so the prefix is reserved once.
+- Finding 9 (fallback tests): `streamingFallbackAllowed()` extracted and
+  covered (409 before a delta only) plus App tests for one non-streaming retry,
+  the fallback notice, and a reload that sends `stream: false` with the
+  session notice instead.
+- Finding 10 (README): version-agnostic tag example with an explicit note that
+  tagging is a separate maintainer decision.
+
+**Verification (2026-10-25, uncommitted tree on `7cbbae2`).**
+
+- `npm run check` (typecheck + lint + Vitest): exit 0; 52 files / 567 tests.
+- `npm run build`: exit 0; client entry 310.61 kB / 94.76 kB gzip, bundled
+  server 5.7 MB.
+- `npm run check:integration`: exit 0; 50/50 checks, 1 skipped (the public
+  `web_open`), reported as never counted.
+- `npm run check:network`: exit 0; 51/51 checks including a real `pypi.org`
+  retrieval through the built tool loop.
+- Mutation evidence: pre-fix `analysisKeywords` fails 2 tests; pre-fix
+  `files_analyze` payload fails 4 tests; removing the absolute-zero branch
+  fails 1 test; `504 -> 500` fails the new pre-header timeout test. Focused
+  rerun after restoring all mutations: 5 files / 50 tests passed.
+- `git diff --check`: clean.
+
+**Unresolved / environment-bound.**
+
+- Browser E2E remains **NOT RUN** locally (Chromium download blocked); the
+  hosted CI browser job on the pushed head is the only browser evidence.
+- Docker-backed `code_execute`, the Windows launcher and every live-model
+  check were not run: no endpoint or credential exists. They are not claimed
+  as passed.
+- CodeRabbit's included-review allowance was exhausted after review
+  `5641329209`; a re-review of the fix head may be quota-blocked. A green
+  check is neither an approval nor proof that the findings are fixed.
+
+**Boundary confirmation.** Changes are on `arena/352dba56-kaggle-kit` only.
+No merge, tag, release, asset publication, deployment or workflow dispatch was
+performed; merge and beta2 publication remain maintainer decisions.
+
+### Addendum - regression caught by hosted CI on the first fix head (2026-10-25T03:57:03Z)
+
+- Push run `40159913146` and PR run `40159915520` on exact head
+  `ababc431b200aaaced8e1b618f5be6f93683cb4e` failed the `notebook tests` job
+  at "Run the tests of the release tools". Cause:
+  `tools/test_workflow_security.py` asserted the literal obsolete README tag
+  example that this change set removed. The failure is a real regression from
+  this change set, not an environment issue; the other four jobs passed.
+- Fix: the test reads the version from `package.json`, requires the
+  `node -p` substitution and the `docs/release-notes/<version>.md` wording,
+  and rejects any hard-coded `git tag v<semver>-` example. Restoring the old
+  README line fails the updated test.
+- Local evidence after the fix: tools suite 39/39; notebook suite 105/105 with
+  `requests` 2.34.2 in a temporary venv (17 skips without it, not a pass);
+  `npm run check` 52 files / 567 tests, build, deterministic integration
+  50/50 + 1 skipped, network integration 51/51 all unchanged by the fix.
+- The fix was pushed as a follow-up commit on the same branch; CI was
+  rechecked on the new head instead of citing the failed run.
+
+### Addendum - second release-tool regression, in the environment report (2026-10-25T04:01:09Z)
+
+- Push run `40160095404` and PR run `40160099612` on exact head
+  `71983278720b620a1eb8ee28b50a40591c032980`: the other four jobs passed and
+  the `notebook tests` job failed the release-tools step again.
+- Cause: the new `docs/release/environment.json` entry quoted the notebook
+  unittest command without the `[run ...]` prefix that
+  `EnvironmentReportConsistencyTests` requires for a repeated recording. It
+  reproduces locally with `python3 -m unittest
+  tools.test_release_tools.EnvironmentReportConsistencyTests`.
+- Fix: the entry now carries a unique run label naming the tree, sandbox and
+  Python environment. Re-verified: tools suite 39/39, notebook suite 105/105
+  (requests 2.34.2), and `tools/release-dry-run.sh 0.1.0-beta2 v0.1.0-beta2`
+  exit 0 on HEAD `7198327` with the fix uncommitted (staged assets validated,
+  `SOURCE_SHA` rendered as `7198327`).
+- Checked into the same branch; CI is rechecked on the resulting head rather
+  than the failed runs.
+
+### Addendum - final CI and review state (2026-10-25T04:03:15Z)
+
+- Exact head `453aedbed1b036bb30358dd7e8a7158533d5140c`: push run
+  `40160350023` and PR run `40160353262` both passed all five jobs
+  (typecheck/lint/test/build, Docker sandbox integration, notebook plus
+  release-tool tests, Windows launcher, browser end-to-end).
+- CodeRabbit did not re-review the fix head: reviews on PR #24 remain
+  `5641243950` (Copilot, head `9a3f20f`) and `5641329209` (CodeRabbit, head
+  `7cbbae2`), and its included-review allowance was exhausted. No CodeRabbit
+  status check exists on the new head. Five review threads are unresolved
+  (four outdated, one current); they were not resolved by hand.
+- Kilo Code Review is `action_required` (account out of credits); Qodo reports
+  its trial ended. `reviewDecision` is empty, merge state
+  `MERGEABLE`/`UNSTABLE`, no human approval. CI green is not an approval.
+
+## 2026-10-25 - Remediating the independent PR #24 audit (F1-F9, C1-C4)
+
+### User Intent
+
+The previous turn was a read-only independent review that returned HOLD for
+PR #24 at head `2196778cceaed860d4c43bfdac0ae305cfe9335b` (base
+`5f7e34c06602fa88d1a4907ee1e3692d336002cb`). This turn implements the fixes,
+adds regression coverage, runs the documented checks and pushes one focused
+commit to the existing PR branch. The PR must stay open and unmerged; no tag,
+release, deployment, thread resolution or approval is requested.
+
+### Implementation History
+
+- Verified live PR state before editing: `open`, not draft, base `main` at
+  `5f7e34c…`, head branch `arena/352dba56-kaggle-kit` at `2196778c…`,
+  `reviewDecision` empty, `MERGEABLE`/`UNSTABLE`, two COMMENTED bot reviews,
+  five unresolved threads, Kilo `action_required`. Local `HEAD` matched the
+  live head exactly; working tree clean.
+- Baseline before any edit: `npm run check` exit 0 (52 files / 567 tests),
+  `npm run build` 0, `check:integration` 50/50 + 1 skipped, tools Python 39,
+  notebooks Python 105 run / 17 skipped.
+- Reproduced F1, F2, F3, F4, F7 and F8 on the untouched head with a real
+  `createApp` + real HTTP upstream + real `FileVault`/`ToolExecutor`; F5, F6
+  and F9 were confirmed by tracing `gateway.readStream`, the diagnostics
+  stages and the checked-in evidence files.
+- Implemented all nine fixes and the three confirmed concerns. Details and
+  the reasoning are in the matching `DESIGN_LOG.md` entry for this date.
+- New regression tests live in `server/app.streaming.test.ts`,
+  `src/lib/gateway.test.ts`, `shared/api/stream.test.ts`,
+  `server/tools/files.test.ts`, `server/tools/executor.test.ts`,
+  `server/tools/calculator.test.ts`, `server/proxy.test.ts` and
+  `src/components/MessageItem.test.tsx`.
+- Mutation evidence: in a throwaway copy of the tree, each of the nine
+  original behaviours was re-introduced one at a time and the matching new
+  test failed with a concrete assertion (all nine runs exited 1). This is the
+  evidence that the tests detect the original defects rather than merely
+  passing.
+
+### Decisions & Lessons
+
+- Never claim a check passed without its output. Commands, exit codes and
+  counts for this turn are recorded in the final report and in
+  `docs/release/environment.json`.
+- Green CI on an older SHA is evidence for that SHA only. Checked-in evidence
+  now names `453aedbed1b036bb30358dd7e8a7158533d5140c` with runs
+  `40160350023`/`40160353262` and `2196778cceaed860d4c43bfdac0ae305cfe9335b`
+  with runs `40160472413`/`40160476072`; each `head_sha` was verified through
+  the GitHub Actions API. `2196778` is an evidence-only commit on top of
+  `453aedb`. The new remediation commit is a code change, so its CI runs are
+  checked after the push rather than asserted before it exists.
+- Playwright Chromium, the Docker sandbox, the Windows launcher and live model
+  inference are not claimed as locally verified unless a command actually
+  ran here. Hosted CI on the final head is reported separately.
+- A skipped bot review, an `action_required` check and an empty
+  `reviewDecision` are not approvals; they are reported as-is.
+
+### Final local validation addendum - PR #24 remediation
+
+- Final `npm run check`: exit 0, 52 files / 613 Vitest tests.
+- Final `npm run build`: exit 0; bundled backend 5.7 MB.
+- Final `npm run check:integration`: exit 0, 56/56 passed and one opt-in
+  public retrieval skipped; final `npm run check:network`: exit 0, 57/57
+  including the real `pypi.org` retrieval.
+- Python tools tests: 40/40; notebook tests: 105 run, 17 skipped (the
+  requests-dependent cases); `git diff --check`: clean.
+- Regression mutation checks in a throwaway copy: original F1-F8 and C2
+  behaviours fail their targeted tests; removing the F9 head-to-run evidence
+  entry fails the new `EnvironmentReportConsistencyTests` assertion.
+- `npm run test:e2e` exited 1 before tests started because the local Playwright
+  Chromium executable is absent; all seven specs fail at browser launch for
+  that same environment reason. Docker CLI is absent; Windows and live-model
+  paths are unavailable locally. These are limitations, not passes.
+- Code-under-test SHA and hosted CI run IDs for the new commit are recorded
+  only after that commit is pushed and its runs are observed. No human review,
+  approval, merge, tag, release, deployment or publication is claimed.
+
+## 2026-10-25 - Hosted CI verified for remediation code SHA 6601004
+
+- GitHub Actions push run `40166459556` reports exact `head_sha`
+  `6601004246372777bf7aa75b354194ffb915b06f`, branch
+  `arena/b965bb05-kaggle-kit`, status completed, conclusion success.
+- Its five jobs all succeeded: typecheck/lint/test/build, Browser end-to-end,
+  Docker sandbox integration, notebook/release-tool tests, and Windows
+  launcher. This code-SHA/run mapping is recorded in `docs/release/environment.json`.
+- The next commit is documentation/evidence-only and is checked separately;
+  no later-head CI is inferred from this run.
+
+---
+
+## 2026-10-25 – CodeRabbit review configuration
+
+**Task.** Add a repository-specific CodeRabbit review configuration while preserving the existing remediation history and avoiding automatic approvals or code-changing follow-up actions.
+
+**What changed.** Added root `.coderabbit.yaml` with English (US) reviews, assertive review profile, automatic and incremental reviews, drafts excluded, the existing five-reviewed-commit pause retained, status/progress/details reporting, changed-file and high-level summaries, AI-agent finding prompts, and automatic approvals disabled. Added scoped instructions for backend/shared contracts and streaming, browser lifecycle/accessibility, Kaggle notebooks, tests and integration tooling, documentation/release evidence, CI/dependencies, and the configuration itself. Configured the existing root `AGENTS.md` as the CodeRabbit coding-guideline source. Left inheritance disabled and disabled all schema-supported finishing touches that could change code or open follow-up work. No additional static-analysis tools were enabled because their plan availability and incremental value were not established.
+
+**Validation.** `npx --yes --package=prettier prettier --check .coderabbit.yaml` passed and parsed the YAML. The official CodeRabbit schema v2 and configuration reference were consulted; configured keys and types were checked against the published schema/reference. A complete automated JSON Schema validation was not performed because the schema was not available as a local file and no schema validator workflow was already configured. `npm run check` passed (52 files, 613 tests); `npm run build` passed; deterministic integration passed 56/56 with one opt-in public retrieval skipped; tools Python tests passed 40/40; notebook tests passed 105 with 17 requests-dependent skips. The integration emitted PDF.js optional-canvas/font warnings but exited successfully.
+
+**Branch limitation.** This work is on the active session branch `arena/b965bb05-kaggle-kit`. At validation time PR #24 remained at `2196778cceaed860d4c43bfdac0ae305cfe9335b` on `arena/352dba56-kaggle-kit`; the new configuration is not represented as part of that PR by this log entry. No merge, tag, release, deployment, or review-thread resolution was performed.
+
+---
+
+## 2026-10-25 – Beta2 candidate audit and release dry run
+
+**Task.** Recheck the complete beta2 candidate history, previously identified review findings, release policy, current tags/releases, and the candidate's test/build/release evidence before requesting integration.
+
+**Audit disposition.** The candidate consists of ten commits from `9a3f20f` through `5ff9772`, all within the beta2 release, audit-remediation, CI-evidence, and CodeRabbit-configuration scope. Rechecked the prior F1–F9 fixes and the current CodeRabbit findings against the code/tests; no additional actionable defect was reproduced in this pass. The remaining C3 reader-done-on-abort race was not independently reproduced; the timeout `finally` safeguard and regression coverage remain. Historical `dev1`–`dev7` tags/releases and beta1 are earlier prerelease history, not beta2 evidence. `v0.1.0-beta2` does not yet exist as a tag or release; package, shared version, and release note agree on `0.1.0-beta2`, making `v0.1.0-beta2` the next documented candidate tag if and when the reviewed change is merged.
+
+**Validation.** Ran `npm ci` (371 packages; audit reported 0 vulnerabilities), `npm run check` (52 files, 613 tests), `npm run build`, deterministic integration (56/56, one opt-in public retrieval skipped), network integration (57/57 including successful public `web_open` retrieval), and the release dry run `tools/release-dry-run.sh 0.1.0-beta2 v0.1.0-beta2` on source SHA `5ff97721943196cea5c53b7c8a03e180996a6bbb`. The dry run's typecheck, lint, Vitest, notebook (105 run, 0 skipped after installing requests in a temporary environment), tools Python (40 tests), build, integration, staging, manifest, checksums, downloaded-asset simulation, and release validation all passed. The generated release assets were staged locally only; no tag or release was created. The initial network-check attempt before building failed because `dist/server/index.js` did not exist; after running the documented build, both network integration and dry run passed.
+
+**Hosted evidence.** CI push run `40167706634` on exact SHA `5ff97721943196cea5c53b7c8a03e180996a6bbb` completed successfully with all five jobs green: typecheck/lint/test/build, Docker sandbox integration, notebook tests, browser end-to-end, and Windows launcher. Run URL: https://github.com/coderunknow/Kaggle-Kit/actions/runs/40167706634. This is session-branch evidence, not evidence that PR #24's head was updated or reviewed.
+
+**Integration limitation.** PR #24 remained open at `2196778cceaed860d4c43bfdac0ae305cfe9335b`; its review decision was empty and historical bot submissions were quota-limited. The environment restricts writes to `arena/b965bb05-kaggle-kit`; no write to the PR head, merge, tag, release, deployment, or thread resolution was performed. The CodeRabbit schema was manually checked against the official schema/reference and YAML parsed by Prettier, but complete local JSON Schema validation was not performed.
+
+---
+
+## 2026-10-25 – Correct CodeRabbit tone length
+
+CodeRabbit's first PR #25 configuration inspection explicitly reported `.coderabbit.yaml` invalid because `tone_instructions` exceeded the schema's 250-character limit. Shortened the tone to 243 characters, verified YAML parsing/format with Prettier, and pushed the correction as a new session-branch commit. This parsing error means the first CodeRabbit run used defaults; no effective configuration or review of that head is claimed. Fresh exact-head CI and a post-fix CodeRabbit result are pending.
+
+---
+
+## 2026-10-25 – Include lockfiles in CodeRabbit review scope
+
+After the corrected configuration loaded in CodeRabbit's in-progress review for `c2e1435`, its file inventory still reported `package-lock.json` excluded by the service path filter `!**/package-lock.json`. Added the schema-supported positive `reviews.path_filters` glob `**/*` to request all changed paths, including lockfiles, and no exclusions. This changes the reviewed configuration; schema/YAML check, CI, and a review of the resulting new head are required before relying on it.
+
+---
+
+## 2026-10-25 – Unicode-safe file-analysis output budgeting
+
+**Final PR #25 audit finding.** A focused regression test using a 2,000-character CJK excerpt and a 1,200-byte tool-output budget failed on the current PR head: the shrink loop treated byte excess as a Unicode-character count and reduced a fitting excerpt to the empty string. Replaced that estimate with a bounded binary search over code-point prefixes, checking each serialized UTF-8 payload against the byte budget. Added the failing regression test; it now verifies the excerpt remains nonempty, is marked truncated, and the complete JSON stays within the untrusted-output budget.
+
+**Validation.** Before the fix, `npx vitest run server/tools/executor.test.ts -t 'multibyte excerpt'` failed because `payload.excerpt` was empty. After the fix, `npx vitest run server/tools/executor.test.ts` passed all 23 tests. Exact-head full validation and GitHub checks are pending. No PR merge, tag, release, publication, or deployment was performed.

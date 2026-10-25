@@ -94,7 +94,11 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
-  const effectiveStream = Boolean(draft.stream && streamingEnabled);
+  // `savedStream` is the user's preference and survives a page reload. The
+  // effective value is what a request would use right now: streaming is only
+  // sent after this session verified it, and the proxy enforces that again.
+  const savedStream = Boolean(draft.stream);
+  const effectiveStream = Boolean(savedStream && streamingEnabled);
   const recognizedEntry = findCatalogEntryByModelId(profile.modelId);
   const thinkingControl = recognizedEntry?.thinking;
   // Widened for comparison with the persisted ReasoningEffort value; the
@@ -117,14 +121,14 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
   });
 
   const dirty = !sameParams(
-    { ...draft, stream: effectiveStream },
-    { ...profile.defaultParams, stream: Boolean(profile.defaultParams.stream && streamingEnabled) },
+    { ...draft, stream: savedStream },
+    { ...profile.defaultParams, stream: Boolean(profile.defaultParams.stream) },
   );
 
   const save = () => {
     app.saveProfile({
       ...profile,
-      defaultParams: { ...draft, stream: effectiveStream },
+      defaultParams: { ...draft, stream: savedStream },
       updatedAt: new Date().toISOString(),
     });
     setSaved(true);
@@ -166,6 +170,9 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
         profileId: profile.id,
         capabilities: {
           streamingVerified: result.supported,
+          // Evidence only describes the probe that just ran; a failed probe
+          // must not leave an older observation behind.
+          ...(result.supported && result.evidence ? { streamingEvidence: result.evidence } : {}),
           reasoningEffortSupported: capabilities?.reasoningEffortSupported ?? false,
           notes: capabilities?.notes ?? [],
           ...(capabilities?.toolCalling ? { toolCalling: capabilities.toolCalling } : {}),
@@ -609,16 +616,22 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
           <input
             id="streaming-enabled"
             type="checkbox"
-            checked={effectiveStream}
-            disabled={!streamingEnabled}
+            checked={savedStream}
+            // The control only stays disabled when turning streaming on would
+            // promise something this session cannot do. A saved preference can
+            // always be cleared, otherwise the user is locked into the
+            // streamUnverified notice until a probe succeeds.
+            disabled={!streamingEnabled && !savedStream}
             onChange={(event) => update('stream', event.target.checked)}
           />
           <span>
             Stream the answer
             <span className="field__hint" style={{ display: 'block' }}>
               {streamingEnabled
-                ? 'The endpoint delivered a text/event-stream response during verification.'
-                : 'Disabled until streaming is verified for this endpoint in this session.'}
+                ? 'The endpoint delivered a text/event-stream response during verification. This proves the upstream transport, not the rendering of this page.'
+                : savedStream
+                  ? 'Saved as enabled, but this browser session has not verified streaming for this endpoint, so answers are requested without streaming. Turn it off here at any time, or verify streaming support to use it.'
+                  : 'Disabled until streaming is verified for this endpoint in this session.'}
             </span>
           </span>
         </label>
@@ -635,6 +648,14 @@ export function InferenceSettings({ profile }: InferenceSettingsProps) {
           </button>
           {streamingEnabled ? <Badge tone="ok">streaming verified</Badge> : null}
         </div>
+
+        {streamingEnabled && capabilities?.streamingEvidence ? (
+          <p className="field__hint" style={{ marginTop: 8 }}>
+            Observed on the wire: {capabilities.streamingEvidence.contentEvents} content event(s), the
+            first after {capabilities.streamingEvidence.firstContentMs} ms (probe at{' '}
+            {new Date(capabilities.streamingEvidence.verifiedAt).toLocaleTimeString()}).
+          </p>
+        ) : null}
 
         {probeResult ? (
           <div

@@ -74,7 +74,8 @@ async function harness(
     // Only consulted when a tool chat is started with an empty model ID.
     listModels: vi.fn(async () => ['discovered-model']),
   } as unknown as ProxyService;
-  const executor = new ToolExecutor(store, proxy, new FileVault(), createLogger({ sink: () => undefined }));
+  const vault = new FileVault();
+  const executor = new ToolExecutor(store, proxy, vault, createLogger({ sink: () => undefined }));
   const service = new ToolChatService(store, proxy, executor);
   const start = (conversationSettings?: { toolIds?: string[]; maxRounds?: number; historyPersistence?: boolean; selectionRecovery?: boolean }) => service.start({
     profileId: 'profile-1',
@@ -86,7 +87,7 @@ async function harness(
     timeoutMs: 5_000,
     ...(conversationSettings ? { conversationSettings } : {}),
   });
-  return { store, service, proxy, executor, fetchMock, bodies, start };
+  return { store, service, proxy, executor, vault, fetchMock, bodies, start };
 }
 
 afterEach(async () => {
@@ -171,6 +172,103 @@ describe('bounded server-side tool chat', () => {
     });
     expect(JSON.stringify(toolResults)).toContain('37.7777777778');
     expect(test.bodies[0]?.tools).toMatchObject([{ function: { name: 'calculator_convert' } }]);
+  });
+
+  it('executes a model-requested unit conversion and returns the independently expected value', async () => {
+    const { start, bodies } = await harness(
+      profile({ allowedTools: ['calculator_convert'] }),
+      [
+        functionCall('calculator_convert', { value: 100, from: '°F', to: '°C' }),
+        answer('It is 37.77777777777778 °C.'),
+      ],
+    );
+
+    const result = await start();
+
+    expect(result.status).toBe('complete');
+    expect(result.toolTrace).toHaveLength(1);
+    const trace = result.toolTrace[0]!;
+    expect(trace.toolName).toBe('calculator_convert');
+    expect(trace.status).toBe('succeeded');
+    expect(trace.safeArguments).toMatchObject({ value: 100, from: '°F', to: '°C' });
+    // The second model request carries the raw tool result, so the value the
+    // model saw is the value the executor produced, not the model's claim.
+    const toolResults = (bodies[1]!.messages as Array<{ role: string; content: string }> | undefined ?? [])
+      .filter((message) => message.role === 'tool');
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0]!.content).toContain('37.77777777777778');
+    expect(toolResults[0]!.content).toContain('°C');
+    expect(result.content).toContain('37.77777777777778');
+  });
+
+  it('analyzes a real uploaded file with the file ID the upload returned', async () => {
+    const completions: Completion[] = [];
+    const { start, vault } = await harness(
+      profile({ allowedTools: ['files_list', 'files_read', 'files_analyze'] }),
+      completions,
+    );
+    const uploaded = await vault.upload({
+      name: 'budget.csv',
+      mediaType: 'text/csv',
+      bytes: new TextEncoder().encode('department,amount\nengineering,1200\nmarketing,800\nsupport,400'),
+      conversationId: 'conversation-1',
+    });
+    completions.push(
+      functionCall('files_analyze', { file_id: uploaded.id, question: 'Which departments have a budget?' }, 'call-files'),
+      answer('The budget file lists three departments.'),
+    );
+
+    const result = await start();
+
+    expect(result.status).toBe('complete');
+    const trace = result.toolTrace[0]!;
+    expect(trace.toolName).toBe('files_analyze');
+    expect(trace.status).toBe('succeeded');
+    expect(trace.safeArguments).toMatchObject({ file_id: uploaded.id, question: 'Which departments have a budget?' });
+    expect(result.content).toContain('three departments');
+  });
+
+  it('keeps the file analysis JSON parseable after the untrusted-data wrapper', async () => {
+    const completions: Completion[] = [];
+    const { start, vault, bodies } = await harness(
+      profile({ allowedTools: ['files_analyze'] }),
+      completions,
+    );
+    const rows = Array.from(
+      { length: 300 },
+      (_, index) => `dept${index},${1000 + index},owner${index},${'note '.repeat(45)}`,
+    );
+    const uploaded = await vault.upload({
+      name: 'wide.csv',
+      mediaType: 'text/csv',
+      bytes: new TextEncoder().encode(['department,amount,owner,note', ...rows].join('\n')),
+      conversationId: 'conversation-1',
+    });
+    completions.push(
+      functionCall('files_analyze', { file_id: uploaded.id, question: 'dept299' }, 'call-files'),
+      answer('The wide file contains one matching row.'),
+    );
+
+    const result = await start();
+
+    expect(result.status).toBe('complete');
+    expect(result.toolTrace[0]?.status).toBe('succeeded');
+    const toolMessages = ((bodies[1]?.messages ?? []) as Array<{ role: string; content: string }>)
+      .filter((message) => message.role === 'tool');
+    expect(toolMessages).toHaveLength(1);
+    const content = toolMessages[0]!.content;
+    // The wrapper prefix counts against the same limit; the JSON below it must
+    // still be complete and parseable at the default 24 kB boundary.
+    expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(24_000);
+    expect(content.startsWith('UNTRUSTED TOOL OUTPUT')).toBe(true);
+    const payload = JSON.parse(content.slice(content.indexOf('{'))) as {
+      matches: Array<{ line: number; text: string }>;
+      excerptTruncated: boolean;
+      matchesTruncated?: boolean;
+    };
+    expect(payload.matches).toEqual([{ line: 301, text: expect.stringContaining('dept299') }]);
+    expect(payload.matchesTruncated).toBeUndefined();
+    expect(payload.excerptTruncated).toBe(true);
   });
 
   it('never sends the base prompt no-tools claim together with a tool list', async () => {
@@ -943,7 +1041,8 @@ describe('bounded server-side tool chat', () => {
       resolveTarget: vi.fn(async (target: { baseUrl: string }) => ({ baseUrl: target.baseUrl })),
       getToolCallingCapability: vi.fn(async () => ({ status: 'supported_verified', detail: 'verified' })),
     } as unknown as ProxyService;
-    const executor = new ToolExecutor(store, proxy, new FileVault(), createLogger({ sink: () => undefined }));
+    const vault = new FileVault();
+  const executor = new ToolExecutor(store, proxy, vault, createLogger({ sink: () => undefined }));
     const service = new ToolChatService(store, proxy, executor);
     let requestStarted!: () => void;
     const started = new Promise<void>((resolve) => { requestStarted = resolve; });

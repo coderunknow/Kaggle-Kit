@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError } from '../../shared/api/errors';
+import { ApiError, withHint } from '../../shared/api/errors';
 import { DEFAULT_TOOL_PROFILE_SETTINGS } from '../../shared/tools/types';
 import { gateway } from './gateway';
 
@@ -218,5 +218,63 @@ describe('the browser gateway', () => {
     const result = await gateway.chat(REQUEST);
     expect(result.content).toBe('done');
     expect(result.finishReason).toBe('stop');
+  });
+});
+
+
+describe('F5 - structured terminal stream errors are classified, not guessed', () => {
+  const errorEvent = (error: Record<string, unknown>) =>
+    `event: error\ndata: ${JSON.stringify({ error })}\n\n`;
+
+  async function readWith(error: Record<string, unknown>): Promise<ApiError> {
+    vi.stubGlobal('fetch', vi.fn(async () => eventStream([
+      'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+      errorEvent(error),
+    ], { close: true })));
+    const deltas: string[] = [];
+    const caught = await gateway
+      .chat(REQUEST, { callbacks: { onDelta: (delta) => deltas.push(delta.content ?? '') } })
+      .catch((reason: unknown) => reason);
+    expect(deltas.join('')).toBe('partial');
+    expect(caught).toBeInstanceOf(ApiError);
+    return caught as ApiError;
+  }
+
+  it('classifies a proxy stream_timeout as a timeout with the timeout hint', async () => {
+    const error = await readWith({
+      code: 'stream_timeout',
+      message: 'The generation exceeded its request timeout (400 ms). The answer is incomplete.',
+    });
+    expect(error.kind).toBe('timeout');
+    expect(error.message).toMatch(/request timeout/i);
+    expect(error.message).toMatch(/incomplete/i);
+    expect(error.hint).toBe(withHint('timeout'));
+  });
+
+  it('does not classify other stream failures as timeouts', async () => {
+    const upstream = await readWith({
+      code: 'upstream_stream_failed',
+      message: 'The upstream connection failed while the answer was streamed.',
+    });
+    expect(upstream.kind).toBe('inference');
+    expect(upstream.hint).toMatch(/partial answer was kept/i);
+
+    const plain = await readWith({ message: 'upstream connection lost' });
+    expect(plain.kind).toBe('inference');
+
+    const unknownCode = await readWith({ code: 'made_up_code', message: 'odd' });
+    expect(unknownCode.kind).toBe('inference');
+  });
+
+  it('ignores a kind supplied by an untrusted upstream error payload', async () => {
+    const spoofed = await readWith({ kind: 'timeout', message: 'not really a timeout' });
+    expect(spoofed.kind).toBe('inference');
+    expect(spoofed.hint).toBe(withHint('inference', 'The connection broke while the answer was streamed. The partial answer was kept; retry the request.'));
+  });
+
+  it('classifies a cancelled stream as aborted', async () => {
+    const cancelled = await readWith({ code: 'client_cancelled', message: 'The request was cancelled.' });
+    expect(cancelled.kind).toBe('aborted');
+    expect(cancelled.hint).toBe(withHint('aborted'));
   });
 });

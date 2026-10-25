@@ -15,6 +15,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { ApiError, redactSecrets } from '../shared/api/errors';
+import { MAX_SSE_EVENT_BYTES, type ProxyStreamErrorCode } from '../shared/api/stream';
 import { joinApiPath } from '../shared/api/url';
 import type { ChatCompletionRequestBody, ChatMessageInput } from '../shared/api/types';
 import { parseInferenceParams } from '../shared/api/validation';
@@ -65,6 +66,42 @@ export interface App {
   proxy: ProxyService;
   files: FileVault;
   toolChat: ToolChatService;
+}
+
+/** Human readable request timeout; sub-second limits stay readable. */
+function describeDuration(milliseconds: number): string {
+  if (milliseconds >= 1_000) {
+    const seconds = milliseconds / 1_000;
+    return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
+  }
+  return `${Math.round(milliseconds)} ms`;
+}
+
+const LF = 0x0a;
+const CR = 0x0d;
+
+/**
+ * Byte offsets immediately after each complete SSE event separator in `buffer`.
+ * The separator spellings and leftmost-first order match `findSeparator` in
+ * `shared/api/stream.ts`, so the proxy and the browser agree on event
+ * boundaries. Only `from` onward is scanned: the caller keeps the invariant
+ * that the bytes before `from` cannot begin a separator, which keeps a chunk
+ * containing many small events linear rather than quadratic.
+ */
+function sseEventEnds(buffer: Buffer, from: number): number[] {
+  const ends: number[] = [];
+  for (let index = from; index + 1 < buffer.byteLength; index += 1) {
+    const a = buffer[index]!;
+    const b = buffer[index + 1]!;
+    if ((a === LF && b === LF) || (a === CR && b === CR)) {
+      ends.push(index + 2);
+      index += 1;
+    } else if (a === CR && b === LF && buffer[index + 2] === CR && buffer[index + 3] === LF) {
+      ends.push(index + 4);
+      index += 3;
+    }
+  }
+  return ends;
 }
 
 export function createApp(options: AppOptions = {}): App {
@@ -465,10 +502,21 @@ export function createApp(options: AppOptions = {}): App {
     // A disconnect of the *client* cancels the upstream request. The `close`
     // event of the request must not be used for this: it also fires when the
     // request body was received completely.
-    const stopWatching = watchForDisconnect(response, () => controller.abort());
+    let clientDisconnected = false;
+    const stopWatching = watchForDisconnect(response, () => {
+      clientDisconnected = true;
+      controller.abort();
+    });
 
-    // A stream that never ends must not hold the connection forever.
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // A stream that never ends must not hold the connection forever. The
+    // flag keeps a proxy-side timeout apart from a user cancellation: both
+    // abort the same controller, but reporting a timeout as "cancelled"
+    // would hide why the answer stopped.
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -491,7 +539,14 @@ export function createApp(options: AppOptions = {}): App {
       clearTimeout(timeout);
       stopWatching();
       if (controller.signal.aborted) {
-        throw new HttpError(499, 'The client cancelled the request.');
+        throw timedOut
+          ? new HttpError(
+            504,
+            `The endpoint did not answer the streaming request within ${describeDuration(timeoutMs)}.`,
+            'timeout',
+            'Raise the request timeout, or turn streaming off for this endpoint.',
+          )
+          : new HttpError(499, 'The client cancelled the request.');
       }
       throw new HttpError(
         502,
@@ -551,34 +606,102 @@ export function createApp(options: AppOptions = {}): App {
       'X-Accel-Buffering': 'no',
     });
 
+    const failureFor = (): { code: ProxyStreamErrorCode; message: string } => {
+      if (timedOut) {
+        return {
+          code: 'stream_timeout',
+          message: `The generation exceeded its request timeout (${describeDuration(timeoutMs)}). The answer is incomplete.`,
+        };
+      }
+      if (clientDisconnected) {
+        return { code: 'client_cancelled', message: 'The request was cancelled.' };
+      }
+      return {
+        code: 'upstream_stream_failed',
+        message: 'The upstream connection failed while the answer was streamed.',
+      };
+    };
+
+    // Only *complete* SSE event blocks are forwarded. Forwarding raw bytes lets
+    // an unterminated upstream frame swallow the terminal error event: SSE joins
+    // consecutive `data:` lines into one event, so a half-written
+    // `data: {"choices":...` plus `data: {"error":...}` becomes one block whose
+    // JSON cannot be parsed and the failure disappears. Holding the tail in a
+    // bounded buffer keeps every emitted event on a clean event boundary while
+    // still delivering complete upstream frames as soon as they arrive.
+    let pending = Buffer.alloc(0);
+    let failure: { code: ProxyStreamErrorCode; message: string } | undefined;
+    let errorWritten = false;
+
+    const writeTerminalError = (reason: { code: ProxyStreamErrorCode; message: string }): void => {
+      if (errorWritten || response.writableEnded || response.destroyed) return;
+      errorWritten = true;
+      // An incomplete upstream event never carried a complete delta, so it is
+      // dropped rather than emitted next to the error. No `[DONE]` or
+      // `finish_reason` is sent: a failed generation must not look complete.
+      pending = Buffer.alloc(0);
+      response.write(`data: ${JSON.stringify({ error: { code: reason.code, message: reason.message } })}\n\n`);
+    };
+
     const reader = upstream.body.getReader();
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value) response.write(Buffer.from(value));
+        if (!value) continue;
+        const previousLength = pending.byteLength;
+        const chunk = Buffer.from(value);
+        pending = previousLength === 0 ? chunk : Buffer.concat([pending, chunk]);
+        const ends = sseEventEnds(pending, Math.max(0, previousLength - 3));
+        if (ends.length > 0) {
+          let from = 0;
+          let eventTooLarge = false;
+          for (const end of ends) {
+            if (end - from > MAX_SSE_EVENT_BYTES) {
+              failure = {
+                code: 'stream_event_too_large',
+                message: 'The upstream event exceeded the maximum size of a single SSE event. The answer is incomplete.',
+              };
+              writeTerminalError(failure);
+              eventTooLarge = true;
+              break;
+            }
+            if (!response.writableEnded) response.write(pending.subarray(from, end));
+            from = end;
+          }
+          if (eventTooLarge) break;
+          pending = pending.subarray(from);
+        }
+        if (pending.byteLength > MAX_SSE_EVENT_BYTES) {
+          failure = {
+            code: 'stream_event_too_large',
+            message: 'The upstream event exceeded the maximum size of a single SSE event. The answer is incomplete.',
+          };
+          writeTerminalError(failure);
+          break;
+        }
+      }
+      // A clean EOF still delivers the trailing unterminated block, matching
+      // the browser parser's final flush. A failure drops it instead.
+      if (!failure && !timedOut && pending.byteLength > 0 && !response.writableEnded) {
+        response.write(pending);
+        pending = Buffer.alloc(0);
       }
     } catch (error) {
       // The stream broke. Tell the client instead of ending it silently, so a
       // failed generation is not mistaken for a complete answer.
-      const aborted = controller.signal.aborted;
+      failure = failureFor();
       logger.warn('The streaming upstream connection failed', {
         message: error instanceof Error ? error.message : String(error),
-        aborted,
+        aborted: controller.signal.aborted,
+        timedOut,
+        code: failure.code,
       });
-
-      if (!response.writableEnded) {
-        response.write(
-          `data: ${JSON.stringify({
-            error: {
-              message: aborted
-                ? 'The request was cancelled.'
-                : 'The upstream connection failed while the answer was streamed.',
-            },
-          })}\n\n`,
-        );
-      }
+      writeTerminalError(failure);
     } finally {
+      // An abort can also make `read()` resolve `done` instead of throwing.
+      // Check the deadline once more so that path still emits a terminal error.
+      if (!errorWritten && (failure || timedOut)) writeTerminalError(failure ?? failureFor());
       clearTimeout(timeout);
       stopWatching();
       await reader.cancel().catch(() => undefined);
@@ -629,12 +752,19 @@ function readTarget(body: Record<string, unknown>): { baseUrl: string; apiKey?: 
 
 function decodeUpload(encoded: string): Buffer {
   const maximumEncodedLength = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
-  if (!encoded || encoded.length > maximumEncodedLength || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+  // No monolithic regular expression here: a backtracking validation over a
+  // multi-megabyte payload overflows the stack (HTTP 500) instead of refusing
+  // it. Re-encoding is a linear canonicality check that also rejects every
+  // non-base64 character, because `Buffer.from` silently skips them.
+  if (!encoded || encoded.length > maximumEncodedLength || encoded.length % 4 !== 0) {
     throw new FileProcessingError('The upload payload is not valid base64 or exceeds the upload limit.');
   }
   const bytes = Buffer.from(encoded, 'base64');
-  if (bytes.byteLength > MAX_UPLOAD_BYTES || bytes.toString('base64') !== encoded) {
-    throw new FileProcessingError('The upload payload is not canonical base64 or exceeds the 4 MiB limit.');
+  if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+    throw new FileProcessingError('The upload payload exceeds the 4 MiB limit.');
+  }
+  if (bytes.toString('base64') !== encoded) {
+    throw new FileProcessingError('The upload payload is not canonical base64.');
   }
   return bytes;
 }

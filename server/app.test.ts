@@ -394,6 +394,18 @@ describe('the local proxy backend', () => {
     });
     expect(invalid.status).toBe(400);
 
+    // A multi-megabyte payload used to overflow the base64 regex stack and
+    // surface as HTTP 500. An oversized upload is a client error with a reason.
+    const oversized = await post('/api/tools/files/upload', {
+      conversationId: 'conversation-1',
+      name: 'huge.txt',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.alloc(4 * 1024 * 1024 + 1, 0x61).toString('base64'),
+    });
+    expect(oversized.status).toBe(400);
+    const oversizedBody = await oversized.json() as { error: { message: string } };
+    expect(oversizedBody.error.message).toMatch(/4 MiB|upload limit/i);
+
     const remove = await fetch(`${baseUrl}/api/tools/files?conversationId=conversation-1`, { method: 'DELETE' });
     expect(remove.status).toBe(200);
     expect((await (await fetch(`${baseUrl}/api/tools/files?conversationId=conversation-1`)).json() as { files: unknown[] }).files).toEqual([]);
