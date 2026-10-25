@@ -2402,3 +2402,9 @@ release, deployment, thread resolution or approval is requested.
 **Hosted evidence.** CI push run `40167706634` on exact SHA `5ff97721943196cea5c53b7c8a03e180996a6bbb` completed successfully with all five jobs green: typecheck/lint/test/build, Docker sandbox integration, notebook tests, browser end-to-end, and Windows launcher. Run URL: https://github.com/coderunknow/Kaggle-Kit/actions/runs/40167706634. This is session-branch evidence, not evidence that PR #24's head was updated or reviewed.
 
 **Integration limitation.** PR #24 remained open at `2196778cceaed860d4c43bfdac0ae305cfe9335b`; its review decision was empty and historical bot submissions were quota-limited. The environment restricts writes to `arena/b965bb05-kaggle-kit`; no write to the PR head, merge, tag, release, deployment, or thread resolution was performed. The CodeRabbit schema was manually checked against the official schema/reference and YAML parsed by Prettier, but complete local JSON Schema validation was not performed.
+
+---
+
+## 2026-10-25 – Correct CodeRabbit tone length
+
+CodeRabbit's first PR #25 configuration inspection explicitly reported `.coderabbit.yaml` invalid because `tone_instructions` exceeded the schema's 250-character limit. Shortened the tone to 243 characters, verified YAML parsing/format with Prettier, and pushed the correction as a new session-branch commit. This parsing error means the first CodeRabbit run used defaults; no effective configuration or review of that head is claimed. Fresh exact-head CI and a post-fix CodeRabbit result are pending.

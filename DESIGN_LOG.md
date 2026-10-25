@@ -3273,3 +3273,18 @@ Perform an end-to-end audit of the beta2 candidate, recheck historical review fi
 - The repository's official beta2 release dry run performs local staging and validation only; it does not authorize or prove publication.
 - A green session-branch CI run and the old PR's historical bot reviews are not review evidence for a new PR head. The latest PR review activity is still on older SHAs; Copilot reported insufficient quota, Kilo was `ACTION_REQUIRED`, and CodeRabbit's historical summary said its included review allowance was exhausted at that time.
 - The currently active environment restricts pushes to `arena/b965bb05-kaggle-kit`, so this work cannot update the existing PR head. No merge, tag, release, deployment, review approval, or thread resolution occurred. No complete automated JSON Schema validation was available; the YAML parse and manual schema review are not represented as full schema validation.
+
+## 2026-10-25 - CodeRabbit schema limit correction
+
+### User Intent
+
+Correct any configuration defect surfaced by CodeRabbit itself before relying on the repository settings or requesting a meaningful review.
+
+### Implementation History
+
+- CodeRabbit's initial PR #25 comment reported a concrete configuration parsing error: `tone_instructions` exceeded the schema maximum of 250 characters. The run said it used defaults; it did not load `.coderabbit.yaml`.
+- Reduced the tone value to 243 characters. `npx --yes --package=prettier prettier --check .coderabbit.yaml` and `git diff --check` pass. This is a focused configuration-only correction; exact-head CI and post-correction review status must be checked separately after commit/push.
+
+### Decisions & Lessons
+
+- Local YAML parsing/formatting and manual schema review did not catch this maximum-length violation. Treat service validation as a separate check, correct the setting, and do not claim the invalid configuration was applied.

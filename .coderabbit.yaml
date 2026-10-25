@@ -3,12 +3,10 @@ early_access: false
 enable_free_tier: true
 inheritance: false
 tone_instructions: >-
-  Prioritize demonstrable correctness, security, reliability, compatibility,
-  performance, race, resource-limit, and regression risks. Report actionable
-  findings with concrete code paths and impact; label uncertainty, avoid
-  speculation, duplicate comments, cosmetic nitpicks, and issues already fixed
-  in the current diff. Distinguish inspected files and commits from inferred
-  behavior, and never present a review as test evidence or human approval.
+  Prioritize actionable correctness, security, compatibility, performance and
+  resource risks. Cite paths and impact. Label uncertainty; avoid speculation,
+  duplication, cosmetics, and issues already fixed. Separate review from tests
+  and approval.
 
 reviews:
   profile: assertive
