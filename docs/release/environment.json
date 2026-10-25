@@ -53,7 +53,8 @@
     "2026-10-25 CodeRabbit remediation mutation evidence: pre-fix analysisKeywords fails 2 tests; pre-fix files_analyze payload fails 4 boundary tests; removing the absolute-zero branch fails the chained conversion test; 504->500 fails the new pre-header timeout test; new tests assert HTTP 504 before any status and the in-band error event with status 200 after headers",
     "2026-10-25 CodeRabbit remediation: git diff --check clean; focused rerun of calculator/files/executor/streaming/useChat tests 50/50 passed after restoring every mutation",
     "2026-10-25 GitHub CI runs 40159913146 (push) and 40159915520 (PR) on exact head ababc431b200aaaced8e1b618f5be6f93683cb4e: four of five jobs passed, the notebook/release-tools job failed because tools/test_workflow_security.py still asserted the obsolete README tag example. Regression from this change set, fixed in the follow-up commit",
-    "2026-10-25 after fixing the release-tool test: python3 -m unittest discover -s tools -p 'test_*.py' 39/39 passed; python3 -m unittest discover -s notebooks -p 'test_*.py' 105/105 passed with requests 2.34.2 in a temporary venv; without requests the notebook suite reports 17 skips, which is not a pass"
+    "[run 2026-10-25, remediation tree on ababc431b200aaaced8e1b618f5be6f93683cb4e, Arena sandbox with system Python 3.11.2 and a temporary venv with requests 2.34.2] python3 -m unittest discover -s notebooks -p 'test_*.py' 105/105 passed; python3 -m unittest discover -s tools -p 'test_*.py' 39/39 passed; without requests the notebook suite reports 17 skips, which is not a pass",
+    "2026-10-25 tools/release-dry-run.sh 0.1.0-beta2 v0.1.0-beta2 exited 0 on HEAD 71983278720b620a1eb8ee28b50a40591c032980 with the environment.json run label uncommitted: checks (typecheck/lint/567 Vitest/105 notebook/39 tools), build, 50/50 deterministic integration with 1 skipped, staging, asset validation and release-note rendering; SOURCE_SHA rendered 7198327, so this is not evidence for a later head"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
@@ -84,6 +85,7 @@
     "2026-10-25 environment restriction: api.github.com, github.com and example.com fail from Node with ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE in this sandbox (system-CA curl returns 200); this is not the reported 12-second web_open timeout",
     "2026-10-25 CodeRabbit remediation: browser E2E not run locally (Playwright Chromium download blocked); hosted CI is the only browser evidence for this fix head",
     "2026-10-25 CodeRabbit remediation: Docker-backed code_execute, the Windows launcher and all live-model checks were not run; no endpoint or credential exists and none is claimed as verified",
-    "2026-10-25 Python suites were run with the system Python 3.11.2 and a temporary /tmp venv (requests 2.34.2); the Docker image and Windows launcher paths remain CI-only evidence"
+    "2026-10-25 Python suites were run with the system Python 3.11.2 and a temporary /tmp venv (requests 2.34.2); the Docker image and Windows launcher paths remain CI-only evidence",
+    "2026-10-25 the release dry run staged and validated assets only; it did not publish, upload, tag or deploy anything, and it is not evidence for any commit after 7198327"
   ]
 }

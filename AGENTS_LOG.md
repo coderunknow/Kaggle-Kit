@@ -2256,3 +2256,21 @@ performed; merge and beta2 publication remain maintainer decisions.
   50/50 + 1 skipped, network integration 51/51 all unchanged by the fix.
 - The fix was pushed as a follow-up commit on the same branch; CI was
   rechecked on the new head instead of citing the failed run.
+
+### Addendum - second release-tool regression, in the environment report (2026-10-25T04:01:09Z)
+
+- Push run `40160095404` and PR run `40160099612` on exact head
+  `71983278720b620a1eb8ee28b50a40591c032980`: the other four jobs passed and
+  the `notebook tests` job failed the release-tools step again.
+- Cause: the new `docs/release/environment.json` entry quoted the notebook
+  unittest command without the `[run ...]` prefix that
+  `EnvironmentReportConsistencyTests` requires for a repeated recording. It
+  reproduces locally with `python3 -m unittest
+  tools.test_release_tools.EnvironmentReportConsistencyTests`.
+- Fix: the entry now carries a unique run label naming the tree, sandbox and
+  Python environment. Re-verified: tools suite 39/39, notebook suite 105/105
+  (requests 2.34.2), and `tools/release-dry-run.sh 0.1.0-beta2 v0.1.0-beta2`
+  exit 0 on HEAD `7198327` with the fix uncommitted (staged assets validated,
+  `SOURCE_SHA` rendered as `7198327`).
+- Checked into the same branch; CI is rechecked on the resulting head rather
+  than the failed runs.

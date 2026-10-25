@@ -2991,3 +2991,32 @@ Also verified locally after the fix: `python3 -m unittest discover -s tools
 that "the JavaScript suite is green" is not the same as "the repository's
 checks are green": the Python tool tests read the documentation that was
 changed here.
+
+### Addendum - a second release-tool regression in environment.json (2026-10-25T04:01:09Z)
+
+The follow-up head `71983278720b620a1eb8ee28b50a40591c032980` failed the same
+`notebook tests` job again (`40160095404` push, `40160099612` pull request),
+still in "Run the tests of the release tools"; the other four jobs passed.
+Cause: the new `docs/release/environment.json` entry quoted
+`python3 -m unittest discover -s notebooks`, and
+`EnvironmentReportConsistencyTests` requires every repeated recording of that
+command to start with a distinguishing `[run ...]` label. The entry had a
+date prefix instead. `python3 -m unittest
+tools.test_release_tools.EnvironmentReportConsistencyTests` reproduces the
+failure locally, so this was again a real regression from this change set, not
+an environment problem.
+
+The entry now starts with
+`[run 2026-10-25, remediation tree on ababc431…, Arena sandbox with system
+Python 3.11.2 and a temporary venv with requests 2.34.2]`. Re-verified:
+`python3 -m unittest discover -s tools` 39/39 and the notebook suite 105/105
+with `requests`; then the full local release dry run
+`tools/release-dry-run.sh 0.1.0-beta2 v0.1.0-beta2` exited 0 (checks, build,
+deterministic integration 50/50 + 1 skipped, staging, asset validation and
+release-note rendering). That dry run used HEAD `7198327` with the label fix
+still uncommitted, so its rendered `SOURCE_SHA` is `7198327`; it is evidence
+for the working tree, not for a later commit.
+
+The lesson repeated: the Python tests read the documentation and the
+environment report, so editing those files requires the Python suites (and the
+release dry run) before claiming a green change set.
