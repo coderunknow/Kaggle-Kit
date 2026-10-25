@@ -109,3 +109,34 @@ describe('accessible tool activity timeline', () => {
     expect(screen.getByText('The operation needs your approval.')).toBeTruthy();
   });
 });
+
+
+describe('C1 - a persisted unverified-streaming notice is historical', () => {
+  afterEach(cleanup);
+
+  it('does not claim the current browser session is unverified', () => {
+    render(
+      <MessageItem
+        message={message({
+          status: 'complete',
+          toolJobId: undefined,
+          toolTrace: [],
+          sourceCitations: [],
+          streamUnverified: true,
+        })}
+        isLast
+        disabled={false}
+        onToolApproval={vi.fn()}
+        onCopy={async () => true}
+        onEdit={vi.fn()}
+        onRetry={vi.fn()}
+        onResend={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/in the session that produced this answer/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this browser session/i)).toBeNull();
+    expect(screen.getByText(/later answers/i)).toBeInTheDocument();
+  });
+});

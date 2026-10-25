@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { analysisKeywords, FileProcessingError, FileVault, MAX_EXTRACTED_CHARS, MAX_UPLOAD_BYTES } from './files';
+import { analysisKeywords, buildAnalysisQuery, FileProcessingError, FileVault, MAX_EXTRACTED_CHARS, MAX_UPLOAD_BYTES } from './files';
 
 describe('conversation-scoped upload vault', () => {
   it('extracts bounded plain text and only returns upload metadata', async () => {
@@ -90,7 +90,7 @@ describe('bounded file analysis', () => {
       name: 'quoted.csv', mediaType: 'text/csv',
       bytes: new TextEncoder().encode('"a,b",c\n1,2\n'), conversationId: 'conv-json',
     });
-    expect(vault.analyze('conv-json', quoted.id, 'columns').structure.csv).toEqual({ columns: 2, dataRows: 1 });
+    expect(vault.analyze('conv-json', quoted.id, 'columns').structure.csv).toEqual({ columns: 2, dataRows: 1, quoteClosed: true });
 
     const json = await vault.upload({
       name: 'data.json', mediaType: 'application/json',
@@ -197,5 +197,176 @@ describe('bounded file analysis', () => {
     expect(window.excerpt.split('\n')).toHaveLength(10);
     expect(window.excerpt.split('\n')[0]).toBe('line 200');
     expect(window.matches).toEqual([{ line: 250, text: 'line 250' }]);
+  });
+});
+
+
+describe('F2 - the 20-match cap is reported, not hidden', () => {
+  it('flags omitted matches and leaves the total unknown instead of reporting 20 as the count', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'many.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode(Array.from({ length: 50 }, (_, index) => `revenue row ${index}`).join('\n')),
+      conversationId: 'conv-cap',
+    });
+
+    const analysis = vault.analyze('conv-cap', file.id, 'revenue');
+    expect(analysis.matches).toHaveLength(20);
+    expect(analysis.matchesTruncated).toBe(true);
+    expect(analysis.matchesFound).toBeNull();
+    // The first 20 are still returned in order, so the cap costs no evidence
+    // that was already collected.
+    expect(analysis.matches[0]).toEqual({ line: 1, text: 'revenue row 0' });
+    expect(analysis.matches[19]).toEqual({ line: 20, text: 'revenue row 19' });
+    expect(analysis.query.matchesEvaluated).toBe(true);
+  });
+
+  it('reports an exact count and no truncation for a control case under the cap', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'few.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('revenue 1\nother\nrevenue 2\n'),
+      conversationId: 'conv-cap',
+    });
+    const analysis = vault.analyze('conv-cap', file.id, 'revenue');
+    expect(analysis.matches).toEqual([
+      { line: 1, text: 'revenue 1' },
+      { line: 3, text: 'revenue 2' },
+    ]);
+    expect(analysis.matchesTruncated).toBe(false);
+    expect(analysis.matchesFound).toBe(2);
+  });
+});
+
+describe('F3 - keyword extraction keeps discriminating terms and reports its limits', () => {
+  it('samples windows from the end of a long unspaced question, not only its head', () => {
+    const query = buildAnalysisQuery('请分析这个文件中的数据分布情况和主要结论');
+    expect(query.keywords).toContain('结论');
+    expect(query.keywords.length).toBeLessThanOrEqual(6);
+    expect(query.keywordsLimited).toBe(true);
+    expect(query.scriptWindows).toBe(true);
+    expect(query.matchesEvaluated).toBe(true);
+    expect(query.reason).toBe('keyword_limit');
+    expect(analysisKeywords('请分析这个文件中的数据分布情况和主要结论')).toEqual(query.keywords);
+  });
+
+  it('does find the end-of-question term in a real file', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'report.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('结论：销售额上升\n预算：1000\n'),
+      conversationId: 'conv-cjk',
+    });
+    const analysis = vault.analyze('conv-cjk', file.id, '请分析这个文件中的数据分布情况和主要结论');
+    expect(analysis.matches).toContainEqual({ line: 1, text: '结论：销售额上升' });
+    expect(analysis.query.matchesEvaluated).toBe(true);
+  });
+
+  it('keeps a single-character CJK query and a short identifier searchable', async () => {
+    const single = buildAnalysisQuery('论');
+    expect(single.keywords).toEqual(['论']);
+    expect(single.matchesEvaluated).toBe(true);
+    expect(buildAnalysisQuery('c1').keywords).toEqual(['c1']);
+    expect(buildAnalysisQuery('V2').keywords).toEqual(['v2']);
+
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'ids.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('c1,alpha\nc2,beta\n结论,gamma\n'),
+      conversationId: 'conv-id',
+    });
+    expect(vault.analyze('conv-id', file.id, 'c1').matches).toEqual([{ line: 1, text: 'c1,alpha' }]);
+    expect(vault.analyze('conv-id', file.id, '论').matches).toEqual([{ line: 3, text: '结论,gamma' }]);
+  });
+
+  it('says matching was not evaluated for a stop-word-only question', async () => {
+    const query = buildAnalysisQuery('What is the file about?');
+    expect(query.keywords).toEqual([]);
+    expect(query.matchesEvaluated).toBe(false);
+    expect(query.reason).toBe('no_usable_terms');
+    expect(query.note).toMatch(/not evidence/i);
+
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'relevant.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('what a relevant line\n'),
+      conversationId: 'conv-stop',
+    });
+    const analysis = vault.analyze('conv-stop', file.id, 'What is the file about?');
+    // An empty match list here must NOT be reported as a truncation: the file
+    // was never searched.
+    expect(analysis.matches).toEqual([]);
+    expect(analysis.matchesTruncated).toBe(false);
+    expect(analysis.matchesFound).toBeNull();
+    expect(analysis.query.matchesEvaluated).toBe(false);
+  });
+
+  it('samples a query above the keyword limit across the whole question', () => {
+    const query = buildAnalysisQuery('alpha beta gamma delta epsilon zeta eta theta iota kappa lambda');
+    expect(query.keywords).toHaveLength(6);
+    expect(query.keywordsLimited).toBe(true);
+    expect(query.keywords).toContain('alpha');
+    expect(query.keywords).toContain('lambda');
+  });
+
+  it('preserves NFC/NFD equivalence and mixed-script terms', () => {
+    const composed = 'Lương tháng của nhân viên';
+    expect(buildAnalysisQuery(composed.normalize('NFD')).keywords).toEqual(buildAnalysisQuery(composed).keywords);
+    expect(buildAnalysisQuery('café au lait').keywords).toContain('café');
+    expect(buildAnalysisQuery('Какой бюджет у маркетинга?').keywords).toEqual(
+      expect.arrayContaining(['бюджет', 'маркетинга']),
+    );
+    expect(buildAnalysisQuery('Show me 收入 and revenue').keywords).toEqual(
+      expect.arrayContaining(['收入', 'revenue']),
+    );
+    expect(buildAnalysisQuery('预算和销售额是多少？'.repeat(20)).keywords.length).toBeLessThanOrEqual(6);
+  });
+});
+
+describe('F7 - CSV structure counts records, not physical lines', () => {
+  const csvStructure = async (text: string) => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'records.csv', mediaType: 'text/csv',
+      bytes: new TextEncoder().encode(text), conversationId: 'conv-csv',
+    });
+    return vault.analyze('conv-csv', file.id, 'record').structure.csv;
+  };
+
+  it('does not count a newline inside a quoted field as a new record', async () => {
+    expect(await csvStructure('a,b\n"line1\nline2",3\n"x",4\n')).toEqual({
+      columns: 2, dataRows: 2, quoteClosed: true,
+    });
+  });
+
+  it('handles escaped quotes, empty lines, CRLF and ordinary records', async () => {
+    expect(await csvStructure('a,b\n1,2\n3,4\n')).toEqual({ columns: 2, dataRows: 2, quoteClosed: true });
+    expect(await csvStructure('a,b\n\n1,2\n\n')).toEqual({ columns: 2, dataRows: 1, quoteClosed: true });
+    expect(await csvStructure('a,b\r\n1,2\r\n3,4\r\n')).toEqual({ columns: 2, dataRows: 2, quoteClosed: true });
+    expect(await csvStructure('"a,b",c\n"he said ""hi""",3\n')).toEqual({ columns: 2, dataRows: 1, quoteClosed: true });
+  });
+
+  it('marks an unterminated quoted field instead of reporting a confident count', async () => {
+    expect(await csvStructure('a,b\n"unterminated,3\n4,5\n')).toMatchObject({
+      columns: 2, quoteClosed: false,
+    });
+  });
+
+  it('never scans more than the bounded extracted text', async () => {
+    const vault = new FileVault();
+    const huge = 'a,b\n' + '1,2\n'.repeat(60_000);
+    const file = await vault.upload({
+      name: 'huge.csv', mediaType: 'text/csv',
+      bytes: new TextEncoder().encode(huge), conversationId: 'conv-csv',
+    });
+    expect(file.truncated).toBe(true);
+    const analysis = vault.analyze('conv-csv', file.id, 'record');
+    expect(analysis.structure.truncated).toBe(true);
+    expect(analysis.structure.csv?.dataRows).toBeLessThan(MAX_EXTRACTED_CHARS);
   });
 });

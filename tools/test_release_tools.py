@@ -436,3 +436,19 @@ class EnvironmentReportConsistencyTests(unittest.TestCase):
                 )
             labels = [entry.split("]", 1)[0] for entry in entries]
             self.assertEqual(len(set(labels)), len(labels), "two notebook-suite runs share one label")
+
+    def test_pr24_ci_evidence_names_each_code_head_and_its_own_runs(self) -> None:
+        """Evidence must not call an earlier, evidence-only commit the tested head."""
+        entries = "\n".join(self.environment["tested"])
+        self.assertIn(
+            "453aedbed1b036bb30358dd7e8a7158533d5140c -> push run 40160350023 "
+            "and pull-request run 40160353262",
+            entries,
+        )
+        self.assertIn(
+            "2196778cceaed860d4c43bfdac0ae305cfe9335b -> push run 40160472413 "
+            "and pull-request run 40160476072",
+            entries,
+        )
+        self.assertIn("2196778 is an evidence-only commit on top of 453aedb", entries)
+        self.assertIn("runs from one head are not cited as evidence for the other", entries)

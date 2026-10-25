@@ -108,11 +108,17 @@ export class FileVault {
       lines: number;
       extractedCharacters: number;
       truncated: boolean;
-      csv?: { columns: number; dataRows: number };
+      csv?: { columns: number; dataRows: number; quoteClosed: boolean };
       json?: { topLevel: 'object' | 'array' | 'scalar'; entries: number };
     };
     excerpt: string;
     matches: Array<{ line: number; text: string }>;
+    /** True when a 21st matching line existed and was not returned. */
+    matchesTruncated: boolean;
+    /** Exact total when known, `null` when the scan stopped at the cap. */
+    matchesFound: number | null;
+    /** What the question was reduced to, and how far that can be trusted. */
+    query: AnalysisQuery;
   } {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion) throw new FileProcessingError('An analysis question is required.');
@@ -121,16 +127,27 @@ export class FileVault {
     const file = this.files.get(id)!;
     // One trailing newline ends the last line; it does not start a new one.
     const lines = file.text.replace(/\r?\n$/, '').split(/\r?\n/);
-    const keywords = analysisKeywords(trimmedQuestion);
+    const query = buildAnalysisQuery(trimmedQuestion);
     const matches: Array<{ line: number; text: string }> = [];
-    for (let index = 0; index < lines.length && matches.length < 20; index += 1) {
-      const line = lines[index]!;
-      if (!line.trim()) continue;
-      // The same NFC form the keywords use: decomposed text in the file must
-      // match a precomposed question (and the reverse).
-      const lowered = line.normalize('NFC').toLowerCase();
-      if (!keywords.some((keyword) => lowered.includes(keyword))) continue;
-      matches.push({ line: index + 1, text: line.trim().slice(0, 200) });
+    let matchesTruncated = false;
+    // `query.matchesEvaluated` is false when no usable term existed. In that
+    // case an empty `matches` array means "not searched", not "nothing found".
+    if (query.matchesEvaluated) {
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index]!;
+        if (!line.trim()) continue;
+        // The same NFC form the keywords use: decomposed text in the file must
+        // match a precomposed question (and the reverse).
+        const lowered = line.normalize('NFC').toLowerCase();
+        if (!query.keywords.some((keyword) => lowered.includes(keyword))) continue;
+        // Stop at the first omitted match: one extra comparison detects the
+        // cap without counting or storing an unbounded number of matches.
+        if (matches.length >= MAX_ANALYSIS_MATCHES) {
+          matchesTruncated = true;
+          break;
+        }
+        matches.push({ line: index + 1, text: line.trim().slice(0, 200) });
+      }
     }
     const structure: ReturnType<FileVault['analyze']>['structure'] = {
       mediaType: file.mediaType,
@@ -139,11 +156,8 @@ export class FileVault {
       truncated: file.truncated,
     };
     const kind = file.name.split('.').pop()?.toLowerCase() ?? '';
-    if (kind === 'csv' && lines[0]?.trim()) {
-      structure.csv = {
-        columns: countCsvColumns(lines[0]),
-        dataRows: Math.max(0, lines.filter((line) => line.trim() !== '').length - 1),
-      };
+    if (kind === 'csv') {
+      structure.csv = describeCsv(file.text);
     } else if (kind === 'json') {
       try {
         const parsed: unknown = JSON.parse(file.text);
@@ -160,7 +174,16 @@ export class FileVault {
         // than a shape derived from a partial parse.
       }
     }
-    return { file: publicReference(file), question: trimmedQuestion, structure, excerpt: read.content, matches };
+    return {
+      file: publicReference(file),
+      question: trimmedQuestion,
+      structure,
+      excerpt: read.content,
+      matches,
+      matchesTruncated,
+      matchesFound: matchesTruncated || !query.matchesEvaluated ? null : matches.length,
+      query,
+    };
   }
 
   removeConversation(conversationId: string): void {
@@ -198,39 +221,110 @@ const TERM_SEPARATOR = /[^\p{L}\p{M}\p{N}.+#-]+/u;
  */
 const UNSPACED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const MAX_KEYWORDS = 6;
+const MAX_ANALYSIS_MATCHES = 20;
+
+export interface AnalysisQuery {
+  /** Literal, lower-case search terms, at most `MAX_KEYWORDS`. */
+  keywords: string[];
+  /** More distinct candidate terms existed than the cap could hold. */
+  keywordsLimited: boolean;
+  /**
+   * False when no usable term existed. `matches: []` then means the file was
+   * not searched, never that the file contains no relevant line.
+   */
+  matchesEvaluated: boolean;
+  /** Matching used bounded two-character windows instead of word segmentation. */
+  scriptWindows: boolean;
+  reason: 'no_usable_terms' | 'keyword_limit' | 'unspaced_script' | null;
+  /** Model-readable explanation of the query's limits. */
+  note: string;
+}
 
 /**
- * Literal, lower-case search terms; bounded so a long question stays cheap.
+ * Pick at most `count` items spread over the whole list, including the last
+ * one. Taking the first `count` items systematically discarded discriminating
+ * terms near the end of a long question (especially long Han/Kana/Hangul runs).
+ */
+function evenSample<T>(items: readonly T[], count: number): T[] {
+  if (count <= 0 || items.length === 0) return [];
+  if (items.length <= count) return [...items];
+  if (count === 1) return [items[items.length - 1]!];
+  const picked: T[] = [];
+  for (let index = 0; index < count; index += 1) {
+    picked.push(items[Math.round(index * (items.length - 1) / (count - 1))]!);
+  }
+  return [...new Set(picked)];
+}
+
+/**
+ * Turn a question into bounded literal search terms plus truthful diagnostics.
  *
  * The question is NFC-normalized first: decomposed Vietnamese (or Indic) input
  * must yield the same terms as the precomposed text stored in the file, and
  * combining marks must not act as separators. Unicode letter/number classes
  * keep non-ASCII terms intact, so `café` stays `café` instead of `caf`.
  *
- * For scripts without spaces the intended behavior is different rather than a
- * wider regex: a Han/Kana/Hangul run is kept whole when it is a short phrase,
- * and overlapping two-character windows are added because two characters are
- * the smallest literal unit that still identifies a term. A script the tool
- * has no word segmentation for therefore degrades to literal windows instead
- * of silently returning no matches; matching stays literal either way.
+ * Han/Kana/Hangul runs have no whitespace-delimited words, so two-character
+ * literal windows are generated over the *whole* run and sampled evenly; a
+ * single character is a valid query. Short alphanumeric identifiers such as
+ * `c1` are kept. When no usable term survives (stop-word-only questions), the
+ * result says matching was not evaluated instead of returning a bare empty
+ * keyword list that callers would report as "0 matching lines".
  */
-export function analysisKeywords(question: string): string[] {
+export function buildAnalysisQuery(question: string): AnalysisQuery {
   const normalized = question.normalize('NFC').toLowerCase();
-  const terms: string[] = [];
+  const primary: string[] = [];
+  const windows: string[] = [];
+  let scriptWindows = false;
+
   for (const raw of normalized.split(TERM_SEPARATOR)) {
     const term = raw.replace(TERM_EDGE_PUNCTUATION, '');
     if (!term) continue;
     const characters = [...term];
     if (UNSPACED_SCRIPT.test(term)) {
-      if (characters.length >= 2 && characters.length <= 8) terms.push(term);
+      scriptWindows = true;
+      if (characters.length <= 8) primary.push(term);
       for (let index = 0; index + 1 < characters.length; index += 1) {
-        terms.push(`${characters[index]}${characters[index + 1]}`);
+        windows.push(`${characters[index]}${characters[index + 1]}`);
       }
       continue;
     }
-    if (characters.length >= 3 && !ANALYSIS_STOP_WORDS.has(term)) terms.push(term);
+    if (ANALYSIS_STOP_WORDS.has(term)) continue;
+    const shortIdentifier = characters.length >= 2 && /\p{N}/u.test(term);
+    if (characters.length >= 3 || shortIdentifier) primary.push(term);
   }
-  return [...new Set(terms)].slice(0, MAX_KEYWORDS);
+
+  const uniquePrimary = [...new Set(primary)];
+  const uniqueWindows = [...new Set(windows)].filter((window) => !uniquePrimary.includes(window));
+  const keywords = [...new Set(
+    uniquePrimary.length > MAX_KEYWORDS
+      ? evenSample(uniquePrimary, MAX_KEYWORDS)
+      : [...uniquePrimary, ...evenSample(uniqueWindows, MAX_KEYWORDS - uniquePrimary.length)],
+  )].slice(0, MAX_KEYWORDS);
+
+  const keywordsLimited = uniquePrimary.length + uniqueWindows.length > MAX_KEYWORDS;
+  const matchesEvaluated = keywords.length > 0;
+  const reason: AnalysisQuery['reason'] = !matchesEvaluated
+    ? 'no_usable_terms'
+    : keywordsLimited
+      ? 'keyword_limit'
+      : scriptWindows
+        ? 'unspaced_script'
+        : null;
+  const note = !matchesEvaluated
+    ? 'The question contained no usable search term (only stop words or very short words). The file was not searched; an empty match list is not evidence that no relevant line exists.'
+    : keywordsLimited
+      ? `Only ${MAX_KEYWORDS} of more than ${MAX_KEYWORDS} candidate search terms were used, sampled across the whole question. Matches may be incomplete.`
+      : scriptWindows
+        ? 'The question uses a script without whitespace-delimited words. Bounded literal two-character windows were used instead of word segmentation; matches are approximate.'
+        : 'Literal, case-insensitive keyword matching.';
+
+  return { keywords, keywordsLimited, matchesEvaluated, scriptWindows, reason, note };
+}
+
+/** Literal, lower-case search terms; bounded so a long question stays cheap. */
+export function analysisKeywords(question: string): string[] {
+  return buildAnalysisQuery(question).keywords;
 }
 
 /** Comma count outside double quotes, plus one (a minimal but honest CSV header). */
@@ -247,6 +341,66 @@ function countCsvColumns(header: string): number {
     }
   }
   return columns;
+}
+
+/**
+ * Bounded, quote-aware CSV description. Records are separated by newlines
+ * *outside* double quotes, so a quoted field containing an embedded newline
+ * does not inflate `dataRows`. `quoteClosed` is false for an unterminated
+ * quoted field, which makes the counts explicitly provisional instead of
+ * silently wrong. One linear pass over the already bounded extracted text.
+ */
+function describeCsv(text: string): { columns: number; dataRows: number; quoteClosed: boolean } {
+  let inQuotes = false;
+  let records = 0;
+  let recordHasContent = false;
+  let firstRecord = '';
+  let firstRecordDone = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (inQuotes) {
+      if (character === '"') {
+        if (text[index + 1] === '"') {
+          if (!firstRecordDone) firstRecord += '""';
+          index += 1;
+        } else {
+          inQuotes = false;
+          if (!firstRecordDone) firstRecord += '"';
+        }
+      } else if (!firstRecordDone) {
+        firstRecord += character;
+      }
+      recordHasContent = true;
+      continue;
+    }
+    if (character === '"') {
+      inQuotes = true;
+      recordHasContent = true;
+      if (!firstRecordDone) firstRecord += '"';
+      continue;
+    }
+    if (character === '\r' || character === '\n') {
+      if (character === '\r' && text[index + 1] === '\n') index += 1;
+      if (recordHasContent) {
+        records += 1;
+        firstRecordDone = true;
+      }
+      recordHasContent = false;
+      continue;
+    }
+    if (!firstRecordDone) firstRecord += character;
+    recordHasContent = true;
+  }
+  if (recordHasContent) {
+    records += 1;
+    firstRecordDone = true;
+  }
+  return {
+    columns: firstRecordDone ? countCsvColumns(firstRecord) : 0,
+    dataRows: Math.max(0, records - 1),
+    quoteClosed: !inQuotes,
+  };
 }
 
 function publicReference(file: VaultFile): UploadedFileReference {

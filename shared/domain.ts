@@ -161,6 +161,11 @@ export interface ConnectionTestResult {
   modelId?: string;
   /** ISO timestamp of the test, produced by the proxy. */
   testedAt?: string;
+  /**
+   * True only when the connection test actually sent a credential. A keyless
+   * endpoint may pass the `auth` stage, but that does not verify authentication.
+   */
+  credentialUsed?: boolean;
   stages: ConnectionStageResult[];
   capabilities?: ServerCapabilities;
   errorKind?: ApiErrorKind;

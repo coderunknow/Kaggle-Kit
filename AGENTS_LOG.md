@@ -2289,3 +2289,79 @@ performed; merge and beta2 publication remain maintainer decisions.
 - Kilo Code Review is `action_required` (account out of credits); Qodo reports
   its trial ended. `reviewDecision` is empty, merge state
   `MERGEABLE`/`UNSTABLE`, no human approval. CI green is not an approval.
+
+## 2026-10-25 - Remediating the independent PR #24 audit (F1-F9, C1-C4)
+
+### User Intent
+
+The previous turn was a read-only independent review that returned HOLD for
+PR #24 at head `2196778cceaed860d4c43bfdac0ae305cfe9335b` (base
+`5f7e34c06602fa88d1a4907ee1e3692d336002cb`). This turn implements the fixes,
+adds regression coverage, runs the documented checks and pushes one focused
+commit to the existing PR branch. The PR must stay open and unmerged; no tag,
+release, deployment, thread resolution or approval is requested.
+
+### Implementation History
+
+- Verified live PR state before editing: `open`, not draft, base `main` at
+  `5f7e34c…`, head branch `arena/352dba56-kaggle-kit` at `2196778c…`,
+  `reviewDecision` empty, `MERGEABLE`/`UNSTABLE`, two COMMENTED bot reviews,
+  five unresolved threads, Kilo `action_required`. Local `HEAD` matched the
+  live head exactly; working tree clean.
+- Baseline before any edit: `npm run check` exit 0 (52 files / 567 tests),
+  `npm run build` 0, `check:integration` 50/50 + 1 skipped, tools Python 39,
+  notebooks Python 105 run / 17 skipped.
+- Reproduced F1, F2, F3, F4, F7 and F8 on the untouched head with a real
+  `createApp` + real HTTP upstream + real `FileVault`/`ToolExecutor`; F5, F6
+  and F9 were confirmed by tracing `gateway.readStream`, the diagnostics
+  stages and the checked-in evidence files.
+- Implemented all nine fixes and the three confirmed concerns. Details and
+  the reasoning are in the matching `DESIGN_LOG.md` entry for this date.
+- New regression tests live in `server/app.streaming.test.ts`,
+  `src/lib/gateway.test.ts`, `shared/api/stream.test.ts`,
+  `server/tools/files.test.ts`, `server/tools/executor.test.ts`,
+  `server/tools/calculator.test.ts`, `server/proxy.test.ts` and
+  `src/components/MessageItem.test.tsx`.
+- Mutation evidence: in a throwaway copy of the tree, each of the nine
+  original behaviours was re-introduced one at a time and the matching new
+  test failed with a concrete assertion (all nine runs exited 1). This is the
+  evidence that the tests detect the original defects rather than merely
+  passing.
+
+### Decisions & Lessons
+
+- Never claim a check passed without its output. Commands, exit codes and
+  counts for this turn are recorded in the final report and in
+  `docs/release/environment.json`.
+- Green CI on an older SHA is evidence for that SHA only. Checked-in evidence
+  now names `453aedbed1b036bb30358dd7e8a7158533d5140c` with runs
+  `40160350023`/`40160353262` and `2196778cceaed860d4c43bfdac0ae305cfe9335b`
+  with runs `40160472413`/`40160476072`; each `head_sha` was verified through
+  the GitHub Actions API. `2196778` is an evidence-only commit on top of
+  `453aedb`. The new remediation commit is a code change, so its CI runs are
+  checked after the push rather than asserted before it exists.
+- Playwright Chromium, the Docker sandbox, the Windows launcher and live model
+  inference are not claimed as locally verified unless a command actually
+  ran here. Hosted CI on the final head is reported separately.
+- A skipped bot review, an `action_required` check and an empty
+  `reviewDecision` are not approvals; they are reported as-is.
+
+### Final local validation addendum - PR #24 remediation
+
+- Final `npm run check`: exit 0, 52 files / 613 Vitest tests.
+- Final `npm run build`: exit 0; bundled backend 5.7 MB.
+- Final `npm run check:integration`: exit 0, 56/56 passed and one opt-in
+  public retrieval skipped; final `npm run check:network`: exit 0, 57/57
+  including the real `pypi.org` retrieval.
+- Python tools tests: 40/40; notebook tests: 105 run, 17 skipped (the
+  requests-dependent cases); `git diff --check`: clean.
+- Regression mutation checks in a throwaway copy: original F1-F8 and C2
+  behaviours fail their targeted tests; removing the F9 head-to-run evidence
+  entry fails the new `EnvironmentReportConsistencyTests` assertion.
+- `npm run test:e2e` exited 1 before tests started because the local Playwright
+  Chromium executable is absent; all seven specs fail at browser launch for
+  that same environment reason. Docker CLI is absent; Windows and live-model
+  paths are unavailable locally. These are limitations, not passes.
+- Code-under-test SHA and hosted CI run IDs for the new commit are recorded
+  only after that commit is pushed and its runs are observed. No human review,
+  approval, merge, tag, release, deployment or publication is claimed.

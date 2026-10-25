@@ -3040,3 +3040,165 @@ unresolved (four outdated by the edits, one still current at
 Code Review is `action_required` because that account is out of credits and
 Qodo reports its trial ended. `reviewDecision` is empty and the PR is
 `MERGEABLE`/`UNSTABLE` with no approval; a green check is not an approval.
+
+## 2026-10-25 - Independent-audit remediation on PR #24 (F1-F9, concerns C1-C4)
+
+### User Intent
+
+An independent, read-only review of PR #24 at head
+`2196778cceaed860d4c43bfdac0ae305cfe9335b` returned HOLD and documented nine
+verified defects (F1-F9) plus four unconfirmed concerns (C1-C4). This entry
+records the follow-up implementation: fix every finding that is still valid,
+add a regression test that fails against the old behaviour, run the documented
+checks, and push one focused remediation commit to the existing PR branch. No
+merge, tag, release, deployment or approval was requested or performed.
+
+### Implementation History
+
+Each defect was reproduced on the unmodified head before any edit. A separate
+throwaway copy of the tree was then used to re-introduce each old behaviour one
+at a time; the corresponding new test failed with a concrete assertion in every
+case (see "Decisions & Lessons").
+
+- **F1 (HIGH, mid-frame SSE errors).** `server/app.ts:streamChat` forwarded
+  raw upstream bytes. When the proxy appended its terminal `error` event after
+  an unterminated upstream frame, SSE joined the two `data:` lines into one
+  unparseable block and `extractDelta` returned `{}`. The proxy now splits the
+  upstream byte stream into complete SSE event blocks with `sseEventEnds()`
+  (LF LF, CR CR, CR LF CR LF, matching `shared/api/stream.ts`), forwards only
+  complete blocks immediately, and holds the trailing partial block in a
+  buffer bounded by `MAX_SSE_EVENT_BYTES`. On timeout, client cancellation,
+  socket failure or an oversized event it drops that partial tail and emits one
+  structured terminal event `{"error":{"code":...,"message":...}}` on a clean
+  boundary; no `[DONE]` or `finish_reason` is emitted for a failed generation.
+  A clean EOF still flushes the trailing block, preserving the browser
+  parser's final-flush behaviour. A post-loop `finally` check covers the case
+  where an abort makes `reader.read()` resolve `done` instead of throwing
+  (concern C3).
+- **F5 (LOW, timeout classification).** `shared/api/stream.ts` now exports a
+  fixed `PROXY_STREAM_ERROR_KINDS` table (`stream_timeout` -> `timeout`,
+  `client_cancelled` -> `aborted`, `upstream_stream_failed` and
+  `stream_event_too_large` -> `inference`). `extractDelta` derives `errorKind`
+  from the code, never from free text or a wire-supplied `kind`, and ignores
+  `null`/non-object payloads. `src/lib/gateway.ts:readStream` uses that kind
+  and `withHint('timeout')` for real deadlines while keeping ordinary upstream
+  errors as `inference`.
+- **F2 (MEDIUM, silent 20-match cap).** `FileVault.analyze` stops at the first
+  omitted match and returns `matchesTruncated` plus `matchesFound`
+  (`null` when the total is unknown). `ToolExecutor.boundedAnalysis` merges
+  that with any budget-driven drop and the summary names the omission.
+- **F3 (MEDIUM, keyword loss).** `buildAnalysisQuery` replaces the head-only
+  `slice(0, 6)` with `evenSample`, which spreads candidates over the whole
+  question including its last term; single-character CJK queries and short
+  alphanumeric identifiers (`c1`) are kept. Every analysis now carries a
+  `query` diagnostic (`keywords`, `keywordsLimited`, `matchesEvaluated`,
+  `scriptWindows`, `reason`, `note`). A stop-word-only question reports
+  `matchesEvaluated: false` and "matches were not evaluated" instead of
+  "0 matching line(s)". `shared/tools/catalog.ts` describes the real limits.
+- **F4 (MEDIUM, invalid JSON at small budgets).** `boundedAnalysis` now sizes
+  the whole `content` against `untrustedOutputBudget(maxOutputBytes)` (the
+  exact prefix reservation used by `wrapUntrustedOutput`), tries progressively
+  smaller *complete* `{note}` documents with explicit truncation flags, drops
+  the optional heading when needed, and only when no JSON object fits emits an
+  explicitly labelled plain-text marker. `redactAndBound` and the chat-side
+  wrapper can no longer cut through a document that is advertised as JSON.
+- **F6 (LOW, authentication claim).** `ConnectionTestResult.credentialUsed`
+  records whether `testConnection` actually had a resolved API key.
+  `diagnostics_check` sets `verified.authentication` only when a credential was
+  used *and* the auth stage passed, and reports
+  `authentication.mode = 'no_credential' | 'api_key_verified' | 'not_verified'`
+  with matching summary wording.
+- **F7 (LOW, CSV `dataRows`).** A bounded quote-aware `describeCsv` counts
+  records by newlines outside double quotes, handles escaped quotes and CRLF,
+  and returns `quoteClosed` so an unterminated field is visibly provisional.
+- **F8 (LOW, float drift).** Both Kelvin paths now use the defining 32 °F
+  anchor: `F->K = (v-32)*5/9 + 273.15` and `K->F = (v-273.15)*9/5 + 32`.
+  `273.15 K -> 32 °F` and `212 °F -> 373.15 K` are bit-exact; absolute-zero
+  validation and aliases are unchanged.
+- **F9 (LOW, evidence/head mismatch).** `docs/release/environment.json`, this
+  log and `AGENTS_LOG.md` now name both code heads and their verified CI runs
+  explicitly (see below), instead of calling `453aedb` "the final head".
+- **C1 (confirmed).** `streamUnverified` is persisted but capabilities are
+  session-only, so the old notice made a stale claim about "this browser
+  session". `MessageItem.tsx` now describes the session that produced the
+  answer and refers to *later* answers.
+- **C2 (confirmed).** `probeStreaming` returned a cached success for a
+  changed model. The cache now also stores `streamingModel` and only reuses a
+  verification for the exact probed model.
+- **C4 (confirmed naming issue).** `diagnostics_check` now emits
+  `verifiedScope`, stating that `fullyVerified` covers only the named claims
+  and pointing at `notVerifiedByThisCheck`.
+- **C3.** Not separately reproduced; the F1 rewrite handles the race by
+  emitting the terminal error from `finally` when `timedOut` is set even if
+  the read loop ended normally. It remains unconfirmed as an independently
+  observable defect.
+
+### Decisions & Lessons
+
+- Framing must be solved at the byte level: appending a newline to a partial
+  event produces a garbage frame, not a clean separator. Buffering incomplete
+  blocks preserves incremental delivery (complete blocks are written as soon
+  as they arrive) while making every proxy-generated event independently
+  parseable. The `split-model`, `slow-model` and new `crlf-model` tests prove
+  the timing behaviour was not lost.
+- Error classification must come from a fixed code table, not from text or a
+  client-supplied `kind`, or an untrusted upstream can disguise a broken
+  connection as a timeout.
+- "Valid JSON" is a property of the *wrapped* message, not of the serializer.
+  The fallback now computes against `untrustedOutputBudget`, the same budget
+  `wrapUntrustedOutput` uses, and labels plain text explicitly.
+- Truthful diagnostics are part of the tool contract: an empty keyword list,
+  a keyword cap and a 20-match cap each get their own indicator so the model
+  never reads "no matches" as "the file has no relevant lines".
+- Mutation evidence for this entry (throwaway copy, one reverted behaviour at
+  a time, each run exits 1 with an assertion failure): F1 raw forwarding ->
+  `"code":"stream_timeout" missing`; F5 old gateway -> `expected 'inference'
+  to be 'timeout'`; F8 old formula -> `expected 31.999999999999943 to be 32`;
+  F2 silent cap -> `expected false to be true`; F3 head-only sampling ->
+  `expected [...] to include '结论'`; F7 line counting -> `dataRows: 3` vs
+  `2`; F4 unbounded fallback -> size and JSON failures at budgets 1/150/256;
+  F6 auth stage -> `expected true to be false`; C2 model-agnostic cache ->
+  `expected ['model-a'] to deeply equal ['model-a','model-b']`.
+
+### Code-under-test SHA versus evidence-only commits
+
+Verified with `gh api repos/coderunknow/Kaggle-Kit/actions/runs/<id>` that the
+`head_sha` matches the commit named in each claim:
+
+- `453aedbed1b036bb30358dd7e8a7158533d5140c`: push run `40160350023` and
+  pull-request run `40160353262`, both `success` on all five jobs.
+- `2196778cceaed860d4c43bfdac0ae305cfe9335b`: push run `40160472413` and
+  pull-request run `40160476072`, both `success` on all five jobs. This commit
+  is an evidence-only commit on top of `453aedb`, so the two heads contain the
+  same application code; the runs are not interchangeable evidence.
+
+The remediation commit below changes application code. Its own CI run IDs can
+only be known after it exists and is pushed; they are therefore not asserted
+in this file (no circular or self-referential claim). They are reported from
+the GitHub API after the push instead.
+
+### Final local verification addendum (2026-10-25, remediation working tree)
+
+After the first implementation pass, further review added two safeguards: a
+complete SSE event is checked against `MAX_SSE_EVENT_BYTES` before forwarding
+(not only an unterminated tail), and a cached streaming observation is now
+model-specific **and expires after the existing 10-minute capability TTL**.
+A separate test proves the oversized complete event is refused, and the probe
+cache test now verifies both model mismatch and TTL expiry. The F3 output also
+sets `matchesFound: null` when no search terms were evaluated, not `0`.
+
+Final local results on the implementation working tree before its commit:
+`npm run check` exit 0 (52 files / 613 tests); `npm run build` exit 0;
+`npm run check:integration` exit 0 (56/56 passed, one opt-in public retrieval
+skipped); `npm run check:network` exit 0 (57/57 passed, including real
+`pypi.org` retrieval); Python tools 40/40; Python notebooks 105 run / 17
+requests-dependent skips; `git diff --check` exit 0. The F9 release-tool
+guard also fails in a throwaway tree after removing the evidence-to-head/run
+mapping, providing a regression for the original evidence mismatch.
+
+`npm run test:e2e` was attempted. It exited 1 before any of its seven specs
+could execute because Playwright Chromium is absent at
+`/home/user/.cache/ms-playwright/chromium_headless_shell-1194/chrome-linux/headless_shell`.
+`command -v docker` found no Docker executable; Windows launcher and live-model
+checks are not available locally. The hosted CI runs for the remediation head
+must be checked after push; none is claimed here.

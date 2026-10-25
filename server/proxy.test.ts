@@ -103,6 +103,82 @@ describe('the capability cache of the proxy', () => {
     expect(calls).toHaveLength(before);
   });
 
+  it('re-probes streaming when the model changes instead of reusing the old observation', async () => {
+    const proxy = createProxy();
+    const probedModels: string[] = [];
+    const stub = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { model?: string };
+        probedModels.push(body.model ?? '');
+        if (body.model === 'model-b') {
+          // The new model cannot stream: a cached success would be a lie.
+          return new Response('not an event stream', {
+            status: 200, headers: { 'Content-Type': 'text/plain' },
+          });
+        }
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"O"}}]}\n\ndata: [DONE]\n\n',
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        );
+      }
+      return new Response('{"data":[{"id":"model-a"}]}', {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const first = await proxy.probeStreaming(
+      { baseUrl: BASE_URL, apiKey: 'key-a' }, { model: 'model-a', timeoutMs: 5_000 },
+    );
+    expect(first.supported).toBe(true);
+    expect(probedModels).toEqual(['model-a']);
+
+    const modelACapability = await proxy.detectCapabilities(BASE_URL, 'key-a', 5_000, 'model-a');
+    expect(modelACapability.streamingVerified).toBe(true);
+    const modelBCapability = await proxy.detectCapabilities(BASE_URL, 'key-a', 5_000, 'model-b');
+    expect(modelBCapability.streamingVerified).toBe(false);
+    expect(modelBCapability.streamingEvidence).toBeUndefined();
+
+    const same = await proxy.probeStreaming(
+      { baseUrl: BASE_URL, apiKey: 'key-a' }, { model: 'model-a', timeoutMs: 5_000 },
+    );
+    expect(same.supported).toBe(true);
+    expect(same.detail).toMatch(/earlier/i);
+    expect(probedModels).toEqual(['model-a']);
+
+    const changed = await proxy.probeStreaming(
+      { baseUrl: BASE_URL, apiKey: 'key-a' }, { model: 'model-b', timeoutMs: 5_000 },
+    );
+    expect(probedModels).toEqual(['model-a', 'model-b']);
+    expect(changed.supported).toBe(false);
+    expect(changed.detail).toMatch(/content type/i);
+  });
+
+  it('expires a streaming verification instead of treating it as valid forever', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-25T00:00:00.000Z'));
+      const proxy = createProxy();
+      const { calls } = createFetchStub();
+      const first = await proxy.probeStreaming(
+        { baseUrl: BASE_URL, apiKey: 'key-a' }, { model: 'm', timeoutMs: 5_000 },
+      );
+      expect(first.supported).toBe(true);
+      const before = calls.length;
+
+      vi.setSystemTime(new Date(Date.now() + 10 * 60 * 1000 + 1));
+      const expired = await proxy.probeStreaming(
+        { baseUrl: BASE_URL, apiKey: 'key-a' }, { model: 'm', timeoutMs: 5_000 },
+      );
+      expect(expired.supported).toBe(true);
+      expect(expired.detail).not.toMatch(/earlier/i);
+      expect(calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('verifies a complete synthetic native-tool round trip before reporting support', async () => {
     const proxy = createProxy();
     const bodies: Array<Record<string, unknown>> = [];
@@ -699,5 +775,50 @@ describe('the proxy caps non-streaming upstream responses', () => {
       .catch((caught: unknown) => caught);
 
     expect((error as { kind?: string }).kind).toBe('invalid_response');
+  });
+});
+
+
+describe('F6 - the connection test records whether a credential was exercised', () => {
+  const connectionStub = () => vi.fn(async (input: unknown) => {
+    const url = typeof input === 'string' ? input : String(input);
+    if (url.endsWith('/models')) {
+      return new Response(JSON.stringify({ data: [{ id: 'm' }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (new URL(url).pathname === '/props') {
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('/chat/completions')) {
+      return new Response(JSON.stringify({
+        id: 'c', model: 'm',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('{}', { status: 404 });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('is true when the request carried an API key', async () => {
+    vi.stubGlobal('fetch', connectionStub());
+    const result = await createProxy().testConnection(
+      { baseUrl: BASE_URL, apiKey: 'key-a' }, { model: 'm', timeoutMs: 5_000 },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.credentialUsed).toBe(true);
+    expect(result.stages.find((stage) => stage.stage === 'auth')?.message).toMatch(/accepted the API key/i);
+  });
+
+  it('is false for a keyless endpoint even though the auth stage says ok', async () => {
+    vi.stubGlobal('fetch', connectionStub());
+    const result = await createProxy().testConnection(
+      { baseUrl: BASE_URL }, { model: 'm', timeoutMs: 5_000 },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.credentialUsed).toBe(false);
+    expect(result.stages.find((stage) => stage.stage === 'auth')?.status).toBe('ok');
+    expect(result.stages.find((stage) => stage.stage === 'auth')?.message).toMatch(/without an API key/i);
   });
 });

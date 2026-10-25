@@ -117,6 +117,7 @@ describe('diagnostics_check keeps capabilities and verified behavior apart', () 
       baseUrl: 'https://model.example.invalid/v1',
       modelId: 'mock-model',
       stages: baseStages,
+      credentialUsed: true,
       capabilities: capabilities(),
     });
 
@@ -149,6 +150,7 @@ describe('diagnostics_check keeps capabilities and verified behavior apart', () 
     ]));
     // The summary is what a model repeats back, so it must not overstate.
     expect(result.summary).toContain('inference verified');
+    expect(result.summary).toContain('authentication verified with an API key');
     expect(result.summary).toContain('streaming not verified in this server session');
     expect(result.summary).not.toMatch(/passed/i);
   });
@@ -159,6 +161,7 @@ describe('diagnostics_check keeps capabilities and verified behavior apart', () 
       baseUrl: 'https://model.example.invalid/v1',
       modelId: 'mock-model',
       stages: baseStages,
+      credentialUsed: true,
       capabilities: capabilities({
         streamingVerified: true,
         streamingEvidence: {
@@ -302,8 +305,211 @@ describe('files_analyze output stays parseable inside the tool output budget', (
     const result = await executor.execute(analyzeCall(fileId, 'dept299'), filesContext(400));
 
     const payload = analysisPayload(result.content);
-    expect(Object.keys(payload)).toEqual(['note']);
-    expect(String(payload.note)).toMatch(/output limit is too small/i);
+    expect(payload).toMatchObject({
+      note: expect.stringMatching(/output limit is too small/i),
+      matchesTruncated: true,
+      excerptTruncated: true,
+      matches: [],
+    });
     expect(Buffer.byteLength(result.content, 'utf8')).toBeLessThanOrEqual(untrustedOutputBudget(400));
+  });
+});
+
+describe('F6 - diagnostics never claim an untested authentication', () => {
+  it('reports no_credential when the endpoint was reached without an API key', async () => {
+    const executor = executorFor({
+      ok: true,
+      baseUrl: 'https://model.example.invalid/v1',
+      modelId: 'mock-model',
+      stages: [
+        ...baseStages.filter((stage) => stage.stage !== 'auth'),
+        { stage: 'auth', status: 'ok', message: 'The endpoint accepted the request without an API key.' },
+      ],
+      credentialUsed: false,
+      capabilities: capabilities(),
+    });
+
+    const result = await executor.execute(diagnosticsCall(), context());
+    const report = JSON.parse(result.content) as {
+      fullyVerified: boolean;
+      verified: Record<string, boolean>;
+      authentication: { mode: string; verified: boolean; detail: string };
+      verifiedScope: string;
+    };
+
+    expect(report.verified.authentication).toBe(false);
+    expect(report.authentication.mode).toBe('no_credential');
+    expect(report.authentication.verified).toBe(false);
+    expect(report.authentication.detail).toMatch(/not exercised/i);
+    expect(report.fullyVerified).toBe(false);
+    expect(report.verifiedScope).toMatch(/notVerifiedByThisCheck/);
+    expect(result.summary).toContain('authentication not verified (no API key was used)');
+    expect(result.summary).not.toMatch(/authentication verified with an API key/i);
+  });
+
+  it('treats a missing credentialUsed field as untested, not as verified', async () => {
+    const executor = executorFor({
+      ok: true,
+      baseUrl: 'https://model.example.invalid/v1',
+      stages: baseStages,
+      capabilities: capabilities(),
+    });
+    const report = JSON.parse((await executor.execute(diagnosticsCall(), context())).content) as {
+      verified: Record<string, boolean>;
+    };
+    expect(report.verified.authentication).toBe(false);
+  });
+
+  it('claims authentication only when a credential was used and the auth stage passed', async () => {
+    const executor = executorFor({
+      ok: true,
+      baseUrl: 'https://model.example.invalid/v1',
+      stages: baseStages,
+      credentialUsed: true,
+      capabilities: capabilities(),
+    });
+    const result = await executor.execute(diagnosticsCall(), context());
+    const report = JSON.parse(result.content) as {
+      verified: Record<string, boolean>;
+      authentication: { mode: string; verified: boolean };
+    };
+    expect(report.verified.authentication).toBe(true);
+    expect(report.authentication).toMatchObject({ mode: 'api_key_verified', verified: true });
+    expect(result.summary).toContain('authentication verified with an API key');
+  });
+});
+
+describe('F2/F3 - files_analyze reports its query and match limits truthfully', () => {
+  const manyLines = 'revenue row 0\n' + Array.from({ length: 49 }, (_, index) => `revenue row ${index + 1}`).join('\n');
+
+  it('propagates matchesTruncated and a truthful summary for more than 20 matches', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'many.txt', mediaType: 'text/plain',
+      bytes: new TextEncoder().encode(manyLines), conversationId: 'conversation-1',
+    });
+    const result = await filesExecutor(vault).execute(
+      analyzeCall(file.id, 'revenue'), filesContext(DEFAULT_TOOL_LIMITS.maxOutputBytes),
+    );
+    const payload = analysisPayload(result.content);
+
+    expect(payload.matches).toHaveLength(20);
+    expect(payload.matchesTruncated).toBe(true);
+    expect(payload.matchesFound).toBeNull();
+    expect(result.summary).toContain('more matching lines omitted');
+    expect(result.summary).not.toMatch(/exactly 20/i);
+  });
+
+  it('does not set truncation flags for a control case under the cap', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'few.txt', mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('revenue 1\nrevenue 2\n'), conversationId: 'conversation-1',
+    });
+    const result = await filesExecutor(vault).execute(
+      analyzeCall(file.id, 'revenue'), filesContext(DEFAULT_TOOL_LIMITS.maxOutputBytes),
+    );
+    const payload = analysisPayload(result.content);
+    expect(payload.matchesTruncated).toBeUndefined();
+    expect(payload.matchesFound).toBe(2);
+    expect(result.summary).not.toMatch(/more matching lines omitted/i);
+  });
+
+  it('says the file was not searched when the question has no usable term', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'relevant.txt', mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('a highly relevant line\n'), conversationId: 'conversation-1',
+    });
+    const result = await filesExecutor(vault).execute(
+      analyzeCall(file.id, 'What is the file about?'), filesContext(DEFAULT_TOOL_LIMITS.maxOutputBytes),
+    );
+    const payload = analysisPayload(result.content) as {
+      query: { matchesEvaluated: boolean; reason: string; keywords: string[]; note: string };
+      matchesTruncated?: boolean;
+    };
+
+    expect(payload.query.matchesEvaluated).toBe(false);
+    expect(payload.query.reason).toBe('no_usable_terms');
+    expect(payload.query.keywords).toEqual([]);
+    expect(payload.query.note).toMatch(/not evidence/i);
+    expect(payload.matchesTruncated).toBeUndefined();
+    expect(result.summary).toContain('matches were not evaluated');
+    expect(result.summary).not.toContain('0 matching line(s)');
+  });
+
+  it('surfaces keyword-limit and script-window diagnostics in the payload and summary', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'cjk.txt', mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('结论：销售额上升\n预算：1000\n'), conversationId: 'conversation-1',
+    });
+    const result = await filesExecutor(vault).execute(
+      analyzeCall(file.id, '请分析这个文件中的数据分布情况和主要结论'),
+      filesContext(DEFAULT_TOOL_LIMITS.maxOutputBytes),
+    );
+    const payload = analysisPayload(result.content) as {
+      query: { keywordsLimited: boolean; scriptWindows: boolean; keywords: string[] };
+      matches: Array<{ text: string }>;
+    };
+    expect(payload.query.keywordsLimited).toBe(true);
+    expect(payload.query.scriptWindows).toBe(true);
+    expect(payload.query.keywords).toContain('结论');
+    expect(payload.matches.some((match) => match.text.includes('结论'))).toBe(true);
+    expect(result.summary).toContain('keyword search limited to 6 terms');
+    expect(result.summary).toContain('bounded two-character windows');
+  });
+});
+
+describe('F4 - the files_analyze output is valid at every output budget', () => {
+  const trickyText = [
+    'alpha "quoted" and C:\\path\\to\\file',
+    'newline\ninside a field and emoji 🚀 and café 汉字',
+    ...Array.from({ length: 40 }, (_, index) => `revenue row ${index} with "quotes" and a backslash \\`),
+  ].join('\n');
+
+  it.each([1, 150, 256, 300, 323, 324, 400])(
+    'budget %i stays inside the wrapped budget and never returns broken JSON',
+    async (budget) => {
+      const vault = new FileVault();
+      const file = await vault.upload({
+        name: 'tricky.txt', mediaType: 'text/plain',
+        bytes: new TextEncoder().encode(trickyText), conversationId: 'conversation-1',
+      });
+      const result = await filesExecutor(vault).execute(analyzeCall(file.id, 'revenue'), filesContext(budget));
+      const wrapped = wrapUntrustedOutput(result.content, budget);
+
+      expect(Buffer.byteLength(result.content, 'utf8')).toBeLessThanOrEqual(untrustedOutputBudget(budget));
+      expect(Buffer.byteLength(wrapped, 'utf8')).toBeLessThanOrEqual(budget);
+
+      if (result.content.includes('{')) {
+        // Any JSON document reaching the model must be complete and parseable
+        // after the exact same wrapping path production uses.
+        const payload = analysisPayload(wrapped);
+        expect(payload).toBeTypeOf('object');
+        expect(payload.matchesTruncated).toBe(true);
+        expect(String(payload.note ?? '')).toMatch(/limit/i);
+        expect(result.summary).not.toMatch(/plain text only/i);
+      } else {
+        // Below the minimum JSON size the result is explicitly plain text.
+        expect(result.summary).toMatch(/plain text only/i);
+        expect(result.content).not.toContain('matchesTruncated');
+      }
+    },
+  );
+
+  it('still returns a complete normal JSON document at the default budget with tricky content', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'tricky.txt', mediaType: 'text/plain',
+      bytes: new TextEncoder().encode(trickyText), conversationId: 'conversation-1',
+    });
+    const result = await filesExecutor(vault).execute(
+      analyzeCall(file.id, 'revenue'), filesContext(DEFAULT_TOOL_LIMITS.maxOutputBytes),
+    );
+    const payload = analysisPayload(wrapUntrustedOutput(result.content, DEFAULT_TOOL_LIMITS.maxOutputBytes));
+    expect(typeof payload.excerpt).toBe('string');
+    expect(payload.matchesTruncated).toBe(true);
+    expect(payload.query).toMatchObject({ matchesEvaluated: true });
   });
 });

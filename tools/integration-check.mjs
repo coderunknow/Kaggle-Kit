@@ -489,6 +489,10 @@ async function main() {
       ['convert: 32 °F to °C', '°F', '°C', '0'],
       ['convert: 100 °F to °C', '°F', '°C', '37.7777777778'],
       ['convert: 100 km/h to mph', 'km/h', 'mph', '62.1371192237'],
+      // F8: 273.15 K -> 32 F used to be 31.999999999999943. The exact
+      // numeric portion (not a substring) is compared through the real loop.
+      ['convert: 273.15 K to F', 'K', 'F', '32'],
+      ['convert: 212 F to K', 'F', 'K', '373.15'],
     ]) {
       const converted = await post(base, '/api/tools/chat', {
         profileId: 'integration-tools',
@@ -618,6 +622,69 @@ async function main() {
       `HTTP ${analyzeChat.status}: ${JSON.stringify(analyzeBody).slice(0, 400)}`,
     );
 
+    // F2/F3: a real upload with more than 20 matching lines, a discriminating
+    // term at the end of a long unspaced question, and a stop-word-only
+    // question. The built tool loop must report each limit instead of silently
+    // returning "0 matching line(s)" or an apparently exhaustive 20.
+    const mixedFile = [
+      ...Array.from({ length: 40 }, (_, index) => `revenue row ${index}`),
+      '结论：销售额上升',
+    ].join('\n') + '\n';
+    const mixedUpload = await post(base, '/api/tools/files/upload', {
+      conversationId: 'integration-files-tools',
+      name: 'mixed.txt',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.from(mixedFile, 'utf8').toString('base64'),
+    });
+    const mixedBody = await mixedUpload.json();
+    const mixedId = mixedBody.file?.id;
+    assert(
+      'a large mixed-script file is uploaded through the built backend',
+      mixedUpload.status === 201 && typeof mixedId === 'string',
+      `HTTP ${mixedUpload.status}: ${JSON.stringify(mixedBody).slice(0, 200)}`,
+    );
+
+    const analyseMixed = async (question) => {
+      const chat = await post(base, '/api/tools/chat', {
+        profileId: 'integration-tools',
+        conversationId: 'integration-files-tools',
+        baseUrl: upstreamUrl,
+        apiKey: API_KEY,
+        model: 'mock-model',
+        messages: [{ role: 'user', content: `analyze file: ${mixedId} :: ${question}` }],
+        params: { maxTokens: 128, temperature: 0, topP: 1 },
+        timeoutMs: 10_000,
+      });
+      const body = await chat.json();
+      return { status: chat.status, body, trace: body.toolTrace?.find((entry) => entry.toolName === 'files_analyze') };
+    };
+
+    const capped = await analyseMixed('revenue');
+    assert(
+      'files_analyze reports that matches were omitted at the 20-match cap',
+      capped.status === 200 && capped.trace?.status === 'succeeded' &&
+        /more matching lines omitted/i.test(String(capped.trace?.resultSummary ?? '')),
+      `HTTP ${capped.status}: ${JSON.stringify(capped.trace ?? capped.body).slice(0, 400)}`,
+    );
+
+    const cjk = await analyseMixed('请分析这个文件中的数据分布情况和主要结论');
+    assert(
+      'files_analyze reports bounded keyword sampling for an unspaced script',
+      cjk.status === 200 && cjk.trace?.status === 'succeeded' &&
+        /keyword search limited to 6 terms/i.test(String(cjk.trace?.resultSummary ?? '')) &&
+        /bounded two-character windows/i.test(String(cjk.trace?.resultSummary ?? '')),
+      `HTTP ${cjk.status}: ${JSON.stringify(cjk.trace ?? cjk.body).slice(0, 400)}`,
+    );
+
+    const stopWords = await analyseMixed('What is the file about?');
+    assert(
+      'files_analyze says matching was not evaluated for a stop-word-only question',
+      stopWords.status === 200 && stopWords.trace?.status === 'succeeded' &&
+        /matches were not evaluated/i.test(String(stopWords.trace?.resultSummary ?? '')) &&
+        !/0 matching line/i.test(String(stopWords.trace?.resultSummary ?? '')),
+      `HTTP ${stopWords.status}: ${JSON.stringify(stopWords.trace ?? stopWords.body).slice(0, 400)}`,
+    );
+
     const missingFileChat = await post(base, '/api/tools/chat', {
       profileId: 'integration-tools',
       conversationId: 'integration-files-tools',
@@ -743,6 +810,9 @@ async function main() {
         /inference verified/i.test(String(diagnosticsTrace?.resultSummary)) &&
         /streaming verified earlier in this server session/i.test(String(diagnosticsTrace?.resultSummary)) &&
         /not proof of proxy forwarding or browser rendering/i.test(String(diagnosticsTrace?.resultSummary)) &&
+        // F6: this profile supplied an API key, so the check may claim that
+        // authentication was actually exercised.
+        /authentication verified with an API key/i.test(String(diagnosticsTrace?.resultSummary)) &&
         !/passed/i.test(String(diagnosticsTrace?.resultSummary)),
       `HTTP ${diagnostics.status}: ${JSON.stringify(diagnosticsTrace ?? diagnosticsBody).slice(0, 400)}`,
     );

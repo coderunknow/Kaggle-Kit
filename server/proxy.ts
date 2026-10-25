@@ -57,6 +57,8 @@ interface CapabilityCacheEntry {
   streamingCheckedAt: number;
   /** What the last successful probe observed; cleared by a failed probe. */
   streamingEvidence?: StreamingEvidence;
+  /** Model the successful streaming probe used; a different model must re-probe. */
+  streamingModel?: string;
   reasoningEffortSupported: boolean;
   templateReasoningEffortSupported: boolean;
   propsCheckedAt: number;
@@ -216,6 +218,9 @@ export class ProxyService {
       requestedBaseUrl,
       baseUrlChanged,
       testedAt: new Date().toISOString(),
+      // `apiKey` is the resolved value (secretRef has already been resolved),
+      // so this reflects the credential actually sent on the wire.
+      credentialUsed: Boolean(apiKey),
       stages: completeStages(stages),
       ...extra,
     });
@@ -703,11 +708,18 @@ export class ProxyService {
     const validToolCapability = cachedTool && cachedTool.expiresAt > now
       ? { ...cachedTool.capability }
       : undefined;
+    const requestedModel = model?.trim();
+    // A streaming observation is model-specific even though props capability
+    // detection is endpoint-specific. Never attach evidence to another model.
+    const streamingVerified = cached?.streamingVerified === true
+      && now - cached.streamingCheckedAt < STREAM_PROBE_TTL_MS
+      && (!requestedModel || cached.streamingModel === requestedModel);
+    const streamingEvidence = streamingVerified ? cached?.streamingEvidence : undefined;
 
     if (cached && now - cached.propsCheckedAt < STREAM_PROBE_TTL_MS) {
       return {
-        streamingVerified: cached.streamingVerified,
-        ...(cached.streamingEvidence ? { streamingEvidence: cached.streamingEvidence } : {}),
+        streamingVerified,
+        ...(streamingEvidence ? { streamingEvidence } : {}),
         reasoningEffortSupported: cached.reasoningEffortSupported,
         templateReasoningEffortSupported: cached.templateReasoningEffortSupported,
         notes: [],
@@ -746,14 +758,15 @@ export class ProxyService {
       streamingVerified: cached?.streamingVerified ?? false,
       streamingCheckedAt: cached?.streamingCheckedAt ?? 0,
       ...(cached?.streamingEvidence ? { streamingEvidence: cached.streamingEvidence } : {}),
+      ...(cached?.streamingModel ? { streamingModel: cached.streamingModel } : {}),
       reasoningEffortSupported,
       templateReasoningEffortSupported,
       propsCheckedAt: now,
     });
 
     return {
-      streamingVerified: cached?.streamingVerified ?? false,
-      ...(cached?.streamingEvidence ? { streamingEvidence: cached.streamingEvidence } : {}),
+      streamingVerified,
+      ...(streamingEvidence ? { streamingEvidence } : {}),
       reasoningEffortSupported,
       templateReasoningEffortSupported,
       notes,
@@ -772,13 +785,21 @@ export class ProxyService {
     const { baseUrl, apiKey } = await this.resolveTarget(target);
     const key = this.capabilityKey(baseUrl, apiKey);
     const cached = this.capabilities.get(key);
+    const requestedModel = options.model?.trim() || '';
 
-    if (cached?.streamingVerified) {
+    // A cached result is only reusable for the exact model that was probed.
+    // Otherwise "Verify streaming support" after switching models would report
+    // the old model's observation as evidence for the new one.
+    if (
+      cached?.streamingVerified
+      && Date.now() - cached.streamingCheckedAt < STREAM_PROBE_TTL_MS
+      && (!requestedModel || cached.streamingModel === requestedModel)
+    ) {
       return {
         supported: true,
         detail: cached.streamingEvidence
-          ? 'Streaming was verified for this endpoint earlier in this server session.'
-          : 'Streaming was verified for this endpoint earlier.',
+          ? 'Streaming was verified for this endpoint and model earlier in this server session.'
+          : 'Streaming was verified for this endpoint and model earlier.',
         ...(cached.streamingEvidence ? { evidence: cached.streamingEvidence } : {}),
       };
     }
@@ -826,7 +847,7 @@ export class ProxyService {
       });
 
       if ([301, 302, 303, 307, 308].includes(response.status)) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return {
           supported: false,
           detail: `The endpoint answered the streaming probe with a redirect (HTTP ${response.status}).`,
@@ -835,13 +856,13 @@ export class ProxyService {
 
       if (!response.ok) {
         const detail = `The streaming probe returned HTTP ${response.status}.`;
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return { supported: false, detail };
       }
 
       const contentType = response.headers.get('content-type') ?? '';
       if (!contentType.toLowerCase().includes('text/event-stream')) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return {
           supported: false,
           detail: `The endpoint answered with content type "${contentType || 'unknown'}" instead of text/event-stream.`,
@@ -849,7 +870,7 @@ export class ProxyService {
       }
 
       if (!response.body) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return { supported: false, detail: 'The endpoint returned no response body.' };
       }
 
@@ -895,12 +916,12 @@ export class ProxyService {
       }
 
       if (streamError) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return { supported: false, detail: redactSecrets(streamError, [apiKey]) };
       }
 
       if (characters === 0) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return {
           supported: false,
           detail: 'The event stream contained no answer text (keep-alive comments and empty deltas are not enough).',
@@ -908,7 +929,7 @@ export class ProxyService {
       }
 
       if (!finished) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
         return {
           supported: false,
           detail:
@@ -933,11 +954,12 @@ export class ProxyService {
         streamingVerified: true,
         streamingCheckedAt: Date.now(),
         streamingEvidence: evidence,
+        streamingModel: model,
       });
       return { supported: true, detail, evidence };
     } catch (error) {
       const apiError = toApiError(error);
-      this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
+      this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined, streamingModel: undefined });
       return { supported: false, detail: apiError.message };
     } finally {
       clearTimeout(timer);
@@ -949,6 +971,7 @@ export class ProxyService {
       streamingVerified: false,
       streamingCheckedAt: 0,
       streamingEvidence: undefined,
+      streamingModel: undefined,
       reasoningEffortSupported: false,
       templateReasoningEffortSupported: false,
       propsCheckedAt: 0,

@@ -6,7 +6,23 @@
  * OpenAI-compatible servers emit is supported.
  */
 
+import type { ApiErrorKind } from './errors';
 import type { OpenAIToolCall } from './types';
+
+/**
+ * Machine codes the local proxy may attach to a terminal SSE error event.
+ * The browser derives the `ApiError.kind` from this fixed table and never from
+ * free text, so an upstream (untrusted) error payload cannot make a broken
+ * connection look like a request timeout.
+ */
+export const PROXY_STREAM_ERROR_KINDS = {
+  stream_timeout: 'timeout',
+  client_cancelled: 'aborted',
+  upstream_stream_failed: 'inference',
+  stream_event_too_large: 'inference',
+} as const satisfies Record<string, ApiErrorKind>;
+
+export type ProxyStreamErrorCode = keyof typeof PROXY_STREAM_ERROR_KINDS;
 
 /**
  * The largest number of UTF-8 bytes a single SSE event may have. An event is
@@ -240,6 +256,10 @@ export interface StreamDelta {
    * answer is never mistaken for a finished one.
    */
   error?: string;
+  /** Machine code of a proxy terminal error, when one was supplied. */
+  errorCode?: string;
+  /** Classification derived from `errorCode`, never from the message text. */
+  errorKind?: ApiErrorKind;
 }
 
 /** Extract the delta payload of an OpenAI-compatible SSE chunk. */
@@ -260,20 +280,28 @@ export function extractDelta(event: SseEvent): StreamDelta {
       };
       finish_reason?: string | null;
     }[];
-    error?: { message?: string } | string;
-  };
+    error?: { message?: string; code?: string } | string;
+  } | null;
 
   try {
     payload = JSON.parse(event.data);
   } catch {
     return {};
   }
+  if (!payload || typeof payload !== 'object') return {};
 
   const reportedError = payload.error;
   if (typeof reportedError === 'string') {
     if (reportedError.trim()) return { error: reportedError };
   } else if (reportedError?.message) {
-    return { error: reportedError.message };
+    const code = typeof reportedError.code === 'string' ? reportedError.code : undefined;
+    const known = code !== undefined
+      && Object.prototype.hasOwnProperty.call(PROXY_STREAM_ERROR_KINDS, code);
+    return {
+      error: reportedError.message,
+      ...(code ? { errorCode: code } : {}),
+      ...(known ? { errorKind: PROXY_STREAM_ERROR_KINDS[code as ProxyStreamErrorCode] } : {}),
+    };
   }
 
   const choice = payload.choices?.[0];

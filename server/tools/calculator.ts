@@ -293,12 +293,16 @@ function temperatureValue(value: number, source: string, target: string): number
     return toF ? FAHRENHEIT_ABSOLUTE_ZERO : toK ? KELVIN_ABSOLUTE_ZERO : CELSIUS_ABSOLUTE_ZERO;
   }
   if (fromF) {
-    // Multiplication before division keeps the -459.67 °F anchor exact even
-    // outside the explicit branch above.
-    return toK ? (value + 459.67) * 5 / 9 : (value - 32) * 5 / 9;
+    // Both Kelvin paths start from the defining 32 °F anchor. Going through
+    // `(value + 459.67) * 5 / 9` instead leaves 212 °F at
+    // 373.15000000000003 K, and `value * (9/5) - 459.67` leaves 273.15 K at
+    // 31.999999999999943 °F: the shared Kelvin offset is not binary-exact.
+    const celsius = (value - 32) * 5 / 9;
+    return toK ? celsius + 273.15 : celsius;
   }
   if (fromK) {
-    return toF ? value * (9 / 5) - 459.67 : value - 273.15;
+    const celsius = value - 273.15;
+    return toF ? celsius * 9 / 5 + 32 : celsius;
   }
   // Celsius source.
   return toF ? value * (9 / 5) + 32 : value + 273.15;

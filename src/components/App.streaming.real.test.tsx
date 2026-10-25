@@ -340,7 +340,7 @@ describe('visible incremental streaming through the real application', () => {
     // The interface says what happened instead of leaving the user to wonder
     // why the answer appeared in one piece.
     expect(document.body.textContent).toContain(
-      'Streaming is enabled for this profile, but this browser session has not verified it',
+      'Streaming is enabled for this profile, but it had not been verified for this endpoint',
     );
   }, 60_000);
 });

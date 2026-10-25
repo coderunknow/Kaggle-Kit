@@ -339,9 +339,10 @@ function MessageItemImpl({
           {message.streamUnverified && message.status === 'complete' ? (
             <p className="msg__fallback">
               <Icon name="info" size={12} />
-              Streaming is enabled for this profile, but this browser session has not verified it for
-              this endpoint, so the answer was requested without streaming. Verify streaming support
-              in the inference settings to see answers arrive incrementally.
+              Streaming is enabled for this profile, but it had not been verified for this endpoint
+              in the session that produced this answer, so the answer was requested without
+              streaming. Verify streaming support in the inference settings to see later answers
+              arrive incrementally.
             </p>
           ) : null}
 

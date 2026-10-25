@@ -414,3 +414,28 @@ describe('parseSseStream event-size and encoding boundaries', () => {
     expect(data).toEqual(['前', '半']);
   });
 });
+
+
+describe('extractDelta - structured proxy error codes', () => {
+  it('derives the kind from the code, not from the message', () => {
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'stream_timeout', message: 'too slow' } }),
+    })).toEqual({ error: 'too slow', errorCode: 'stream_timeout', errorKind: 'timeout' });
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'upstream_stream_failed', message: 'broken' } }),
+    })).toEqual({ error: 'broken', errorCode: 'upstream_stream_failed', errorKind: 'inference' });
+  });
+
+  it('does not trust an unknown code or an error kind supplied by the payload', () => {
+    expect(extractDelta({
+      data: JSON.stringify({ error: { code: 'spoofed', kind: 'timeout', message: 'nope' } }),
+    })).toEqual({ error: 'nope', errorCode: 'spoofed' });
+    expect(extractDelta({ data: JSON.stringify({ error: { message: 'plain' } }) })).toEqual({ error: 'plain' });
+  });
+
+  it('ignores malformed, null and non-object error payloads', () => {
+    expect(extractDelta({ data: 'null' })).toEqual({});
+    expect(extractDelta({ data: '42' })).toEqual({});
+    expect(extractDelta({ data: 'not json' })).toEqual({});
+  });
+});

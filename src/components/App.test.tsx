@@ -972,7 +972,7 @@ describe('streaming preference without a verified transport', () => {
     expect(screen.getByText(/had not verified streaming for this endpoint, so the answer was fetched with a regular request/i))
       .toBeInTheDocument();
     // A server-side refusal is not the browser-session notice.
-    expect(screen.queryByText(/this browser session has not verified it for/i)).toBeNull();
+    expect(screen.queryByText(/it had not been verified for this endpoint/i)).toBeNull();
   });
 
   it('keeps a saved preference unverified across a reload, sends no stream and explains why', async () => {
@@ -1000,7 +1000,7 @@ describe('streaming preference without a verified transport', () => {
     const chatCalls = calls.filter((call) => call.url === '/api/proxy/chat');
     expect(chatCalls).toHaveLength(1);
     expect((chatCalls[0]!.body as { params: { stream: boolean } }).params.stream).toBe(false);
-    expect(screen.getByText(/this browser session has not verified it for this endpoint/i)).toBeInTheDocument();
+    expect(screen.getByText(/it had not been verified for this endpoint/i)).toBeInTheDocument();
     // No refusal happened, so the fallback notice must not appear.
     expect(screen.queryByText(/had not verified streaming for this endpoint/i)).toBeNull();
   });
