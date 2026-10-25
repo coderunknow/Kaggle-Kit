@@ -3229,3 +3229,25 @@ push and is checked separately; no circular or parent-SHA substitution is
 used. The PR #24 branch was not changed by this push; the session branch is
 `arena/b965bb05-kaggle-kit` and the live PR still pointed to
 `arena/352dba56-kaggle-kit` at the time checked.
+
+## 2026-10-25 - Repository-specific CodeRabbit review configuration
+
+### User Intent
+
+Add a high-signal review configuration for Kaggle-Kit that covers its TypeScript backend and browser, Kaggle deployment notebooks, tests, release evidence, dependencies, CI, and the configuration itself. Reviews must be transparent about inspected commits and evidence, must not automatically approve changes, and must not trigger code-changing finishing touches.
+
+### Implementation History
+
+- Re-verified PR #24 as open and not draft, base `main`, live head branch `arena/352dba56-kaggle-kit` at `2196778cceaed860d4c43bfdac0ae305cfe9335b`. The local session branch was `arena/b965bb05-kaggle-kit` at `7e027ff296439c1823ce1db7b3b6c1b9759a8104`; its two remediation commits are `6601004246372777bf7aa75b354194ffb915b06f` then `7e027ff296439c1823ce1db7b3b6c1b9759a8104`. The remote PR branch remained unchanged during this turn.
+- Added `.coderabbit.yaml` using the official schema v2 and reference. It enables automatic and incremental reviews, excludes drafts, retains the existing five-commit pause, uses `assertive` and `en-US`, enables status/progress/review details and summaries, and disables automatic approvals.
+- Added path guidance for server/shared, src, notebooks, test files, tools, release/docs/logs, CI/dependency manifests, and the configuration itself. Added `AGENTS.md` to knowledge-base code guidelines. Inheritance is explicitly off; no path filters or label/title gates were added.
+- Disabled docstring generation, generated unit tests, simplify, autofix, CI fixer, and merge-conflict resolver. No extra analysis tools were enabled because effective plan entitlement was not verified and overlapping CI coverage did not justify guessing.
+- YAML parsing/format check: `npx --yes --package=prettier prettier --check .coderabbit.yaml` exited 0. The official schema and current reference were consulted and the used settings manually checked against their documented types and enum values. Full automated schema validation remains unverified because the complete schema was not staged locally and the repository has no existing validator for this schema.
+- Local checks on this tree: `npm run check` exit 0 (52 files, 613 tests); `npm run build` exit 0; `npm run check:integration` exit 0 (56/56, one optional live retrieval skipped); tools Python suite 40/40; notebooks 105 run with 17 requests-dependent skips. Integration/build emitted optional PDF.js/canvas and standard-font warnings; no check failed.
+
+### Decisions & Lessons
+
+- A valid YAML parse and manual schema review do not establish that CodeRabbit loaded the configuration or reviewed a given commit. Only a CodeRabbit review reporting its applied configuration and reviewed head can establish that.
+- Configuration availability does not restore review quota or guarantee bot execution. Existing review status on the old PR head is not evidence for the remediation head.
+- The session branch restriction permits pushes only to `arena/b965bb05-kaggle-kit`; this task's requested target is PR branch `arena/352dba56-kaggle-kit`. No operation was made to update that other branch. Configuration and this record are not claimed to be included in PR #24 until an authorized operation updates its head.
+- No merge, tag, release, deployment, approval, or review-thread resolution occurred.

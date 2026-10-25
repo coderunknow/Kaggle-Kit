@@ -1,0 +1,122 @@
+language: en-US
+early_access: false
+enable_free_tier: true
+inheritance: false
+tone_instructions: >-
+  Prioritize demonstrable correctness, security, reliability, compatibility,
+  performance, race, resource-limit, and regression risks. Report actionable
+  findings with concrete code paths and impact; label uncertainty, avoid
+  speculation, duplicate comments, cosmetic nitpicks, and issues already fixed
+  in the current diff. Distinguish inspected files and commits from inferred
+  behavior, and never present a review as test evidence or human approval.
+
+reviews:
+  profile: assertive
+  auto_approvals:
+    enabled: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_status: true
+  review_info: true
+  review_details: true
+  review_progress: true
+  fail_commit_status: true
+  changed_files_summary: true
+  enable_prompt_for_ai_agents: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    auto_pause_after_reviewed_commits: 5
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  path_instructions:
+    - path: "{server,shared}/**"
+      instructions: >-
+        Check OpenAI-compatible API contracts, HTTP status and request
+        validation, and accurate error classification. Trace SSE framing,
+        incremental delivery, complete and incomplete frames, terminal events,
+        timeout/cancellation races, upstream and downstream lifecycle, and
+        cleanup. Examine authentication boundaries, credential redaction, URL
+        validation, request/resource limits, and external retrieval safety.
+        Check JSON and Unicode edge cases, malformed responses, and backward
+        compatibility. Require diagnostics to distinguish an actual end-to-end
+        result from a partial probe.
+    - path: "src/**"
+      instructions: >-
+        Trace visible token streaming from gateway through state and rendered
+        transcript. Check React state consistency, stale closures, async races,
+        cancellation, retry, and persistence. Review connection profiles,
+        credential handling, request construction, unsupported parameters, and
+        user-facing errors. Check keyboard and screen-reader accessibility and
+        truthful loading/error states; a backend probe alone does not prove
+        browser streaming works.
+    - path: "notebooks/**"
+      instructions: >-
+        Check Kaggle runtime assumptions, GPU and memory availability, and
+        version-sensitive llama.cpp flags. Review download integrity, asset
+        verification, resumability, cache reuse, failure cleanup, and
+        deterministic tests. Inspect model loading, authentication, tunnels,
+        endpoint exposure, and secret handling. Separate mocked tests from
+        checks requiring a real GPU, model, or public endpoint, and ensure
+        platform-dependent checks are documented honestly.
+    - path: "**/*.test.*"
+      instructions: >-
+        Check exact semantic assertions, regression tests that fail on the
+        original defect, and error, empty, Unicode, truncation, limit,
+        concurrency, cancellation, and boundary cases. Confirm tests exercise
+        production paths rather than only mocks or duplicated helpers. Check
+        integration determinism, opt-in network behavior, justified skips,
+        false positives, and whether raw output supports reported pass counts.
+    - path: "tools/**"
+      instructions: >-
+        For test and integration tooling, check exact assertions, production
+        path coverage, determinism, opt-in network behavior, justified skips,
+        false positives, and whether raw output supports reported pass counts.
+        Also review scripts for safe process, filesystem, and network handling.
+    - path: "notebooks/test_*.py"
+      instructions: >-
+        Check exact semantic assertions, regression coverage, runtime and
+        resource boundaries, deterministic behavior, valid skip reasons, and
+        whether tests distinguish mocks from real Kaggle GPU/model/endpoint
+        verification. Confirm raw output supports reported pass counts.
+    - path: "docs/**,**/*.md,DESIGN_LOG.md,AGENTS_LOG.md"
+      instructions: >-
+        Reconcile release notes, implementation claims, test counts, limitations,
+        and checked-in evidence with code and actual outputs. Verify exact
+        commit-to-CI-run SHA mappings, including evidence-only commits, and
+        distinguish local, hosted, mocked, and live-model checks. Flag stale,
+        contradictory, or unsupported claims. Preserve append-only history in
+        the design and implementation logs.
+    - path: ".github/workflows/**,package.json,package-lock.json,requirements*.txt"
+      instructions: >-
+        Review dependency and lockfile integrity, reproducible installs, action
+        pinning, permissions, secrets, untrusted pull request inputs, and trigger
+        safety. Confirm required workflows exercise browser, Docker, Windows,
+        JavaScript/TypeScript, and Python behavior as claimed, and identify
+        tests that can pass without exercising their stated functionality.
+        Avoid recommending duplicate checks that add no evidence.
+    - path: ".coderabbit.yaml"
+      instructions: >-
+        Verify this file against the current official CodeRabbit schema. Check
+        review enablement, incremental and draft behavior, reporting, and the
+        absence of accidental source/test/documentation/workflow exclusions.
+        Confirm no automatic approval or code-changing workflow is enabled and
+        do not assume unavailable tools or plan features are active.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - AGENTS.md

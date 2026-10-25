@@ -2376,3 +2376,15 @@ release, deployment, thread resolution or approval is requested.
   launcher. This code-SHA/run mapping is recorded in `docs/release/environment.json`.
 - The next commit is documentation/evidence-only and is checked separately;
   no later-head CI is inferred from this run.
+
+---
+
+## 2026-10-25 – CodeRabbit review configuration
+
+**Task.** Add a repository-specific CodeRabbit review configuration while preserving the existing remediation history and avoiding automatic approvals or code-changing follow-up actions.
+
+**What changed.** Added root `.coderabbit.yaml` with English (US) reviews, assertive review profile, automatic and incremental reviews, drafts excluded, the existing five-reviewed-commit pause retained, status/progress/details reporting, changed-file and high-level summaries, AI-agent finding prompts, and automatic approvals disabled. Added scoped instructions for backend/shared contracts and streaming, browser lifecycle/accessibility, Kaggle notebooks, tests and integration tooling, documentation/release evidence, CI/dependencies, and the configuration itself. Configured the existing root `AGENTS.md` as the CodeRabbit coding-guideline source. Left inheritance disabled and disabled all schema-supported finishing touches that could change code or open follow-up work. No additional static-analysis tools were enabled because their plan availability and incremental value were not established.
+
+**Validation.** `npx --yes --package=prettier prettier --check .coderabbit.yaml` passed and parsed the YAML. The official CodeRabbit schema v2 and configuration reference were consulted; configured keys and types were checked against the published schema/reference. A complete automated JSON Schema validation was not performed because the schema was not available as a local file and no schema validator workflow was already configured. `npm run check` passed (52 files, 613 tests); `npm run build` passed; deterministic integration passed 56/56 with one opt-in public retrieval skipped; tools Python tests passed 40/40; notebook tests passed 105 with 17 requests-dependent skips. The integration emitted PDF.js optional-canvas/font warnings but exited successfully.
+
+**Branch limitation.** This work is on the active session branch `arena/b965bb05-kaggle-kit`. At validation time PR #24 remained at `2196778cceaed860d4c43bfdac0ae305cfe9335b` on `arena/352dba56-kaggle-kit`; the new configuration is not represented as part of that PR by this log entry. No merge, tag, release, deployment, or review-thread resolution was performed.
