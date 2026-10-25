@@ -51,7 +51,9 @@
     "2026-10-25 CodeRabbit remediation on arena/352dba56-kaggle-kit (uncommitted tree on 7cbbae21f811185919420e12a64ba0072324752e): npm run check exit 0; 52 files / 567 Vitest tests passed",
     "2026-10-25 CodeRabbit remediation: npm run build exit 0; client entry 310.61 kB / 94.76 kB gzip, bundled server 5.7 MB; npm run check:integration exit 0 with 50/50 checks passed, 1 skipped (not counted); npm run check:network exit 0 with 51/51 checks including a real pypi.org web_open retrieval",
     "2026-10-25 CodeRabbit remediation mutation evidence: pre-fix analysisKeywords fails 2 tests; pre-fix files_analyze payload fails 4 boundary tests; removing the absolute-zero branch fails the chained conversion test; 504->500 fails the new pre-header timeout test; new tests assert HTTP 504 before any status and the in-band error event with status 200 after headers",
-    "2026-10-25 CodeRabbit remediation: git diff --check clean; focused rerun of calculator/files/executor/streaming/useChat tests 50/50 passed after restoring every mutation"
+    "2026-10-25 CodeRabbit remediation: git diff --check clean; focused rerun of calculator/files/executor/streaming/useChat tests 50/50 passed after restoring every mutation",
+    "2026-10-25 GitHub CI runs 40159913146 (push) and 40159915520 (PR) on exact head ababc431b200aaaced8e1b618f5be6f93683cb4e: four of five jobs passed, the notebook/release-tools job failed because tools/test_workflow_security.py still asserted the obsolete README tag example. Regression from this change set, fixed in the follow-up commit",
+    "2026-10-25 after fixing the release-tool test: python3 -m unittest discover -s tools -p 'test_*.py' 39/39 passed; python3 -m unittest discover -s notebooks -p 'test_*.py' 105/105 passed with requests 2.34.2 in a temporary venv; without requests the notebook suite reports 17 skips, which is not a pass"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
@@ -81,6 +83,7 @@
     "2026-10-25 beta2 candidate: Docker-backed code_execute and the Windows launcher were not run locally; local release dry-run was not run; no tag, release or publication",
     "2026-10-25 environment restriction: api.github.com, github.com and example.com fail from Node with ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE in this sandbox (system-CA curl returns 200); this is not the reported 12-second web_open timeout",
     "2026-10-25 CodeRabbit remediation: browser E2E not run locally (Playwright Chromium download blocked); hosted CI is the only browser evidence for this fix head",
-    "2026-10-25 CodeRabbit remediation: Docker-backed code_execute, the Windows launcher and all live-model checks were not run; no endpoint or credential exists and none is claimed as verified"
+    "2026-10-25 CodeRabbit remediation: Docker-backed code_execute, the Windows launcher and all live-model checks were not run; no endpoint or credential exists and none is claimed as verified",
+    "2026-10-25 Python suites were run with the system Python 3.11.2 and a temporary /tmp venv (requests 2.34.2); the Docker image and Windows launcher paths remain CI-only evidence"
   ]
 }

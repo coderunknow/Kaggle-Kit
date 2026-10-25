@@ -2237,3 +2237,22 @@ checked against the implementation first.
 **Boundary confirmation.** Changes are on `arena/352dba56-kaggle-kit` only.
 No merge, tag, release, asset publication, deployment or workflow dispatch was
 performed; merge and beta2 publication remain maintainer decisions.
+
+### Addendum - regression caught by hosted CI on the first fix head (2026-10-25T03:57:03Z)
+
+- Push run `40159913146` and PR run `40159915520` on exact head
+  `ababc431b200aaaced8e1b618f5be6f93683cb4e` failed the `notebook tests` job
+  at "Run the tests of the release tools". Cause:
+  `tools/test_workflow_security.py` asserted the literal obsolete README tag
+  example that this change set removed. The failure is a real regression from
+  this change set, not an environment issue; the other four jobs passed.
+- Fix: the test reads the version from `package.json`, requires the
+  `node -p` substitution and the `docs/release-notes/<version>.md` wording,
+  and rejects any hard-coded `git tag v<semver>-` example. Restoring the old
+  README line fails the updated test.
+- Local evidence after the fix: tools suite 39/39; notebook suite 105/105 with
+  `requests` 2.34.2 in a temporary venv (17 skips without it, not a pass);
+  `npm run check` 52 files / 567 tests, build, deterministic integration
+  50/50 + 1 skipped, network integration 51/51 all unchanged by the fix.
+- The fix was pushed as a follow-up commit on the same branch; CI was
+  rechecked on the new head instead of citing the failed run.

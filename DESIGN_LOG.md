@@ -2964,3 +2964,30 @@ allowance exhausted).
 - Not run locally: browser E2E (Chromium download blocked), Docker
   `code_execute`, the Windows launcher. Live-model checks remain **BLOCKED**:
   no endpoint or credential exists in this environment.
+
+### Addendum - the first pushed fix head failed CI, and why (2026-10-25T03:57:03Z)
+
+The remediation commit `ababc431b200aaaced8e1b618f5be6f93683cb4e` broke a
+release-tool test that was not in the JavaScript gates:
+`tools/test_workflow_security.py` asserted the literal old README line
+`git tag v0.1.0-beta1 <commit> && git push origin v0.1.0-beta1`. That
+assertion was the test-side copy of the stale example, so removing the example
+from the README had to change the test as well. Hosted CI run
+`40159913146` (push) and `40159915520` (pull request) failed only in the
+`notebook tests` job, step "Run the tests of the release tools"; the other
+four jobs passed. This is a regression introduced by this change set, not an
+environment problem.
+
+The test is now version-agnostic like the README: it reads
+`package.json`'s version, requires the `node -p` substitution, requires the
+`docs/release-notes/<version>.md` wording, rejects any hard-coded
+`git tag v<semver>-` example and still rejects `v0.1.0-dev7`. Restoring the
+old README line makes the updated test fail, so the guard still has teeth.
+
+Also verified locally after the fix: `python3 -m unittest discover -s tools
+-p "test_*.py"` 39/39, and `python3 -m unittest discover -s notebooks -p
+"test_*.py"` 105/105 with `requests` 2.34.2 installed in a temporary venv
+(without it the suite reports 17 skips, which is not a pass). The lesson is
+that "the JavaScript suite is green" is not the same as "the repository's
+checks are green": the Python tool tests read the documentation that was
+changed here.
