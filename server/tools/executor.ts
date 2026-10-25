@@ -483,26 +483,32 @@ export class ToolExecutor {
 
     const excerptCharacters = [...redact(analysis.excerpt)];
     const room = Math.max(0, budget - Buffer.byteLength(json, 'utf8'));
-    let keep = Math.min(excerptCharacters.length, room);
     const withExcerpt = (count: number) => serialize(
       excerptCharacters.slice(0, count).join(''),
       selectedMatches,
       matchesTruncated,
       count < excerptCharacters.length,
     );
-    let payload = withExcerpt(keep);
-    let excess = Buffer.byteLength(payload, 'utf8') - budget;
-    // JSON escaping can make the encoded excerpt longer than one byte per
-    // character (quotes, backslashes, control characters). Shrink until the
-    // serialized document fits; the loop is bounded by the excerpt length.
-    while (excess > 0 && keep > 0) {
-      keep = Math.max(0, keep - Math.max(1, Math.ceil(excess)));
-      payload = withExcerpt(keep);
-      excess = Buffer.byteLength(payload, 'utf8') - budget;
+    // `room` is a safe character upper bound only for single-byte text.
+    // Search by Unicode code point count and serialized UTF-8 size instead of
+    // subtracting a byte excess from a character count (which can discard a
+    // fitting CJK excerpt entirely).
+    let low = 0;
+    let high = Math.min(excerptCharacters.length, room);
+    let keep = 0;
+    while (low <= high) {
+      const candidate = Math.floor((low + high) / 2);
+      if (Buffer.byteLength(withExcerpt(candidate), 'utf8') <= budget) {
+        keep = candidate;
+        low = candidate + 1;
+      } else {
+        high = candidate - 1;
+      }
     }
-    if (excess > 0) return fallback();
+    const payload = withExcerpt(keep);
+    if (Buffer.byteLength(payload, 'utf8') > budget) return fallback();
     return {
-      content: `${heading}${withExcerpt(keep)}`,
+      content: `${heading}${payload}`,
       isJson: true,
       excerptTruncated: keep < excerptCharacters.length,
       matchesTruncated,

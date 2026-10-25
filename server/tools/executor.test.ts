@@ -244,6 +244,24 @@ describe('files_analyze output stays parseable inside the tool output budget', (
     return file.id;
   }
 
+  it('preserves a useful multibyte excerpt when the byte budget is tight', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'unicode.txt',
+      mediaType: 'text/plain',
+      bytes: new TextEncoder().encode('漢'.repeat(2_000)),
+      conversationId: 'conversation-1',
+    });
+    const executor = filesExecutor(vault);
+
+    const result = await executor.execute(analyzeCall(file.id, 'summarize this file'), filesContext(1_200));
+
+    const payload = analysisPayload(result.content);
+    expect(payload.excerpt).toContain('漢');
+    expect(payload.excerptTruncated).toBe(true);
+    expect(Buffer.byteLength(result.content, 'utf8')).toBeLessThanOrEqual(untrustedOutputBudget(1_200));
+  });
+
   it('keeps valid JSON and the matches at the default 24 kB boundary', async () => {
     const vault = new FileVault();
     const fileId = await wideFile(vault);

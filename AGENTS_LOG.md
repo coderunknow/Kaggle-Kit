@@ -2414,3 +2414,11 @@ CodeRabbit's first PR #25 configuration inspection explicitly reported `.coderab
 ## 2026-10-25 – Include lockfiles in CodeRabbit review scope
 
 After the corrected configuration loaded in CodeRabbit's in-progress review for `c2e1435`, its file inventory still reported `package-lock.json` excluded by the service path filter `!**/package-lock.json`. Added the schema-supported positive `reviews.path_filters` glob `**/*` to request all changed paths, including lockfiles, and no exclusions. This changes the reviewed configuration; schema/YAML check, CI, and a review of the resulting new head are required before relying on it.
+
+---
+
+## 2026-10-25 – Unicode-safe file-analysis output budgeting
+
+**Final PR #25 audit finding.** A focused regression test using a 2,000-character CJK excerpt and a 1,200-byte tool-output budget failed on the current PR head: the shrink loop treated byte excess as a Unicode-character count and reduced a fitting excerpt to the empty string. Replaced that estimate with a bounded binary search over code-point prefixes, checking each serialized UTF-8 payload against the byte budget. Added the failing regression test; it now verifies the excerpt remains nonempty, is marked truncated, and the complete JSON stays within the untrusted-output budget.
+
+**Validation.** Before the fix, `npx vitest run server/tools/executor.test.ts -t 'multibyte excerpt'` failed because `payload.excerpt` was empty. After the fix, `npx vitest run server/tools/executor.test.ts` passed all 23 tests. Exact-head full validation and GitHub checks are pending. No PR merge, tag, release, publication, or deployment was performed.

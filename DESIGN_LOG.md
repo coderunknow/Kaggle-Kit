@@ -3302,3 +3302,11 @@ CodeRabbit's applied-configuration progress comment for `c2e1435da84a8019a7fab51
 ### Decisions & Lessons
 
 An applied configuration's review inventory is direct evidence of service-side filters and overrides. A broad positive path pattern was added because lockfile integrity is in scope; the earlier review did not assess that excluded file.
+
+---
+
+## 2026-10-25 – Budget file-analysis excerpts by serialized bytes
+
+**Decision.** `files_analyze` output limits are byte limits, but excerpt slicing uses Unicode code points. Subtracting the excess UTF-8 byte count directly from the code-point count can over-shrink multibyte text and erase an excerpt that would fit. Use a binary search over prefix length, measuring each serialized payload's actual UTF-8 byte size, while preserving the complete JSON and truncation signal.
+
+**Evidence.** The regression test used 2,000 CJK characters under a 1,200-byte output limit and failed before the change with an empty excerpt. The targeted `server/tools/executor.test.ts` suite passed 23/23 after the fix, including the regression and existing size-boundary tests. Broader local/hosted checks on the resulting exact head remain pending.
