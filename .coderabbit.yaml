@@ -26,6 +26,8 @@ reviews:
     auto_incremental_review: true
     drafts: false
     auto_pause_after_reviewed_commits: 5
+  path_filters:
+    - "**/*"
   finishing_touches:
     docstrings:
       enabled: false

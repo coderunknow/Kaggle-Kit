@@ -3288,3 +3288,17 @@ Correct any configuration defect surfaced by CodeRabbit itself before relying on
 ### Decisions & Lessons
 
 - Local YAML parsing/formatting and manual schema review did not catch this maximum-length violation. Treat service validation as a separate check, correct the setting, and do not claim the invalid configuration was applied.
+
+## 2026-10-25 - Explicit broad CodeRabbit file coverage
+
+### User Intent
+
+Ensure the repository-specific review does not silently omit dependencies, tests, release evidence, workflows, or other changed files.
+
+### Implementation History
+
+CodeRabbit's applied-configuration progress comment for `c2e1435da84a8019a7fab5130ce27665f3b8d85d` confirmed `.coderabbit.yaml` was loaded with the repository YAML layer and assertive profile, but also identified `package-lock.json` as ignored by a `!**/package-lock.json` path filter. Added official-schema `reviews.path_filters: ["**/*"]` to explicitly include the complete changed-file set. YAML/format and exact-head hosted CI, plus confirmation that the lockfile is selected by a fresh review, are pending for the next commit.
+
+### Decisions & Lessons
+
+An applied configuration's review inventory is direct evidence of service-side filters and overrides. A broad positive path pattern was added because lockfile integrity is in scope; the earlier review did not assess that excluded file.

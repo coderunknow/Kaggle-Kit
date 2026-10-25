@@ -2408,3 +2408,9 @@ release, deployment, thread resolution or approval is requested.
 ## 2026-10-25 – Correct CodeRabbit tone length
 
 CodeRabbit's first PR #25 configuration inspection explicitly reported `.coderabbit.yaml` invalid because `tone_instructions` exceeded the schema's 250-character limit. Shortened the tone to 243 characters, verified YAML parsing/format with Prettier, and pushed the correction as a new session-branch commit. This parsing error means the first CodeRabbit run used defaults; no effective configuration or review of that head is claimed. Fresh exact-head CI and a post-fix CodeRabbit result are pending.
+
+---
+
+## 2026-10-25 – Include lockfiles in CodeRabbit review scope
+
+After the corrected configuration loaded in CodeRabbit's in-progress review for `c2e1435`, its file inventory still reported `package-lock.json` excluded by the service path filter `!**/package-lock.json`. Added the schema-supported positive `reviews.path_filters` glob `**/*` to request all changed paths, including lockfiles, and no exclusions. This changes the reviewed configuration; schema/YAML check, CI, and a review of the resulting new head are required before relying on it.
