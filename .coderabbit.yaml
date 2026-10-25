@@ -1,3 +1,12 @@
+# Two rules in this file are load-bearing and easy to break:
+#   1. Every `path_instructions[].path` is ONE minimatch glob. A comma-joined
+#      list is a literal pattern that matches nothing.
+#   2. A default-ignored path (for example the npm lockfile) is only reviewed
+#      after its exact default pattern is repeated without the leading `!`.
+# Reference: https://docs.coderabbit.ai/reference/configuration and
+# https://docs.coderabbit.ai/configuration/path-instructions (checked
+# 2026-10-25). tools/test_review_config.py fails if either rule is broken.
+
 language: en-US
 early_access: false
 enable_free_tier: true
@@ -25,9 +34,25 @@ reviews:
     enabled: true
     auto_incremental_review: true
     drafts: false
-    auto_pause_after_reviewed_commits: 5
+    # 0 disables the pause, so every intentional push gets an incremental
+    # review instead of silently stopping after five reviewed commits.
+    auto_pause_after_reviewed_commits: 0
   path_filters:
-    - "**/*"
+    # Scope is defined by exclusions only, on purpose.
+    #
+    # A positive pattern narrows the review to what it matches, and a broad one
+    # is not a safe stand-in for "everything": generic minimatch does not match
+    # a dot-prefixed path segment with a wildcard unless `dot` is enabled, and
+    # CodeRabbit does not document which options it uses. `**/*` therefore may
+    # not cover `.github/workflows/**` or `.coderabbit.yaml`, which would drop
+    # CI and review-configuration changes from review silently. With no
+    # positive pattern, every file stays eligible.
+    #
+    # The one entry below is CodeRabbit's exact default-ignore pattern for the
+    # npm lockfile without its leading `!`. Exact default overrides are exempt
+    # from narrowing the scope, so this only re-enables the lockfile, whose
+    # dependency changes are part of this project's release evidence.
+    - "**/package-lock.json"
   finishing_touches:
     docstrings:
       enabled: false
@@ -91,7 +116,7 @@ reviews:
         resource boundaries, deterministic behavior, valid skip reasons, and
         whether tests distinguish mocks from real Kaggle GPU/model/endpoint
         verification. Confirm raw output supports reported pass counts.
-    - path: "docs/**,**/*.md,DESIGN_LOG.md,AGENTS_LOG.md"
+    - path: "{docs/**,**/*.md}"
       instructions: >-
         Reconcile release notes, implementation claims, test counts, limitations,
         and checked-in evidence with code and actual outputs. Verify exact
@@ -99,7 +124,7 @@ reviews:
         distinguish local, hosted, mocked, and live-model checks. Flag stale,
         contradictory, or unsupported claims. Preserve append-only history in
         the design and implementation logs.
-    - path: ".github/workflows/**,package.json,package-lock.json,requirements*.txt"
+    - path: "{.github/workflows/**,package.json,package-lock.json,requirements*.txt}"
       instructions: >-
         Review dependency and lockfile integrity, reproducible installs, action
         pinning, permissions, secrets, untrusted pull request inputs, and trigger

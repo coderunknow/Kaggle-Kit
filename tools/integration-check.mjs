@@ -25,9 +25,14 @@
  *
  * The opt-in `--network` run performs one real HTTPS retrieval through the
  * built tool loop (pypi.org) and therefore needs outbound internet access. It
- * is the only check that depends on a third-party host; the refusal checks
- * (`*.invalid`, loopback, a documentation address) stay in the default run
- * because they must fail before any public request is made.
+ * is the only check that depends on a third-party host.
+ *
+ * The default run also exercises the retrieval refusals through the same tool
+ * loop: an unresolvable name (`*.invalid`), a loopback literal, a
+ * documentation-range address and the cloud metadata address. Each one has to
+ * be refused by policy before any connection is attempted, so these checks
+ * prove the guard without contacting the destination: nothing here sends a
+ * request to loopback, to documentation space or to a metadata endpoint.
  */
 
 import { spawn } from 'node:child_process';
@@ -255,12 +260,16 @@ async function main() {
     let streamText = '';
     const streamReader = streamed.body?.getReader();
     const streamDecoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await streamReader.read();
-      if (done) break;
-      const chunkText = streamDecoder.decode(value, { stream: true });
-      streamText += chunkText;
-      streamChunks.push({ at: Date.now() - streamStartedAt, text: chunkText });
+    if (!streamReader) {
+      assert('the stream body is readable', false, `HTTP ${streamed.status} returned no body`);
+    } else {
+      for (;;) {
+        const { done, value } = await streamReader.read();
+        if (done) break;
+        const chunkText = streamDecoder.decode(value, { stream: true });
+        streamText += chunkText;
+        streamChunks.push({ at: Date.now() - streamStartedAt, text: chunkText });
+      }
     }
     assert(
       'the stream is delivered completely',
@@ -278,6 +287,18 @@ async function main() {
         Boolean(firstStreamChunk) &&
         !firstStreamChunk.text.includes('[DONE]'),
       `${streamChunks.length} chunk(s): ${JSON.stringify(streamChunks.map((chunk) => chunk.at))}`,
+    );
+    // A chunk count alone can be produced by a proxy that flushes its buffer in
+    // two writes. The mock writes its five words 60 ms apart, so a forwarding
+    // proxy lets at least 120 ms elapse between the first and the last chunk;
+    // timers cannot fire materially earlier than their delay, which keeps this
+    // lower bound deterministic rather than flaky.
+    const firstChunkAt = firstStreamChunk?.at ?? 0;
+    const lastChunkAt = streamChunks.length > 0 ? streamChunks[streamChunks.length - 1].at : 0;
+    assert(
+      'the stream arrives over time, not in one flush',
+      streamChunks.length >= 2 && lastChunkAt - firstChunkAt >= 120,
+      `first chunk at ${firstChunkAt} ms, last chunk at ${lastChunkAt} ms`,
     );
     process.stdout.write(
       `       streaming chunks: ${streamChunks.map((chunk) => chunk.at).join(', ')} ms\n`,
@@ -785,6 +806,46 @@ async function main() {
         /resolve|could not be reached/i.test(String(blockedWebBody.content)),
       `HTTP ${blockedWebChat.status}: ${JSON.stringify(blockedWebBody).slice(0, 400)}`,
     );
+
+    // 10c-bis. The retrieval guard itself: each destination below has to be
+    // refused by policy before a socket is opened. No request is sent to these
+    // addresses; the assertions are about the refusal, not about reachability.
+    const refusedDestinations = [
+      { url: 'http://127.0.0.1/', name: 'loopback' },
+      { url: 'http://192.0.2.1/', name: 'documentation-range' },
+      { url: 'http://169.254.169.254/latest/meta-data/', name: 'link-local metadata' },
+    ];
+    for (const destination of refusedDestinations) {
+      const refused = await post(base, '/api/tools/chat', {
+        profileId: 'integration-tools',
+        conversationId: `integration-web-refusal-${destination.name.replace(/\s+/g, '-')}`,
+        baseUrl: upstreamUrl,
+        apiKey: API_KEY,
+        model: 'mock-model',
+        messages: [{ role: 'user', content: `open url: ${destination.url}` }],
+        params: { maxTokens: 128, temperature: 0, topP: 1 },
+        timeoutMs: 20_000,
+      });
+      const refusedBody = await refused.json();
+      const refusedTrace = refusedBody.toolTrace?.find((entry) => entry.toolName === 'web_open');
+      // The exact policy message is pinned, and the transport message is
+      // excluded. A connection error also contains no "refused" wording, but a
+      // loose /refus/i match would accept any future message that happens to
+      // carry the word; pinning both sides keeps a transport failure from ever
+      // standing in for a policy refusal.
+      const policyRefusal = 'Private, link-local, loopback, and reserved IP addresses are refused.';
+      const transportFailure = 'The public web destination could not be reached.';
+      const refusedContent = String(refusedBody.content);
+      assert(
+        `web_open refuses a ${destination.name} destination by policy without contacting it`,
+        refused.status === 200 &&
+          refusedTrace?.status === 'failed' &&
+          refusedContent.includes(policyRefusal) &&
+          !refusedContent.includes(transportFailure) &&
+          !/could not be reached/i.test(refusedContent),
+        `HTTP ${refused.status}: ${JSON.stringify(refusedBody).slice(0, 300)}`,
+      );
+    }
 
     const clearToolFiles = await fetch(`${base}/api/tools/files?conversationId=integration-files-tools`, { method: 'DELETE' });
     assert('the tool file vault can be cleared', clearToolFiles.status === 200, `HTTP ${clearToolFiles.status}`);

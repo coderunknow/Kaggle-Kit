@@ -187,4 +187,17 @@ test('uploads a real CSV and reads it through the real tool loop', async ({ page
   await expect(timeline.getByText('files_read')).toBeVisible();
   await expect(timeline.getByText(/budget\.csv/).first()).toBeVisible();
   await expect(page.getByText(/Tool result received/)).toBeVisible();
+
+  // Activity and a generic notice also appear when `files_read` failed or
+  // returned the wrong file. Two assertions tie the rendered page to the exact
+  // uploaded bytes:
+  //  - the tool summary reports the fixture's length (`csv.length`), which only
+  //    holds when the vault read this file completely;
+  //  - the mock model echoes the beginning of the tool result into its answer,
+  //    and the CSV body starts well inside that window, so a distinctive row
+  //    proves the file content itself reached the transcript.
+  await expect(
+    timeline.getByText(new RegExp(`budget\\.csv: ${csv.length} extracted characters`)),
+  ).toBeVisible();
+  await expect(page.getByText(/marketing,800/).first()).toBeVisible();
 });

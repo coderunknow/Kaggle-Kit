@@ -11,9 +11,14 @@ import type { OpenAIToolCall } from './types';
 
 /**
  * Machine codes the local proxy may attach to a terminal SSE error event.
- * The browser derives the `ApiError.kind` from this fixed table and never from
- * free text, so an upstream (untrusted) error payload cannot make a broken
- * connection look like a request timeout.
+ *
+ * The table alone is *not* a trust boundary: the proxy forwards complete
+ * upstream event blocks verbatim, so an upstream server can also send an
+ * `error` object whose `code` is one of these keys. Classification therefore
+ * requires proof of origin, not just a known code (see
+ * `PROXY_STREAM_NONCE_HEADER` and `extractDelta`). Without that proof the
+ * payload is an ordinary upstream error and the browser reports it as an
+ * inference failure.
  */
 export const PROXY_STREAM_ERROR_KINDS = {
   stream_timeout: 'timeout',
@@ -23,6 +28,19 @@ export const PROXY_STREAM_ERROR_KINDS = {
 } as const satisfies Record<string, ApiErrorKind>;
 
 export type ProxyStreamErrorCode = keyof typeof PROXY_STREAM_ERROR_KINDS;
+
+/**
+ * Response header carrying the random marker the proxy generated for *this*
+ * streaming response.
+ *
+ * The proxy writes terminal error events itself, but it also forwards upstream
+ * bytes unchanged. A code in the fixed table is only trusted when the same
+ * event carries this per-response nonce: the upstream never receives the
+ * value, so it cannot reproduce it. The header is read from the same-origin
+ * response the browser is already consuming, which is why no CORS exposure is
+ * needed; a cross-origin deployment would have to expose it explicitly.
+ */
+export const PROXY_STREAM_NONCE_HEADER = 'x-kaggle-kit-stream-nonce';
 
 /**
  * The largest number of UTF-8 bytes a single SSE event may have. An event is
@@ -256,14 +274,25 @@ export interface StreamDelta {
    * answer is never mistaken for a finished one.
    */
   error?: string;
-  /** Machine code of a proxy terminal error, when one was supplied. */
+  /** Machine code as reported in the event: proxy-generated *or* upstream text. */
   errorCode?: string;
-  /** Classification derived from `errorCode`, never from the message text. */
+  /**
+   * Classification derived from `errorCode`. It is only set when the event
+   * also proves it came from this proxy (per-response nonce), never from the
+   * message text and never from a bare code.
+   */
   errorKind?: ApiErrorKind;
 }
 
-/** Extract the delta payload of an OpenAI-compatible SSE chunk. */
-export function extractDelta(event: SseEvent): StreamDelta {
+/**
+ * Extract the delta payload of an OpenAI-compatible SSE chunk.
+ *
+ * `trustedNonce` is the marker from `PROXY_STREAM_NONCE_HEADER` of the response
+ * being read. A known code without that exact marker stays unclassified, so an
+ * upstream that sends `{"error":{"code":"stream_timeout"}}` cannot make the
+ * browser claim the proxy timed out.
+ */
+export function extractDelta(event: SseEvent, trustedNonce?: string): StreamDelta {
   if (event.data === '[DONE]') return { finishReason: 'stop' };
 
   let payload: {
@@ -280,7 +309,7 @@ export function extractDelta(event: SseEvent): StreamDelta {
       };
       finish_reason?: string | null;
     }[];
-    error?: { message?: string; code?: string } | string;
+    error?: { message?: string; code?: string; nonce?: string } | string;
   } | null;
 
   try {
@@ -295,7 +324,15 @@ export function extractDelta(event: SseEvent): StreamDelta {
     if (reportedError.trim()) return { error: reportedError };
   } else if (reportedError?.message) {
     const code = typeof reportedError.code === 'string' ? reportedError.code : undefined;
-    const known = code !== undefined
+    // Provenance first: a matching nonce means this event was written by the
+    // proxy for this response. The upstream never sees the value, so a known
+    // code that arrives with a missing, empty or different marker is still
+    // only an untrusted payload.
+    const trusted = typeof trustedNonce === 'string'
+      && trustedNonce.length > 0
+      && reportedError.nonce === trustedNonce;
+    const known = trusted
+      && code !== undefined
       && Object.prototype.hasOwnProperty.call(PROXY_STREAM_ERROR_KINDS, code);
     return {
       error: reportedError.message,

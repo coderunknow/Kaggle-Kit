@@ -2422,3 +2422,141 @@ After the corrected configuration loaded in CodeRabbit's in-progress review for 
 **Final PR #25 audit finding.** A focused regression test using a 2,000-character CJK excerpt and a 1,200-byte tool-output budget failed on the current PR head: the shrink loop treated byte excess as a Unicode-character count and reduced a fitting excerpt to the empty string. Replaced that estimate with a bounded binary search over code-point prefixes, checking each serialized UTF-8 payload against the byte budget. Added the failing regression test; it now verifies the excerpt remains nonempty, is marked truncated, and the complete JSON stays within the untrusted-output budget.
 
 **Validation.** Before the fix, `npx vitest run server/tools/executor.test.ts -t 'multibyte excerpt'` failed because `payload.excerpt` was empty. After the fix, `npx vitest run server/tools/executor.test.ts` passed all 23 tests. Exact-head full validation and GitHub checks are pending. No PR merge, tag, release, publication, or deployment was performed.
+
+---
+
+## 2026-10-25 – Solo-maintainer beta2 readiness remediation (post-merge audit follow-up)
+
+**User Intent.** Fix the findings that the PR #24 / PR #25 post-merge audit substantiated, strengthen the tests that were supposed to guard them, make the CodeRabbit configuration match its documented semantics, set up branch protection that fits a single maintainer without an independent reviewer, and open one evidence-backed fix PR. No merge, no tag, no release, no deployment, no rewrite of published history, and no second-approval process that cannot be satisfied.
+
+**Verified base.** `main` = `19ea1b74cf0807b60b1c8943cdaf5175d86b65cc` (re-verified at task start; tree `50de37f4…`), clean working tree, no open pull requests, no `v0.1.0-beta2` tag or release, no deployments, `main` unprotected.
+
+**Merge history of PR #24 / #25 (re-verified, not inferred from the audit).** `compare/2196778c…843a43b` reports `merge_base_commit = 2196778c`, `ahead_by 7`, `behind_by 0`: PR #24's head is a strict ancestor of PR #25's head, and PR #24's seven commits are a literal prefix of PR #25's fourteen (`git merge-base --is-ancestor` confirms this on a full, unshallowed clone). `tree(843a43b) == tree(19ea1b7) == 50de37f4…`, and `compare/2196778c…19ea1b7` contains only PR #25's later work, so no change from #24 was applied twice. PR #24 was marked merged at `09:24:10Z` with `merge_commit_sha` equal to its own head and no merge commit of its own: it flipped because its head had just become an ancestor of `main`. That mechanism is INFERRED from the merge-commit parents, the tree equality and the timeline event's `commit_id`; whether a merge command was also issued for #24 cannot be determined, because personal repositories expose no audit log for it.
+
+**Defects fixed.** All of them are in the single fix commit that introduces this entry; a log cannot contain the SHA of the commit that contains it, so the SHA is recorded in the pull request description and in the evidence entry appended after the push.
+1. Stream error provenance (`shared/api/stream.ts`, `server/app.ts`, `src/lib/gateway.ts`): the proxy forwards upstream event blocks verbatim, yet the browser classified any event whose `code` was in `PROXY_STREAM_ERROR_KINDS` as a proxy terminal error, so an upstream could claim a timeout or a user cancellation. The proxy now generates a random per-response nonce (`randomBytes(18)`, base64url), never sends it upstream, returns it in the `x-kaggle-kit-stream-nonce` header and includes it only in its own terminal error frames; `extractDelta` assigns `errorKind` only when the payload's nonce matches the nonce of the response being read. Missing, empty, wrong, non-string or header-less markers leave the payload unclassified (an inference failure). The misleading comment was corrected only after the behaviour and tests agreed.
+2. `.coderabbit.yaml`: `path_filters` gained the exact default-override pattern `**/package-lock.json` (a broad `**/*` does not override default ignored paths); the two comma-joined `path_instructions[].path` values became single brace globs `{docs/**,**/*.md}` and `{.github/workflows/**,package.json,package-lock.json,requirements*.txt}`; `auto_pause_after_reviewed_commits` is now `0`, which the configuration reference documents as "disable" rather than a fifth-commit pause. Rules checked against docs.coderabbit.ai on 2026-10-25.
+3. Release note (`docs/release-notes/0.1.0-beta2.md`): the compatibility claim no longer says the conversation format is unchanged. It now states that assistant messages may carry the optional `streamUnverified` field, that a missing field is treated as absent, that no migration is required, and it cites the tests that prove it. `{{SOURCE_SHA}}` is deliberately left unresolved and marked as such instead of inventing a release SHA.
+4. `tools/integration-check.mjs`: the header no longer claims loopback and documentation-address checks run by default without them existing — they now do run, through the real tool loop, and each is refused before any connection (no request reaches those addresses). The streaming check now also asserts the first-to-last chunk span (≥ 120 ms against the mock's 60 ms cadence) instead of only counting chunks, and fails explicitly when the response has no body instead of throwing a `TypeError`.
+5. Reliability of tests that were meant to guard the above: `server/tools/files.test.ts` asserts `extractedCharacters === MAX_EXTRACTED_CHARS` and `dataRows === 24_999` instead of `< MAX_EXTRACTED_CHARS`; the CRLF streaming test parses the forwarded frames and compares their content instead of counting transport chunks; `e2e/app.spec.ts` asserts the fixture's exact extracted length and a distinctive CSV row (`marketing,800`) that actually reaches the rendered transcript.
+6. `server/tools/calculator.ts`: one `TEMPERATURE_SCALES` table feeds both the validity bound and the conversion, and `ABSOLUTE_ZERO` replaces the hard-coded thresholds. `-459.67 °F = -273.15 °C`, `212 °F = 373.15 K` and the alias/degree-sign cases remain bit-exact.
+
+**Validation actually run (local, this commit's tree).** `npm run check` (typecheck, lint, Vitest) exit 0 with 52 files / 621 tests, up from a 52/614 baseline measured on `19ea1b7` immediately before any edit; `npm run build` exit 0; `npm run check:integration` 60/60 with one skipped opt-in public retrieval (the three new SSRF refusals and the new chunk-span assertion included); `npm run check:network` 61/61 including the real public `web_open` retrieval; `python3 -m unittest discover -s tools` 50/50 (10 new review-config tests); `python3 -m unittest discover -s notebooks` 105 run, 17 skipped (requests-dependent). Mutation checks, each reverted immediately: dropping the nonce gate failed 6 tests including the end-to-end forged-upstream case; restoring the comma-joined glob failed 2 review-config tests; scanning beyond the bounded text returned `dataRows = 49999`, which the old assertion accepted and the new one rejects; a 0 ms mock cadence failed the new span assertion (`first chunk at 7 ms, last chunk at 10 ms`) while the count-based check still passed.
+
+**Not run.** Playwright browser end-to-end execution (no Chromium in this environment: the new `marketing,800` and extracted-length assertions are CI-only evidence), Docker-backed `code_execute`, the Windows launcher, and any live model inference or live tool calling (no endpoint or credential exists). Hosted CI results and their exact SHA are appended in a separate evidence entry rather than asserted from the local tree.
+
+**Review.** Local self-review only. Kilo Code Review was `action_required` on the merged head because the account has no credits (`annotations_count: 0`), GitHub Copilot declined for lack of quota, and CodeRabbit's last substantive review covered `38c536b04` — the final merged commit `843a43b` was never reviewed, and its green `CodeRabbit` status is the string "Review skipped: manual review required for this OSS repository", not a pass. No independent reviewer is available, so this task does not claim one; the substitute is the recorded local evidence plus the mutation checks above, and the PR states plainly that the change is unreviewed by a second party.
+
+**Branch protection.** `main` is unprotected (`GET /branches/main` → `protected: false`, `rulesets` `[]`, `rules/branches/main` `[]`); the branch-protection detail endpoint returns HTTP 403 (`Resource not accessible by integration`) for the credential available here, which is a token-scope limitation rather than evidence that rules exist. This task attempted the solo-maintainer policy (pull request required, zero required approvals, the five CI checks, conversation resolution, no force-push, no deletion) and the outcome, including any refusal, is recorded in the PR description and the evidence entry.
+
+**Safety.** No merge, tag, release, asset upload, publication, deployment, force-push or history rewrite was performed; PR #24 and PR #25 were left closed and untouched, and no existing review thread was resolved or dismissed.
+
+---
+
+## 2026-10-25 – Evidence for the beta2 readiness fix (code commit 5c66841)
+
+**Code commit.** `5c66841d888ccaeea12e9c813bd51eecf7d58717` on `arena/73c56742-kaggle-kit`, one commit on top of `19ea1b74cf0807b60b1c8943cdaf5175d86b65cc`, opened as PR #26 (base `main`, head `arena/73c56742-kaggle-kit`). This entry is documentation only: it records the runs of that code commit, which existed before this text was written. The commit that contains *this* entry is verified separately and cannot be cited from inside itself.
+
+**Hosted CI on `5c66841` (exact head).** Both event runs completed with conclusion `success` and all five jobs green:
+
+| Run | Event | URL | Jobs |
+| --- | --- | --- | --- |
+| `40183275096` | `push` | https://github.com/coderunknow/Kaggle-Kit/actions/runs/40183275096 | typecheck, lint, test and build; Browser end-to-end; docker sandbox integration; notebook tests; windows launcher — all `success` |
+| `40183294559` | `pull_request` | https://github.com/coderunknow/Kaggle-Kit/actions/runs/40183294559 | same five jobs — all `success` (10:05:01Z–10:05:56Z) |
+
+The job names above are the display names reported by the API for this head, not the names from an older run. The `Browser end-to-end` job runs `npm run test:e2e` (Playwright, seven specs) and exits non-zero on any failure, so its success is the first verification of the new browser assertions (the fixture's extracted length and the `marketing,800` row) — those specs had never been executed locally in this environment. Limitation: the per-job log files are served from `productionresultssa4.blob.core.windows.net`, which this sandbox cannot reach, so the conclusions above are job-level results and the per-assertion output was not read.
+
+**Review on PR #26.** No independent review is available, and none is claimed. Kilo Code Review reports `action_required` with "Review could not start because the account has insufficient credits" and zero annotations. GitHub Copilot submitted a `COMMENTED` review whose entire body is "unable to review this pull request because the user who requested the review has insufficient remaining quota" — no findings, no inline comments. CodeRabbit's status for `5c66841` is `success` with the description "Review skipped: manual review required for this OSS repository", which indicates that the review was skipped and is not counted as a review. `reviewDecision` is empty. The substitute is the local evidence plus the mutation checks recorded in the previous entry; the pull request states plainly that the change is unreviewed by a second party.
+
+**Branch protection: not applied.** The solo-maintainer policy (pull request required, required approvals `0`, the five status checks above, conversation resolution required, force-push and deletion forbidden, no auto-merge) was attempted with `PUT /repos/coderunknow/Kaggle-Kit/branches/main/protection`. The API answered `403 Resource not accessible by integration`; the response header `X-Accepted-Github-Permissions: administration=write` (and `administration=read` on the `GET`) with an empty `X-OAuth-Scopes` shows the credential lacks the Administration permission for this repository. The state was re-read afterward and is unchanged: `GET /branches/main` → `protected: false`, `GET /rulesets` → `[]`, `GET /rules/branches/main` → `[]`. `main` is therefore still unprotected, and this task does not claim otherwise. The maintainer can apply the same policy by hand: repository Settings → Branches → Add branch protection rule for `main`, tick "Require a pull request before merging" with required approvals `0`, "Require status checks to pass before merging" with the five job names listed above (strict/up-to-date branch enabled), "Require conversation resolution before merging", and leave "Allow force pushes" and "Allow deletions" unticked; or send the same JSON body documented in PR #26 with a token that has Administration write.
+
+**Environment note.** A local, untracked `.git/hooks/commit-msg` in this sandbox appends `Co-authored-by: arena-agent <…>` to every commit. It is not part of the repository and adds no content, and the already-pushed commit was not rewritten to remove it, because rewriting published history is out of scope for this task.
+
+**Safety.** No merge, tag, release, asset upload, publication, deployment, force-push or history rewrite; PR #24 and PR #25 remain closed and untouched, and no review thread was resolved or dismissed.
+
+## 2026-10-25 – CodeRabbit audit of PR #26 and the response to it
+
+**Task.** The maintainer asked to wait for CodeRabbit's review to finish and
+then continue fixing whatever it reported. This entry records the review, the
+verification of each finding, what was changed, what was declined, and one
+in-place correction made inside the two previous entries.
+
+**Review received.** CodeRabbit submitted review `5642712311` on commit
+`68f96e2` at `2026-10-25T10:18:49Z` with state `COMMENTED`. The review profile
+was `assertive` and the run id was
+`55fd83fb-b112-4514-af80-f83d3ad8cd93`. It carried **no inline comments**. The
+review body held 16 grouped "additional comments"; 13 of them are `LGTM!`
+(`shared/api/stream.ts`, `server/app.ts`, `src/lib/gateway.ts`,
+`server/tools/calculator.ts`, `storage.test.ts`, `e2e/app.spec.ts`,
+`files.test.ts`, the beta2 release note, `DESIGN_LOG.md`, among others), and
+three are substantive. The repository status went from `pending` ("Review in
+progress", 10:11:49Z) to `success` at 10:19:02Z, so this review is a real
+review, not a skip. Kilo Code Review still reports `action_required`
+(`insufficient credits`), Qodo reports that its trial has ended, and GitHub
+Copilot reports `insufficient remaining quota` with zero comments; no second
+party reviewed the change and none is claimed here.
+
+**Finding 1 – accepted, and it found a real defect.**
+`tools/test_review_config.py:153-163` argued that generic minimatch excludes
+dot-prefixed paths by default while CodeRabbit does not document the matcher
+options used for `path_filters`, which made the then-current configuration
+undecidable. The finding was checked against npm `minimatch` directly:
+with `dot: false`, `**/*` matches **neither** `.github/workflows/ci.yml` **nor**
+`.coderabbit.yaml`, while `.github/workflows/**` and
+`{.github/workflows/**,package.json}` match under both `dot` modes. The
+previous `path_filters` list began with `**/*`, which means CI-workflow and
+review-configuration changes could have been silently dropped from review
+scope. The fix does not try to pick a matcher option: positive patterns are
+removed entirely and review scope is now defined by exclusions only, with the
+one documented exact default override that re-enables the npm lockfile,
+`**/package-lock.json`. No positive pattern means no narrowing, whatever
+matcher CodeRabbit uses. `tools/test_review_config.py` gained four guards:
+`test_no_filter_narrows_the_review_scope` (no filter may match ordinary source,
+documentation or workflow paths), `test_no_broad_include_is_used_as_a_stand_in_for_everything`
+(`**/*`, `**`, `*`, `*/**`, `**/**` are rejected), and
+`test_dot_prefixed_paths_are_reached_by_literal_segments` (the dot directory and
+the review-config file are named literally, and both are shown to match). The
+test count in this file went from 10 to 13, and the tools suite from 50 to 53.
+
+**Finding 2 – accepted as an assertion, declined as a code change.**
+`tools/integration-check.mjs:831-835` reported that the connection-error false
+positive is prevented. That describes existing correct behaviour rather than a
+defect: `server/tools/web.ts:186` maps transport errors to
+`The public web destination could not be reached.` with kind `provider`, and the
+policy branches at lines 96, 99 and 102 emit their own `… refused.` messages, so
+an `ECONNREFUSED` can never satisfy the old `/refus/i` check by accident. The
+loose regex was nevertheless tightened: the test now pins the exact policy
+message `Private, link-local, loopback, and reserved IP addresses are refused.`
+and asserts that `The public web destination could not be reached.` and the
+phrase `could not be reached` are absent, so a future transport failure cannot
+stand in for a policy refusal. No refusal logic in `web.ts` was rewritten.
+
+**Finding 3 – applied as wording only, with disclosure.**
+`AGENTS_LOG.md:2469` was a "Minor / unverified finding" asking for `which is a
+skip` → `which indicates that the review was skipped` and `afterwards` →
+`afterward` to satisfy an American-English check. No American-English linter
+exists in this repository (the only `afterwards` hit outside the logs is in
+`dist/`), so the item is cosmetic. It was applied anyway, because the
+replacement wording is more precise. `afterward` was used in `DESIGN_LOG.md`
+line ~2946 as well, for consistency.
+
+**Append-only exception, disclosed.** The two previous entries of this log and
+one entry of `DESIGN_LOG.md` are append-only, and this change edits text inside
+them: `AGENTS_LOG.md` had the two phrases above replaced, and `DESIGN_LOG.md`
+had `afterwards` replaced with `afterward` in the JSON-repair note. No line was
+added to or removed from either log by those edits (`git diff --numstat`:
+`2 2 AGENTS_LOG.md`, `1 1 DESIGN_LOG.md`), the meaning is unchanged, and the
+edits are recorded here so the histories stay auditable. From this entry
+forward, append-only applies again without exception.
+
+**Mutation check.** Restoring `- "**/*"` to `path_filters` fails both
+`test_no_broad_include_is_used_as_a_stand_in_for_everything`
+(`'**/*' unexpectedly found`) and `test_no_filter_narrows_the_review_scope`
+(`path filter '**/*' narrows the review scope because it matches
+'server/app.ts'`), and reverting the file restores 13/13 passing. A guard that
+cannot fail was not added.
+
+**Safety.** No merge, tag, release, asset upload, publication, deployment,
+force-push or history rewrite. No review thread was resolved or dismissed. The
+two commits already pushed (`5c66841`, `68f96e2`) were not amended, because CI
+runs and the pull-request body reference both; this response is a new commit.

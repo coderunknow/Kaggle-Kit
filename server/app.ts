@@ -9,13 +9,18 @@
  *  - verify streaming support before offering a streaming toggle
  */
 
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 
 import { ApiError, redactSecrets } from '../shared/api/errors';
-import { MAX_SSE_EVENT_BYTES, type ProxyStreamErrorCode } from '../shared/api/stream';
+import {
+  MAX_SSE_EVENT_BYTES,
+  PROXY_STREAM_NONCE_HEADER,
+  type ProxyStreamErrorCode,
+} from '../shared/api/stream';
 import { joinApiPath } from '../shared/api/url';
 import type { ChatCompletionRequestBody, ChatMessageInput } from '../shared/api/types';
 import { parseInferenceParams } from '../shared/api/validation';
@@ -599,11 +604,20 @@ export function createApp(options: AppOptions = {}): App {
       );
     }
 
+    // A terminal error written by this proxy has to be distinguishable from an
+    // error object the upstream wrote into its own stream, because both arrive
+    // as ordinary `data:` frames. The nonce is generated here, never sent
+    // upstream and never reused across responses, so an upstream cannot forge
+    // it; the browser only trusts a classification whose nonce matches this
+    // response's header.
+    const streamNonce = randomBytes(18).toString('base64url');
+
     response.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      [PROXY_STREAM_NONCE_HEADER]: streamNonce,
     });
 
     const failureFor = (): { code: ProxyStreamErrorCode; message: string } => {
@@ -640,7 +654,9 @@ export function createApp(options: AppOptions = {}): App {
       // dropped rather than emitted next to the error. No `[DONE]` or
       // `finish_reason` is sent: a failed generation must not look complete.
       pending = Buffer.alloc(0);
-      response.write(`data: ${JSON.stringify({ error: { code: reason.code, message: reason.message } })}\n\n`);
+      response.write(
+        `data: ${JSON.stringify({ error: { code: reason.code, message: reason.message, nonce: streamNonce } })}\n\n`,
+      );
     };
 
     const reader = upstream.body.getReader();

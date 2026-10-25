@@ -242,13 +242,13 @@ export function convert(value: number, from: string, to: string): { value: numbe
   }
   const source = normalizeUnit(from);
   const target = normalizeUnit(to);
-  if (['c', 'celsius', 'f', 'fahrenheit', 'k', 'kelvin'].includes(source) && ['c', 'celsius', 'f', 'fahrenheit', 'k', 'kelvin'].includes(target)) {
-    const isFahrenheit = source === 'f' || source === 'fahrenheit';
-    const isKelvin = source === 'k' || source === 'kelvin';
-    if (value < (isFahrenheit ? -459.67 : isKelvin ? 0 : -273.15)) {
+  const fromScale = temperatureScale(source);
+  const toScale = temperatureScale(target);
+  if (fromScale !== undefined && toScale !== undefined) {
+    if (value < ABSOLUTE_ZERO[fromScale]) {
       throw new CalculatorInputError('Temperature is below absolute zero.');
     }
-    return conversionResult(temperatureValue(value, source, target), from, to);
+    return conversionResult(temperatureValue(value, fromScale, toScale), from, to);
   }
   const fromUnit = UNITS[source];
   const toUnit = UNITS[target];
@@ -257,9 +257,33 @@ export function convert(value: number, from: string, to: string): { value: numbe
   return conversionResult(value * fromUnit.factor / toUnit.factor, from, to);
 }
 
-const CELSIUS_ABSOLUTE_ZERO = -273.15;
-const FAHRENHEIT_ABSOLUTE_ZERO = -459.67;
-const KELVIN_ABSOLUTE_ZERO = 0;
+/** Every accepted spelling of the three temperature scales. */
+const TEMPERATURE_SCALES = {
+  c: 'c', celsius: 'c',
+  f: 'f', fahrenheit: 'f',
+  k: 'k', kelvin: 'k',
+} as const satisfies Record<string, 'c' | 'f' | 'k'>;
+
+type TemperatureScale = (typeof TEMPERATURE_SCALES)[keyof typeof TEMPERATURE_SCALES];
+
+/** The defining absolute zero of each scale, in that scale's own unit. */
+const ABSOLUTE_ZERO: Record<TemperatureScale, number> = {
+  c: -273.15,
+  f: -459.67,
+  k: 0,
+};
+
+/**
+ * Resolve a unit name to its scale.
+ *
+ * One table feeds both the bound check and the conversion, so adding a spelling
+ * cannot make validation and conversion disagree about the same input.
+ */
+function temperatureScale(unit: string): TemperatureScale | undefined {
+  return Object.prototype.hasOwnProperty.call(TEMPERATURE_SCALES, unit)
+    ? TEMPERATURE_SCALES[unit as keyof typeof TEMPERATURE_SCALES]
+    : undefined;
+}
 
 /**
  * Temperature conversion between the four spellings of the three scales.
@@ -277,35 +301,26 @@ const KELVIN_ABSOLUTE_ZERO = 0;
  * subsequent °C -> K conversion accepts it instead of rejecting it as "below
  * absolute zero". Every other value still goes through the affine relation.
  */
-function temperatureValue(value: number, source: string, target: string): number {
-  const fromF = source === 'f' || source === 'fahrenheit';
-  const fromK = source === 'k' || source === 'kelvin';
-  const toF = target === 'f' || target === 'fahrenheit';
-  const toK = target === 'k' || target === 'kelvin';
-  if (!fromF && !fromK && !toF && !toK) return value; // C -> C (and the celsius aliases)
-  if (fromF && toF) return value;
-  if (fromK && toK) return value;
-  const absoluteZero =
-    (fromF && value === FAHRENHEIT_ABSOLUTE_ZERO) ||
-    (fromK && value === KELVIN_ABSOLUTE_ZERO) ||
-    (!fromF && !fromK && value === CELSIUS_ABSOLUTE_ZERO);
-  if (absoluteZero) {
-    return toF ? FAHRENHEIT_ABSOLUTE_ZERO : toK ? KELVIN_ABSOLUTE_ZERO : CELSIUS_ABSOLUTE_ZERO;
-  }
-  if (fromF) {
+function temperatureValue(value: number, from: TemperatureScale, to: TemperatureScale): number {
+  // Same scale (including every alias pair): the value is already exact.
+  if (from === to) return value;
+  // Absolute zero is a defining point of all three scales, so it maps directly
+  // between them and is never re-derived through the affine relations.
+  if (value === ABSOLUTE_ZERO[from]) return ABSOLUTE_ZERO[to];
+  if (from === 'f') {
     // Both Kelvin paths start from the defining 32 °F anchor. Going through
     // `(value + 459.67) * 5 / 9` instead leaves 212 °F at
     // 373.15000000000003 K, and `value * (9/5) - 459.67` leaves 273.15 K at
     // 31.999999999999943 °F: the shared Kelvin offset is not binary-exact.
     const celsius = (value - 32) * 5 / 9;
-    return toK ? celsius + 273.15 : celsius;
+    return to === 'k' ? celsius + 273.15 : celsius;
   }
-  if (fromK) {
+  if (from === 'k') {
     const celsius = value - 273.15;
-    return toF ? celsius * 9 / 5 + 32 : celsius;
+    return to === 'f' ? celsius * 9 / 5 + 32 : celsius;
   }
   // Celsius source.
-  return toF ? value * (9 / 5) + 32 : value + 273.15;
+  return to === 'f' ? value * (9 / 5) + 32 : value + 273.15;
 }
 
 function conversionResult(value: number, from: string, to: string) {

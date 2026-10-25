@@ -2943,7 +2943,7 @@ allowance exhausted).
 - A user preference may be gated but must stay reversible: disabling the
   control for an unverified preference traps the user in the notice.
 - Bounded output has to be bounded before serialization. Truncating a JSON
-  string afterwards produces invalid JSON and loses the field the model asked
+  string afterward produces invalid JSON and loses the field the model asked
   for.
 - Skipped checks are reported, not counted, and never silently dropped.
 
@@ -3310,3 +3310,92 @@ An applied configuration's review inventory is direct evidence of service-side f
 **Decision.** `files_analyze` output limits are byte limits, but excerpt slicing uses Unicode code points. Subtracting the excess UTF-8 byte count directly from the code-point count can over-shrink multibyte text and erase an excerpt that would fit. Use a binary search over prefix length, measuring each serialized payload's actual UTF-8 byte size, while preserving the complete JSON and truncation signal.
 
 **Evidence.** The regression test used 2,000 CJK characters under a 1,200-byte output limit and failed before the change with an empty excerpt. The targeted `server/tools/executor.test.ts` suite passed 23/23 after the fix, including the regression and existing size-boundary tests. Broader local/hosted checks on the resulting exact head remain pending.
+
+---
+
+## 2026-10-25 – Terminal stream errors need proof of origin, not just a code
+
+### User Intent
+
+Close the correctness gap behind the beta2 streaming-error classification: the browser could be made to report a request timeout or a user cancellation that the proxy never produced, and the code comment claimed otherwise. Then bring the review configuration, the release note, the integration check and the weak assertions in line with what the code actually does, following the post-merge audit of PR #24 and PR #25.
+
+### Implementation History
+
+- **Trust boundary.** The proxy writes terminal errors *and* forwards complete upstream event blocks verbatim (`server/app.ts`, `response.write(pending.subarray(from, end))`). Both arrive as ordinary `data:` frames, so a known `code` is data, not evidence. Rejected alternatives: an `event: error` name (the upstream controls event names identically, and the existing browser tests already emitted that shape), a private header on the error frame (SSE has no per-frame headers), and removing the table (the classifications are genuinely useful and are the only way to say "your deadline expired" rather than "the connection broke").
+- **Chosen mechanism.** The proxy generates an 18-byte random nonce per streaming response (`randomBytes(18).toString('base64url')`), returns it in `x-kaggle-kit-stream-nonce`, and includes it in its own terminal error frames only. The upstream never receives it. `extractDelta(event, trustedNonce)` assigns `errorKind` only on an exact string match; the reported `errorCode`/message stay available as untrusted data. The browser reads the header from the same-origin response it is already consuming, so no CORS exposure is needed; a cross-origin deployment would have to expose the header explicitly, which is documented on the constant.
+- **Degenerate cases are safe by construction.** No header, an empty value, a non-string marker, or a marker from a different response all leave the payload unclassified, which surfaces as `inference` with the "partial answer was kept" hint. The proxy's own nonce cannot be guessed, and a nested `nonce` inside an upstream payload is simply compared and rejected.
+- **Tests.** Unit level (`shared/api/stream.test.ts`): kind derived only with the matching nonce; known codes without it stay unclassified; missing/empty/wrong/non-string markers; unknown codes still untrusted. Browser level (`src/lib/gateway.test.ts`): proxy frames with the header nonce classify as `timeout`/`aborted`; forged upstream frames (no nonce, guessed nonce) stay `inference`; a response without the header does not classify. End to end (`server/app.streaming.test.ts`): a new `forged-error-model` upstream writes a `stream_timeout` frame with a guessed nonce, the proxy forwards it unchanged, and the browser still reports `inference` while keeping the partial text.
+- **Supporting fixes in the same commit.** Lockfile review scope and single-glob path instructions in `.coderabbit.yaml` (with `tools/test_review_config.py` guarding both, using a dependency-free matcher cross-checked against minimatch 9.0.9); the release note's compatibility claim plus a storage test for the optional persisted `streamUnverified` field; three SSRF refusal checks and a chunk-span assertion in `tools/integration-check.mjs`; exact assertions in `server/tools/files.test.ts`; a parse-based CRLF test; byte-level assertions in `e2e/app.spec.ts`; one temperature alias table in `server/tools/calculator.ts`.
+
+### Decisions & Lessons
+
+- Forward-compatible additive fields do not belong in a "no format changed" sentence. The release note now names the field, the absent-field behaviour, and the tests that prove both, and it leaves `{{SOURCE_SHA}}` explicitly unresolved because no release is authorized yet.
+- A test that asserts a bound instead of the contract can pass on the very defect it describes: `dataRows < MAX_EXTRACTED_CHARS` accepts 49,999 rows from an unbounded scan, while the contract is 24,999 from the bounded text. The same failure mode produced the chunk-count assertion for a CRLF stream, which depends on transport coalescing rather than on framing; it now parses the frames.
+- `**/*` in `path_filters` is not a lockfile override, and a comma-joined `path` is not a glob. Both were fixed at the source of truth (default patterns, minimatch) and pinned by a test that fails on the exact regression.
+- Green status checks are not review evidence. Kilo has no credits, Copilot has no quota, and CodeRabbit's last reviewed SHA was `38c536b04`; `843a43b` carries a *skipped* review reported as `success`. This work therefore claims no independent review, and the branch-protection policy for this repository must not require approvals that a single maintainer cannot obtain.
+- The merge bookkeeping of PR #24 is explained by ancestry, not by timestamps: its head was already in `main` when #25 landed, and its own "merge" produced no commit and no tree change. Recorded in `AGENTS_LOG.md` with the evidence and the parts that remain unknown.
+
+## 2026-10-25 – Review scope is defined by exclusions only
+
+### Context
+
+`reviews.path_filters` in `.coderabbit.yaml` had started with the positive glob
+`**/*`, added so that the npm lockfile would not stay excluded by CodeRabbit's
+default `!**/package-lock.json`. CodeRabbit's audit of commit `68f96e2`
+(`tools/test_review_config.py:153-163`) pointed out that generic minimatch
+excludes dot-prefixed paths by default and that CodeRabbit's documentation does
+not state which matcher options it applies to `path_filters`, so the effect of
+that glob could not be decided from the documentation.
+
+### What the matcher actually does
+
+Checked against npm `minimatch` directly, in both `dot` modes:
+
+- `**/*` with `dot: false` matches **neither** `.github/workflows/ci.yml` **nor**
+  `.coderabbit.yaml`.
+- `**/*` with `dot: true` matches both.
+- `.github/workflows/**` and `{.github/workflows/**,package.json}` match
+  `.github/workflows/ci.yml` under both modes, and `**/package-lock.json`
+  matches `package-lock.json` under both.
+
+So a positive `**/*` is either redundant or harmful depending on an option that
+the documentation never states. The two outcomes are "reviewed as intended" and
+"CI workflows and the review configuration itself are silently dropped from
+review scope", and the configuration cannot tell which one it gets.
+
+### Decision
+
+Positive patterns are removed from `path_filters`. The list now holds a single
+entry, `**/package-lock.json`, which is an exact default override and therefore
+exempt from narrowing, and review scope is otherwise defined by exclusions only.
+With no positive pattern there is nothing to narrow, so the matcher's `dot`
+option no longer changes which files are reviewed.
+
+### Rejected alternatives
+
+- **Add the dot directories explicitly** (`.github/**`, `.coderabbit.yaml`,
+  …). This only works if positive patterns behave as an allow-list over an
+  unknown default, and it needs maintenance for every new dot directory. It also
+  cannot be verified without the same matcher knowledge the finding says is
+  missing.
+- **Switch to `dot: true`**. Not exposed by CodeRabbit's configuration schema.
+- **Keep `**/*` and document the risk.** The configuration would still narrow
+  review on the matcher's default options, and the only mitigation would be a
+  comment nobody reads at review time.
+
+### Tests
+
+`tools/test_review_config.py` gained three guards that make the class of defect
+fail loudly rather than silently: no filter may match ordinary source,
+documentation or workflow paths; no broad include (`**/*`, `**`, `*`, `*/**`,
+`**/**`) may appear in the list; and the dot directory plus the review-config
+file must be named literally in the instruction globs and must be shown to
+match. Restoring `- "**/*"` fails two of them, so the guards are not vacuous.
+
+### Lesson
+
+"Add a broad glob so nothing is missed" is not a safe default when the matcher
+is undocumented: a broad positive pattern in an allow-list-shaped field is a
+filter, and filters fail closed. Prefer the narrowest mechanism whose semantics
+are documented — here, no positive pattern at all plus one exact default
+override.

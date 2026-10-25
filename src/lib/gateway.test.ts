@@ -4,7 +4,10 @@ import { ApiError, withHint } from '../../shared/api/errors';
 import { DEFAULT_TOOL_PROFILE_SETTINGS } from '../../shared/tools/types';
 import { gateway } from './gateway';
 
-function eventStream(chunks: string[], options: { close?: boolean } = {}): Response {
+function eventStream(
+  chunks: string[],
+  options: { close?: boolean; headers?: Record<string, string> } = {},
+): Response {
   const encoder = new TextEncoder();
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -18,7 +21,7 @@ function eventStream(chunks: string[], options: { close?: boolean } = {}): Respo
   });
   return new Response(body, {
     status: 200,
-    headers: { 'Content-Type': 'text/event-stream' },
+    headers: { 'Content-Type': 'text/event-stream', ...options.headers },
   });
 }
 
@@ -223,14 +226,25 @@ describe('the browser gateway', () => {
 
 
 describe('F5 - structured terminal stream errors are classified, not guessed', () => {
-  const errorEvent = (error: Record<string, unknown>) =>
+  const NONCE = 'nonce-of-this-response';
+  const nonceHeader = { 'x-kaggle-kit-stream-nonce': NONCE };
+
+  /** A terminal error frame as the proxy writes it for this response. */
+  const proxyErrorEvent = (error: Record<string, unknown>) =>
+    `event: error\ndata: ${JSON.stringify({ error: { ...error, nonce: NONCE } })}\n\n`;
+
+  /** A terminal error frame as an untrusted upstream would write it. */
+  const upstreamErrorEvent = (error: Record<string, unknown>) =>
     `event: error\ndata: ${JSON.stringify({ error })}\n\n`;
 
-  async function readWith(error: Record<string, unknown>): Promise<ApiError> {
+  async function readWith(
+    frame: string,
+    options: { nonce?: string } = { nonce: NONCE },
+  ): Promise<ApiError> {
     vi.stubGlobal('fetch', vi.fn(async () => eventStream([
       'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
-      errorEvent(error),
-    ], { close: true })));
+      frame,
+    ], { close: true, headers: options.nonce === undefined ? {} : nonceHeader })));
     const deltas: string[] = [];
     const caught = await gateway
       .chat(REQUEST, { callbacks: { onDelta: (delta) => deltas.push(delta.content ?? '') } })
@@ -241,10 +255,10 @@ describe('F5 - structured terminal stream errors are classified, not guessed', (
   }
 
   it('classifies a proxy stream_timeout as a timeout with the timeout hint', async () => {
-    const error = await readWith({
+    const error = await readWith(proxyErrorEvent({
       code: 'stream_timeout',
       message: 'The generation exceeded its request timeout (400 ms). The answer is incomplete.',
-    });
+    }));
     expect(error.kind).toBe('timeout');
     expect(error.message).toMatch(/request timeout/i);
     expect(error.message).toMatch(/incomplete/i);
@@ -252,29 +266,62 @@ describe('F5 - structured terminal stream errors are classified, not guessed', (
   });
 
   it('does not classify other stream failures as timeouts', async () => {
-    const upstream = await readWith({
+    const upstream = await readWith(proxyErrorEvent({
       code: 'upstream_stream_failed',
       message: 'The upstream connection failed while the answer was streamed.',
-    });
+    }));
     expect(upstream.kind).toBe('inference');
     expect(upstream.hint).toMatch(/partial answer was kept/i);
 
-    const plain = await readWith({ message: 'upstream connection lost' });
+    const plain = await readWith(proxyErrorEvent({ message: 'upstream connection lost' }));
     expect(plain.kind).toBe('inference');
 
-    const unknownCode = await readWith({ code: 'made_up_code', message: 'odd' });
+    const unknownCode = await readWith(proxyErrorEvent({ code: 'made_up_code', message: 'odd' }));
     expect(unknownCode.kind).toBe('inference');
   });
 
   it('ignores a kind supplied by an untrusted upstream error payload', async () => {
-    const spoofed = await readWith({ kind: 'timeout', message: 'not really a timeout' });
+    const spoofed = await readWith(upstreamErrorEvent({ kind: 'timeout', message: 'not really a timeout' }));
     expect(spoofed.kind).toBe('inference');
     expect(spoofed.hint).toBe(withHint('inference', 'The connection broke while the answer was streamed. The partial answer was kept; retry the request.'));
   });
 
   it('classifies a cancelled stream as aborted', async () => {
-    const cancelled = await readWith({ code: 'client_cancelled', message: 'The request was cancelled.' });
+    const cancelled = await readWith(proxyErrorEvent({ code: 'client_cancelled', message: 'The request was cancelled.' }));
     expect(cancelled.kind).toBe('aborted');
     expect(cancelled.hint).toBe(withHint('aborted'));
+  });
+
+  it('does not trust a proxy code that an upstream put into its own stream', async () => {
+    // The upstream can write any frame it likes; only the nonce proves origin.
+    const forgedTimeout = await readWith(upstreamErrorEvent({
+      code: 'stream_timeout',
+      message: 'The generation exceeded its request timeout (1 ms). The answer is incomplete.',
+    }));
+    expect(forgedTimeout.kind).toBe('inference');
+    expect(forgedTimeout.hint).toBe(withHint('inference', 'The connection broke while the answer was streamed. The partial answer was kept; retry the request.'));
+
+    const forgedCancel = await readWith(upstreamErrorEvent({
+      code: 'client_cancelled',
+      message: 'The request was cancelled.',
+    }));
+    // A wrong kind here would show "The request was cancelled." to a user who
+    // never cancelled.
+    expect(forgedCancel.kind).toBe('inference');
+
+    const guessedNonce = await readWith(upstreamErrorEvent({
+      code: 'stream_timeout',
+      message: 'guessed',
+      nonce: 'some-other-response',
+    }));
+    expect(guessedNonce.kind).toBe('inference');
+  });
+
+  it('does not classify a proxy-shaped error when the response carries no nonce header', async () => {
+    const error = await readWith(
+      proxyErrorEvent({ code: 'stream_timeout', message: 'unmarked' }),
+      { nonce: undefined },
+    );
+    expect(error.kind).toBe('inference');
   });
 });
