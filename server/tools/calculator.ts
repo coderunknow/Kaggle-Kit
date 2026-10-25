@@ -248,21 +248,40 @@ export function convert(value: number, from: string, to: string): { value: numbe
     if (value < (isFahrenheit ? -459.67 : isKelvin ? 0 : -273.15)) {
       throw new CalculatorInputError('Temperature is below absolute zero.');
     }
-    // Convert through Kelvin using offsets that preserve the exact physical
-    // lower bounds (for example, -459.67°F must become exactly 0 K).
-    const kelvin = isFahrenheit ? (value + 459.67) * (5 / 9) : isKelvin ? value : value + 273.15;
-    const converted = target === 'f' || target === 'fahrenheit'
-      ? kelvin * (9 / 5) - 459.67
-      : target === 'k' || target === 'kelvin'
-        ? kelvin
-        : kelvin - 273.15;
-    return conversionResult(converted, from, to);
+    return conversionResult(temperatureValue(value, source, target), from, to);
   }
   const fromUnit = UNITS[source];
   const toUnit = UNITS[target];
   if (!fromUnit || !toUnit) throw new CalculatorInputError(`Unsupported conversion unit. Supported sets: length, mass, time, volume, speed, and temperature.`);
   if (fromUnit.category !== toUnit.category) throw new CalculatorInputError(`Cannot convert ${fromUnit.category} to ${toUnit.category}.`);
   return conversionResult(value * fromUnit.factor / toUnit.factor, from, to);
+}
+
+/**
+ * Temperature conversion between the four spellings of the three scales.
+ *
+ * Each pair uses the defining two-point relation of its scales instead of a
+ * shared path through Kelvin: 32 °F -> °C and 212 °F -> °C are then exactly 0
+ * and 100, and 100 °C -> °F is exactly 212, rather than 5.68e-14, 100.00000000000006
+ * and 211.99999999999994. The Kelvin pairs keep their exact offsets, so
+ * -459.67 °F -> K and 0 K -> °F stay exact as well.
+ */
+function temperatureValue(value: number, source: string, target: string): number {
+  const fromF = source === 'f' || source === 'fahrenheit';
+  const fromK = source === 'k' || source === 'kelvin';
+  const toF = target === 'f' || target === 'fahrenheit';
+  const toK = target === 'k' || target === 'kelvin';
+  if (!fromF && !fromK && !toF && !toK) return value; // C -> C (and the celsius aliases)
+  if (fromF && toF) return value;
+  if (fromK && toK) return value;
+  if (fromF) {
+    return toK ? (value + 459.67) * (5 / 9) : (value - 32) * (5 / 9);
+  }
+  if (fromK) {
+    return toF ? value * (9 / 5) - 459.67 : value - 273.15;
+  }
+  // Celsius source.
+  return toF ? value * (9 / 5) + 32 : value + 273.15;
 }
 
 function conversionResult(value: number, from: string, to: string) {

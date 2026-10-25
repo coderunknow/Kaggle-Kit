@@ -58,3 +58,62 @@ describe('conversation-scoped upload vault', () => {
     expect(() => vault.read('conv', file.id)).toThrow(/unavailable/i);
   });
 });
+
+describe('bounded file analysis', () => {
+  const csv = 'department,amount,owner\nengineering,1200,ana\nmarketing,800,bo\nsupport,400,cy\n';
+
+  it('reports deterministic CSV structure and literal keyword matches', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'budget.csv',
+      mediaType: 'text/csv',
+      bytes: new TextEncoder().encode(csv),
+      conversationId: 'conv-analyze',
+    });
+
+    const analysis = vault.analyze('conv-analyze', file.id, 'How much budget does marketing have?');
+
+    expect(analysis.file).toEqual(file);
+    expect(analysis.question).toBe('How much budget does marketing have?');
+    expect(analysis.structure).toMatchObject({
+      mediaType: 'text/csv',
+      lines: 4,
+      csv: { columns: 3, dataRows: 3 },
+    });
+    expect(analysis.matches).toEqual([{ line: 3, text: 'marketing,800,bo' }]);
+    expect(analysis.excerpt.split('\n')[0]).toBe('department,amount,owner');
+  });
+
+  it('reports the JSON top-level shape and quotes a numeric header safely', async () => {
+    const vault = new FileVault();
+    const quoted = await vault.upload({
+      name: 'quoted.csv', mediaType: 'text/csv',
+      bytes: new TextEncoder().encode('"a,b",c\n1,2\n'), conversationId: 'conv-json',
+    });
+    expect(vault.analyze('conv-json', quoted.id, 'columns').structure.csv).toEqual({ columns: 2, dataRows: 1 });
+
+    const json = await vault.upload({
+      name: 'data.json', mediaType: 'application/json',
+      bytes: new TextEncoder().encode('{"alpha":1,"beta":[2,3]}'), conversationId: 'conv-json',
+    });
+    expect(vault.analyze('conv-json', json.id, 'beta').structure.json).toEqual({ topLevel: 'object', entries: 2 });
+  });
+
+  it('bounds the excerpt and refuses an empty question, a foreign file and an oversized question', async () => {
+    const vault = new FileVault();
+    const file = await vault.upload({
+      name: 'lines.txt', mediaType: 'text/plain',
+      bytes: new TextEncoder().encode(Array.from({ length: 300 }, (_, index) => `line ${index + 1}`).join('\n')),
+      conversationId: 'conv-bounds',
+    });
+
+    expect(() => vault.analyze('conv-bounds', file.id, '   ')).toThrow(/question/i);
+    expect(() => vault.analyze('conv-bounds', file.id, 'x'.repeat(501))).toThrow(/500/);
+    expect(() => vault.analyze('other', file.id, 'line')).toThrow(/unavailable/i);
+
+    const window = vault.analyze('conv-bounds', file.id, '250', { startLine: 200, maxLines: 10 });
+    expect(window.excerpt.split('\n')).toHaveLength(10);
+    expect(window.excerpt.split('\n')[0]).toBe('line 200');
+    expect(window.matches).toEqual([{ line: 250, text: 'line 250' }]);
+  });
+});

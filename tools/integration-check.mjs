@@ -217,6 +217,7 @@ async function main() {
     const probeBody = await probe.json();
     assert('the streaming probe succeeds', probe.status === 200 && probeBody.supported === true, JSON.stringify(probeBody));
 
+    const streamStartedAt = Date.now();
     const streamed = await post(base, '/api/proxy/chat', {
       baseUrl: upstreamUrl,
       apiKey: API_KEY,
@@ -225,11 +226,39 @@ async function main() {
       params: { stream: true, maxTokens: 32 },
       timeoutMs: 10_000,
     });
-    const streamText = await streamed.text();
+    // Read the body incrementally: reading it with .text() proves only that
+    // one HTTP response arrived, which a buffering proxy would also produce.
+    const streamChunks = [];
+    let streamText = '';
+    const streamReader = streamed.body?.getReader();
+    const streamDecoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await streamReader.read();
+      if (done) break;
+      const chunkText = streamDecoder.decode(value, { stream: true });
+      streamText += chunkText;
+      streamChunks.push({ at: Date.now() - streamStartedAt, text: chunkText });
+    }
     assert(
       'the stream is delivered completely',
       streamed.status === 200 && streamText.includes('data: ') && streamText.includes('[DONE]'),
       `HTTP ${streamed.status}: ${streamText.slice(0, 200)}`,
+    );
+    // The mock writes its five words 60 ms apart, so a forwarding proxy lets
+    // the client see the first word long before [DONE] arrives.
+    const firstStreamChunk = streamChunks[0];
+    const lastStreamChunk = streamChunks[streamChunks.length - 1];
+    assert(
+      'the stream is forwarded incrementally, not buffered',
+      streamChunks.length >= 2 &&
+        Boolean(firstStreamChunk) &&
+        !firstStreamChunk.text.includes('[DONE]') &&
+        Boolean(lastStreamChunk) &&
+        firstStreamChunk.at < lastStreamChunk.at,
+      `${streamChunks.length} chunk(s): ${JSON.stringify(streamChunks.map((chunk) => chunk.at))}`,
+    );
+    process.stdout.write(
+      `       streaming chunks: ${streamChunks.map((chunk) => chunk.at).join(', ')} ms\n`,
     );
 
     // 7b. vLLM-style reasoning stays a separate channel end to end: the
@@ -328,7 +357,16 @@ async function main() {
         profileId: 'integration-tools',
         settings: {
           enabled: true,
-          allowedTools: ['calculator_calculate', 'code_execute'],
+          allowedTools: [
+            'calculator_calculate',
+            'calculator_convert',
+            'diagnostics_check',
+            'code_execute',
+            'files_list',
+            'files_read',
+            'files_analyze',
+            'web_open',
+          ],
           limits: {
             maxRounds: 3,
             maxCalls: 8,
@@ -420,6 +458,254 @@ async function main() {
       'the API key is not echoed in the tool trace',
       !JSON.stringify(calculatorBody).includes(API_KEY),
       'the key appeared in the tool chat answer',
+    );
+
+    // The historical conversion errors are checked through the real tool loop:
+    // the trace records the exact arguments and the executor's own result, so
+    // the model's prose is not the evidence.
+    for (const [prompt, from, to, expected] of [
+      ['convert: 32 °F to °C', '°F', '°C', '0'],
+      ['convert: 100 °F to °C', '°F', '°C', '37.7777777778'],
+      ['convert: 100 km/h to mph', 'km/h', 'mph', '62.1371192237'],
+    ]) {
+      const converted = await post(base, '/api/tools/chat', {
+        profileId: 'integration-tools',
+        conversationId: 'integration-tools-conversation',
+        baseUrl: upstreamUrl,
+        apiKey: API_KEY,
+        model: 'mock-model',
+        messages: [{ role: 'user', content: prompt }],
+        params: { maxTokens: 128, temperature: 0, topP: 1 },
+        timeoutMs: 10_000,
+      });
+      const convertedBody = await converted.json();
+      const convertTrace = convertedBody.toolTrace?.find((entry) => entry.toolName === 'calculator_convert');
+      assert(
+        `calculator_convert is correct for "${prompt}"`,
+        converted.status === 200 &&
+          convertTrace?.status === 'succeeded' &&
+          convertTrace?.safeArguments?.from === from &&
+          convertTrace?.safeArguments?.to === to &&
+          String(convertTrace?.resultSummary ?? '').includes(expected),
+        `HTTP ${converted.status}: ${JSON.stringify(convertTrace ?? convertedBody).slice(0, 400)}`,
+      );
+    }
+
+    const belowZero = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'convert: -300 °C to K' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const belowZeroBody = await belowZero.json();
+    const belowZeroTrace = belowZeroBody.toolTrace?.find((entry) => entry.toolName === 'calculator_convert');
+    assert(
+      'a physically impossible conversion fails instead of returning a number',
+      belowZero.status === 200 &&
+        belowZeroTrace?.status === 'failed' &&
+        /absolute zero/i.test(String(belowZeroTrace?.error ?? belowZeroBody.content)),
+      `HTTP ${belowZero.status}: ${JSON.stringify(belowZeroTrace ?? belowZeroBody).slice(0, 400)}`,
+    );
+
+    // 10b. real uploads through the built backend, then real file reads and
+    // analyses through the tool loop. The model is scripted; the file vault,
+    // the extractors and the executor are the real ones.
+    const csv = 'department,amount\nengineering,1200\nmarketing,800\nsupport,400\n';
+    const upload = await post(base, '/api/tools/files/upload', {
+      conversationId: 'integration-files-tools',
+      name: 'budget.csv',
+      mediaType: 'text/csv',
+      contentBase64: Buffer.from(csv, 'utf8').toString('base64'),
+    });
+    const uploadBody = await upload.json();
+    const fileId = uploadBody.file?.id;
+    assert(
+      'a real CSV upload returns a usable file ID and exact metadata',
+      upload.status === 201 &&
+        typeof fileId === 'string' &&
+        uploadBody.file.name === 'budget.csv' &&
+        uploadBody.file.size === Buffer.byteLength(csv) &&
+        uploadBody.file.extractedCharacters === csv.length,
+      `HTTP ${upload.status}: ${JSON.stringify(uploadBody).slice(0, 300)}`,
+    );
+
+    const listed = await fetch(`${base}/api/tools/files?conversationId=integration-files-tools`);
+    const listedBody = await listed.json();
+    assert(
+      'the uploaded file is listed for its conversation only',
+      listed.status === 200 && listedBody.files?.some((file) => file.id === fileId),
+      JSON.stringify(listedBody).slice(0, 200),
+    );
+
+    const readChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-files-tools',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: `read file: ${fileId}` }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const readBody = await readChat.json();
+    assert(
+      'files_read returns the real uploaded bytes, not a summary of them',
+      readChat.status === 200 &&
+        readBody.status === 'complete' &&
+        readBody.toolTrace?.some(
+          (entry) => entry.toolName === 'files_read' && entry.status === 'succeeded' && entry.safeArguments?.file_id === fileId,
+        ) &&
+        String(readBody.content).includes('marketing,800'),
+      `HTTP ${readChat.status}: ${JSON.stringify(readBody).slice(0, 400)}`,
+    );
+
+    const analyzeChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-files-tools',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: `analyze file: ${fileId} :: Which department has the highest amount?` }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const analyzeBody = await analyzeChat.json();
+    const analyzeTrace = analyzeBody.toolTrace?.find((entry) => entry.toolName === 'files_analyze');
+    assert(
+      'files_analyze reports the real structure and keyword matches',
+      analyzeChat.status === 200 &&
+        analyzeBody.status === 'complete' &&
+        analyzeTrace?.status === 'succeeded' &&
+        analyzeTrace?.safeArguments?.question === 'Which department has the highest amount?' &&
+        String(analyzeTrace?.resultSummary ?? '').includes('budget.csv') &&
+        String(analyzeBody.content).includes('budget.csv'),
+      `HTTP ${analyzeChat.status}: ${JSON.stringify(analyzeBody).slice(0, 400)}`,
+    );
+
+    const missingFileChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-files-tools',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'read file: 00000000-0000-4000-8000-000000000000' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 10_000,
+    });
+    const missingFileBody = await missingFileChat.json();
+    const missingTrace = missingFileBody.toolTrace?.find((entry) => entry.toolName === 'files_read');
+    assert(
+      'an unknown file ID fails the tool call instead of inventing content',
+      missingFileChat.status === 200 &&
+        missingTrace?.status === 'failed' &&
+        String(missingFileBody.content).toLowerCase().includes('unavailable') &&
+        !String(missingFileBody.content).includes('marketing,800'),
+      `HTTP ${missingFileChat.status}: ${JSON.stringify(missingFileBody).slice(0, 400)}`,
+    );
+
+    const emptyUpload = await post(base, '/api/tools/files/upload', {
+      conversationId: 'integration-files-tools', name: 'empty.txt', mediaType: 'text/plain', contentBase64: '',
+    });
+    assert(
+      'an empty upload is refused',
+      emptyUpload.status >= 400 && emptyUpload.status < 500,
+      `HTTP ${emptyUpload.status}: ${await emptyUpload.text()}`,
+    );
+    const unsupportedUpload = await post(base, '/api/tools/files/upload', {
+      conversationId: 'integration-files-tools',
+      name: 'payload.exe',
+      mediaType: 'application/octet-stream',
+      contentBase64: Buffer.from('MZ\u0000binary').toString('base64'),
+    });
+    assert(
+      'an unsupported file type is refused',
+      unsupportedUpload.status >= 400 && unsupportedUpload.status < 500,
+      `HTTP ${unsupportedUpload.status}: ${await unsupportedUpload.text()}`,
+    );
+    const oversizeUpload = await post(base, '/api/tools/files/upload', {
+      conversationId: 'integration-files-tools',
+      name: 'huge.txt',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.alloc(4 * 1024 * 1024 + 1, 0x61).toString('base64'),
+    });
+    assert(
+      'an upload above the 4 MiB limit is refused',
+      oversizeUpload.status >= 400 && oversizeUpload.status < 500,
+      `HTTP ${oversizeUpload.status}: ${await oversizeUpload.text()}`,
+    );
+
+    // 10c. web_open through the real tool loop and a real outbound fetch.
+    const webChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-web-tools',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'open url: https://pypi.org/pypi/requests/json' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 20_000,
+    });
+    const webBody = await webChat.json();
+    const webTrace = webBody.toolTrace?.find((entry) => entry.toolName === 'web_open');
+    assert(
+      'web_open retrieves a real public page through the tool loop',
+      webChat.status === 200 &&
+        webBody.status === 'complete' &&
+        webTrace?.status === 'succeeded' &&
+        JSON.stringify(webBody.sourceCitations ?? []).includes('pypi.org'),
+      `HTTP ${webChat.status}: ${JSON.stringify(webBody).slice(0, 400)}`,
+    );
+
+    const blockedWebChat = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-web-tools',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'open url: https://kaggle-kit-no-such-host.invalid/' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 20_000,
+    });
+    const blockedWebBody = await blockedWebChat.json();
+    const blockedWebTrace = blockedWebBody.toolTrace?.find((entry) => entry.toolName === 'web_open');
+    assert(
+      'an unreachable web destination fails the tool call with a reason',
+      blockedWebChat.status === 200 &&
+        blockedWebTrace?.status === 'failed' &&
+        /resolve|could not be reached/i.test(String(blockedWebBody.content)),
+      `HTTP ${blockedWebChat.status}: ${JSON.stringify(blockedWebBody).slice(0, 400)}`,
+    );
+
+    const clearToolFiles = await fetch(`${base}/api/tools/files?conversationId=integration-files-tools`, { method: 'DELETE' });
+    assert('the tool file vault can be cleared', clearToolFiles.status === 200, `HTTP ${clearToolFiles.status}`);
+
+    // 10d. diagnostics through the real tool loop: each claim keeps its own
+    // status, and streaming is not claimed from the earlier tool probe.
+    const diagnostics = await post(base, '/api/tools/chat', {
+      profileId: 'integration-tools',
+      conversationId: 'integration-tools-conversation',
+      baseUrl: upstreamUrl,
+      apiKey: API_KEY,
+      model: 'mock-model',
+      messages: [{ role: 'user', content: 'diagnostics: check this endpoint' }],
+      params: { maxTokens: 128, temperature: 0, topP: 1 },
+      timeoutMs: 30_000,
+    });
+    const diagnosticsBody = await diagnostics.json();
+    const diagnosticsTrace = diagnosticsBody.toolTrace?.find((entry) => entry.toolName === 'diagnostics_check');
+    assert(
+      'diagnostics_check separates inference from what it cannot verify',
+      diagnostics.status === 200 &&
+        diagnosticsTrace?.status === 'succeeded' &&
+        /inference verified/i.test(String(diagnosticsTrace?.resultSummary)) &&
+        /streaming verified earlier in this server session/i.test(String(diagnosticsTrace?.resultSummary)) &&
+        /not proof of proxy forwarding or browser rendering/i.test(String(diagnosticsTrace?.resultSummary)) &&
+        !/passed/i.test(String(diagnosticsTrace?.resultSummary)),
+      `HTTP ${diagnostics.status}: ${JSON.stringify(diagnosticsTrace ?? diagnosticsBody).slice(0, 400)}`,
     );
 
     // A protocol-violating upstream turn (tool-call data with the wrong

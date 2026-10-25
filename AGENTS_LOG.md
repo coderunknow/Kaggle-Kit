@@ -2053,3 +2053,92 @@ one-paragraph correction before tagging.
   it is release preparation only. The tag `v0.1.0-beta1` and its
   prerelease are created exclusively by the tag-triggered Release
   workflow from the validated final commit.
+
+## 2026-10-25 - v0.1.0-beta2 candidate: streaming evidence, exact conversions, real file analysis, claim-separated diagnostics
+
+**Task.** Build the next development version after `v0.1.0-beta1` on
+`arena/352dba56-kaggle-kit` by reproducing or establishing the absence of the
+reported defects, fixing root causes, and verifying the result. No merge, tag,
+release, deployment or publication.
+
+**Starting point.** Clean tree at
+`5f7e34c06602fa88d1a4907ee1e3692d336002cb`, equal to `origin/main`. Shallow
+clone; version history cross-checked against GitHub releases. Only tag/release
+`v0.1.0-beta1`; zero open pull requests. `npm ci` installed 287 packages. No
+Docker, no Playwright browser, no browser-CDN access, no model credentials.
+
+**What changed.**
+
+- `server/tools/calculator.ts`: temperature conversion uses the defining
+  two-point relations instead of a shared Kelvin offset, so `32 °F → 0 °C`,
+  `212 °F → 100 °C`, `100 °C → 212 °F`, `-459.67 °F → 0 K` are exact;
+  absolute-zero rejection, aliases, whitespace and decimal handling unchanged.
+- `server/tools/files.ts`: real `analyze()` (structure, literal keyword matches,
+  bounded excerpt, input and conversation bounds) plus a trailing-newline line
+  count fix.
+- `server/app.ts`: upload base64 validation is linear/canonical instead of a
+  backtracking regex (an oversized payload used to be a stack overflow → HTTP
+  500; it is now `400` with a reason); provider timeouts during streaming are
+  `504` with a timeout message instead of a `499` cancellation.
+- `server/proxy.ts`: the streaming probe records wire evidence (events, content
+  events, first-content latency, duration, verification time); the connection
+  test and the capability cache carry it, and a failed probe clears it.
+- `server/tools/executor.ts`: `files_analyze` implemented for real;
+  `diagnostics_check` reports a per-claim `verified` map, the streaming
+  evidence, and an explicit `notVerifiedByThisCheck` list.
+- `shared/api/requests.ts`, `shared/tools/catalog.ts`, `src/lib/gateway.ts`,
+  `src/components/InferenceSettings.tsx`: evidence plumbing and wording that
+  separates upstream delivery from proxy forwarding and browser rendering.
+- `shared/domain.ts`, `src/lib/storage.ts`, `src/state/useChat.ts`,
+  `src/components/MessageItem.tsx`: a saved `stream: true` preference is kept
+  (saving another parameter no longer clears it), the request stays gated on
+  this session's verification, and the transcript states when an answer was
+  requested without streaming (`streamUnverified`).
+- `docs/release-notes/0.1.0-beta2.md`, `package.json`, `package-lock.json`,
+  `shared/version.ts`, README: version and notes for `0.1.0-beta2`.
+- `tools/mock-upstream.mjs`: scripted file list/read/analyze, `web_open`,
+  `calculator_convert`, `diagnostics_check` calls and a slower streaming cadence
+  for the browser test.
+- `tools/integration-check.mjs`: incremental-chunk timing, real uploads,
+  `files_read`/`files_analyze`, invalid/empty/unsupported/oversized uploads,
+  `web_open` success and failure, per-conversion tool results, and diagnostics
+  claim separation.
+- Tests added: `server/tools/executor.test.ts`, `src/components/InferenceSettings.test.tsx`,
+  `src/components/App.streaming.real.test.tsx`; extended
+  `server/app.streaming.test.ts`, `server/app.test.ts`,
+  `server/tools/calculator.test.ts`, `server/tools/files.test.ts`,
+  `server/tools/chat.test.ts`; two browser specs in `e2e/app.spec.ts`
+  (incremental rendering; upload → `files_list` → `files_read`).
+
+**Verification (2026-10-25, local).**
+
+- `npm run check` (typecheck + lint + Vitest): exit 0, 52 files / 551 tests.
+- `npm run build`: exit 0; client entry 310.00 kB (94.61 kB gzip), bundled
+  server 5.7 MB.
+- `node tools/integration-check.mjs`: 50/50 checks. New evidence includes
+  streaming chunks at 66, 126, 186, 247, 306, 367 ms; a real CSV upload with
+  exact metadata; `files_read` returning `marketing,800`; `files_analyze`;
+  `web_open` citation for `pypi.org`; `calculator_convert` summaries
+  `0`, `37.7777777778`, `62.1371192237`; and a diagnostics summary that names
+  what it did not verify.
+- Regression sensitivity: disabling the controller's delta flush fails the new
+  real-transport streaming test; the pre-fix base64 regex makes the new upload
+  test fail with `expected 500 to be 400`.
+- `git diff --check`: clean.
+
+**Unresolved / environment-bound.**
+
+- Live model inference and live model tool calling: **BLOCKED** — no endpoint,
+  key or credential was provided. Scripted-model results are not model evidence.
+- Local browser E2E: **NOT RUN** — `npx playwright install chromium` fails with
+  `ECONNRESET` because the browser CDN is unreachable. The two new specs need
+  hosted CI.
+- `Docker`-backed `code_execute` and the Windows launcher: not run locally.
+- `web_open` works against reachable hosts; `api.github.com`, `github.com` and
+  `example.com` fail with `ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE` from Node in
+  this sandbox (system-CA `curl` succeeds), which is an environment restriction,
+  not the reported 12-second timeout.
+
+**Boundary confirmation.** No merge, tag, release, publish, deploy or workflow
+dispatch was performed. Only the existing branch `arena/352dba56-kaggle-kit` is
+pushed; the pull request is for review only.

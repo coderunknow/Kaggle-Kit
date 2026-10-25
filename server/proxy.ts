@@ -21,7 +21,7 @@ import { OpenAIClient } from '../shared/api/client';
 import { CONNECTION_STAGE_ORDER } from '../shared/connection';
 import { extractDelta, parseSseStream, ToolCallAccumulator } from '../shared/api/stream';
 import { buildChatCompletionBody } from '../shared/api/requests';
-import type { InferenceParams, ReasoningPolicy, ServerCapabilities } from '../shared/api/requests';
+import type { InferenceParams, ReasoningPolicy, ServerCapabilities, StreamingEvidence } from '../shared/api/requests';
 import { findCatalogEntryByModelId } from '../shared/model-catalog/catalog';
 import { neutralizeToolClaimsForOrdinaryChat } from '../shared/prompts/qwen';
 import type { ToolCallingCapability } from '../shared/tools/types';
@@ -55,6 +55,8 @@ export interface UpstreamTarget {
 interface CapabilityCacheEntry {
   streamingVerified: boolean;
   streamingCheckedAt: number;
+  /** What the last successful probe observed; cleared by a failed probe. */
+  streamingEvidence?: StreamingEvidence;
   reasoningEffortSupported: boolean;
   templateReasoningEffortSupported: boolean;
   propsCheckedAt: number;
@@ -410,11 +412,14 @@ export class ProxyService {
     }
 
     const capabilities = await this.detectCapabilities(baseUrl, apiKey, options.timeoutMs, modelId);
+    const streamingEvidence = capabilities.streamingEvidence;
     stages.push({
       stage: 'streaming',
       status: capabilities.streamingVerified ? 'ok' : 'not_run',
       message: capabilities.streamingVerified
-        ? 'Streaming was verified for this endpoint and credential earlier in this session.'
+        ? streamingEvidence
+          ? `Streaming was verified earlier in this server session (probe at ${streamingEvidence.verifiedAt}): ${streamingEvidence.contentEvents} content event(s), first after ${streamingEvidence.firstContentMs} ms. This is a capability result, not a step of this connection test.`
+          : 'Streaming was verified for this endpoint and credential earlier in this session. This is a capability result, not a step of this connection test.'
         : 'Not tested. Run "Verify streaming support" to check Server-Sent Events separately.',
     });
 
@@ -702,6 +707,7 @@ export class ProxyService {
     if (cached && now - cached.propsCheckedAt < STREAM_PROBE_TTL_MS) {
       return {
         streamingVerified: cached.streamingVerified,
+        ...(cached.streamingEvidence ? { streamingEvidence: cached.streamingEvidence } : {}),
         reasoningEffortSupported: cached.reasoningEffortSupported,
         templateReasoningEffortSupported: cached.templateReasoningEffortSupported,
         notes: [],
@@ -739,6 +745,7 @@ export class ProxyService {
     this.storeCapability(key, {
       streamingVerified: cached?.streamingVerified ?? false,
       streamingCheckedAt: cached?.streamingCheckedAt ?? 0,
+      ...(cached?.streamingEvidence ? { streamingEvidence: cached.streamingEvidence } : {}),
       reasoningEffortSupported,
       templateReasoningEffortSupported,
       propsCheckedAt: now,
@@ -746,6 +753,7 @@ export class ProxyService {
 
     return {
       streamingVerified: cached?.streamingVerified ?? false,
+      ...(cached?.streamingEvidence ? { streamingEvidence: cached.streamingEvidence } : {}),
       reasoningEffortSupported,
       templateReasoningEffortSupported,
       notes,
@@ -760,13 +768,19 @@ export class ProxyService {
   async probeStreaming(
     target: UpstreamTarget,
     options: { model?: string; timeoutMs: number },
-  ): Promise<{ supported: boolean; detail: string }> {
+  ): Promise<{ supported: boolean; detail: string; evidence?: StreamingEvidence }> {
     const { baseUrl, apiKey } = await this.resolveTarget(target);
     const key = this.capabilityKey(baseUrl, apiKey);
     const cached = this.capabilities.get(key);
 
     if (cached?.streamingVerified) {
-      return { supported: true, detail: 'Streaming was verified for this endpoint earlier.' };
+      return {
+        supported: true,
+        detail: cached.streamingEvidence
+          ? 'Streaming was verified for this endpoint earlier in this server session.'
+          : 'Streaming was verified for this endpoint earlier.',
+        ...(cached.streamingEvidence ? { evidence: cached.streamingEvidence } : {}),
+      };
     }
 
     let model = options.model?.trim() || '';
@@ -786,6 +800,7 @@ export class ProxyService {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(options.timeoutMs, 30_000));
+    const startedAt = Date.now();
 
     try {
       const headers: Record<string, string> = {
@@ -811,7 +826,7 @@ export class ProxyService {
       });
 
       if ([301, 302, 303, 307, 308].includes(response.status)) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return {
           supported: false,
           detail: `The endpoint answered the streaming probe with a redirect (HTTP ${response.status}).`,
@@ -820,13 +835,13 @@ export class ProxyService {
 
       if (!response.ok) {
         const detail = `The streaming probe returned HTTP ${response.status}.`;
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return { supported: false, detail };
       }
 
       const contentType = response.headers.get('content-type') ?? '';
       if (!contentType.toLowerCase().includes('text/event-stream')) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return {
           supported: false,
           detail: `The endpoint answered with content type "${contentType || 'unknown'}" instead of text/event-stream.`,
@@ -834,7 +849,7 @@ export class ProxyService {
       }
 
       if (!response.body) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return { supported: false, detail: 'The endpoint returned no response body.' };
       }
 
@@ -846,6 +861,8 @@ export class ProxyService {
       let finished = false;
       let streamError: string | undefined;
       let events = 0;
+      let contentEvents = 0;
+      let firstContentMs: number | undefined;
 
       try {
         for await (const event of parseSseStream(response.body, controller.signal)) {
@@ -860,8 +877,12 @@ export class ProxyService {
             streamError = delta.error;
             break;
           }
-          if (delta.content) characters += delta.content.length;
-          if (delta.reasoning) characters += delta.reasoning.length;
+          const carriedContent = (delta.content?.length ?? 0) + (delta.reasoning?.length ?? 0);
+          if (carriedContent > 0) {
+            characters += carriedContent;
+            contentEvents += 1;
+            if (firstContentMs === undefined) firstContentMs = Date.now() - startedAt;
+          }
           if (delta.finishReason) {
             finished = true;
             break;
@@ -874,12 +895,12 @@ export class ProxyService {
       }
 
       if (streamError) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return { supported: false, detail: redactSecrets(streamError, [apiKey]) };
       }
 
       if (characters === 0) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return {
           supported: false,
           detail: 'The event stream contained no answer text (keep-alive comments and empty deltas are not enough).',
@@ -887,7 +908,7 @@ export class ProxyService {
       }
 
       if (!finished) {
-        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+        this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
         return {
           supported: false,
           detail:
@@ -895,14 +916,28 @@ export class ProxyService {
         };
       }
 
-      this.storeCapability(key, { streamingVerified: true, streamingCheckedAt: Date.now() });
-      return {
-        supported: true,
-        detail: `The endpoint delivered ${characters} character(s) of a text/event-stream answer and ended it with a finish marker.`,
+      const durationMs = Math.max(0, Date.now() - startedAt);
+      const detail =
+        `The endpoint delivered ${characters} character(s) in ${contentEvents} content event(s) ` +
+        `(first after ${firstContentMs ?? durationMs} ms) over a text/event-stream response and ended it with a finish marker. ` +
+        'This verifies upstream delivery only; the browser rendering path is covered separately.';
+      const evidence: StreamingEvidence = {
+        verifiedAt: new Date().toISOString(),
+        events,
+        contentEvents,
+        firstContentMs: firstContentMs ?? durationMs,
+        durationMs,
+        detail,
       };
+      this.storeCapability(key, {
+        streamingVerified: true,
+        streamingCheckedAt: Date.now(),
+        streamingEvidence: evidence,
+      });
+      return { supported: true, detail, evidence };
     } catch (error) {
       const apiError = toApiError(error);
-      this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now() });
+      this.storeCapability(key, { streamingVerified: false, streamingCheckedAt: Date.now(), streamingEvidence: undefined });
       return { supported: false, detail: apiError.message };
     } finally {
       clearTimeout(timer);
@@ -913,6 +948,7 @@ export class ProxyService {
     const current = this.capabilities.get(key) ?? {
       streamingVerified: false,
       streamingCheckedAt: 0,
+      streamingEvidence: undefined,
       reasoningEffortSupported: false,
       templateReasoningEffortSupported: false,
       propsCheckedAt: 0,

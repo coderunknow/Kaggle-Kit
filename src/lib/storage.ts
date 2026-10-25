@@ -334,6 +334,7 @@ export function sanitizeStoredMessage(raw: unknown): ChatMessage | null {
     message.transport = value.transport;
   }
   if (value.streamFellBack === true) message.streamFellBack = true;
+  if (value.streamUnverified === true) message.streamUnverified = true;
   if (Array.isArray(value.toolTrace)) message.toolTrace = sanitizeStoredToolTrace(value.toolTrace);
   if (Array.isArray(value.sourceCitations)) message.sourceCitations = sanitizeSourceCitations(value.sourceCitations);
   if (Array.isArray(value.attachments)) message.attachments = sanitizeStoredAttachments(value.attachments);

@@ -11,7 +11,7 @@
  */
 
 import { ApiError } from '../../shared/api/errors';
-import type { ServerCapabilities } from '../../shared/api/requests';
+import type { ServerCapabilities, StreamingEvidence } from '../../shared/api/requests';
 import type { InferenceParams } from '../../shared/api/requests';
 import type { ChatCompletionResponse, ChatMessageInput } from '../../shared/api/types';
 import type { ConnectionTestResult } from '../../shared/domain';
@@ -155,8 +155,8 @@ export const gateway = {
   async probeStreaming(
     target: TargetRequest,
     signal?: AbortSignal,
-  ): Promise<{ supported: boolean; detail: string }> {
-    return requestJson<{ supported: boolean; detail: string }>(
+  ): Promise<{ supported: boolean; detail: string; evidence?: StreamingEvidence }> {
+    return requestJson<{ supported: boolean; detail: string; evidence?: StreamingEvidence }>(
       '/api/proxy/probe-stream',
       { ...target },
       signal,

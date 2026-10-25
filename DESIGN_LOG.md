@@ -2688,3 +2688,137 @@ test coverage; `server/http.test.ts` pins it. Behavior was already
 correct - the tests are regression guards, and the deep-bracket case
 guards against a future parser change turning a bad body into a process
 crash.
+
+## 2026-10-25 - v0.1.0-beta2: streaming evidence, exact conversions, real file analysis, claim-separated diagnostics
+
+### User Intent
+
+Continue the reliability work on `arena/352dba56-kaggle-kit` as the next
+development version after `v0.1.0-beta1`, without inventing model evidence:
+reproduce or establish the absence of each reported defect, fix the root cause,
+and prove the fix with deterministic tests, the built bundle and (where the
+environment allows) a real browser. Fix streaming visibility, the reported
+`calculator_convert` errors, `web_open` timeouts, unverified
+`files_read`/`files_analyze`, and diagnostics that overstated what was
+verified. No merge, tag, release, deployment or publication.
+
+### Baseline and Current GitHub State
+
+The branch was clean at `5f7e34c06602fa88d1a4907ee1e3692d336002cb`, identical
+to `origin/main`; the clone is shallow, so history was cross-checked against
+the GitHub releases and tags. `gh` is authenticated as `coderunknow`; the
+default branch is `main`; there are no open pull requests; the only tag and
+release is `v0.1.0-beta1` (2026-10-24). The last CI run on that commit
+(`40101554821`) passed all five jobs, but it predates every change below and is
+therefore not evidence for this candidate.
+
+Environment: Debian 12, Node.js v22.22.3, npm 10.9.8. No Docker daemon, no
+Playwright browser, and the browser CDN is unreachable from the sandbox
+(`npx playwright install chromium` ends in `ECONNRESET`). No model endpoint or
+credential exists, so live-model checks stay **BLOCKED**.
+
+### Findings and Fixes
+
+**A - streaming (reported: nothing visible until the answer completes).**
+The server path does not buffer: a raw Node client reading the real backend
+against a 120 ms upstream saw the first SSE bytes at 142 ms and the last at
+1343 ms (11 chunks, 504 bytes, `[DONE]` present), and the built-bundle harness
+logs `65, 125, 184, 245, 305, 366 ms`. A real-transport jsdom test (real
+`createApp` backend, real HTTP upstream that holds the answer open, real
+gateway/controller/reducer/render) shows the first delta and "Still writing…"
+while the upstream is still open. Disabling the controller's delta flush makes
+that test fail, so it is sensitive to buffering. Two application behaviours did
+explain the reported perception and are fixed:
+
+1. The browser only requests a stream after *this session* verified it, and the
+   transcript previously gave no reason when it did not. Messages now record
+   `streamUnverified` and the interface says the answer was requested without
+   streaming and how to verify it.
+2. Saving any inference parameter while unverified silently persisted
+   `stream: false`, discarding a saved preference. The preference is now kept,
+   the control explains that it is inactive until verification, and the request
+   preview still reflects what would actually be sent.
+
+A provider timeout during a streamed request was also reported as `499
+cancelled` because the server aborted its own upstream read; it is now a `504`
+with a timeout message, and the in-band error event says the answer is
+incomplete.
+
+**B - `calculator_convert`.** The historical `1036.566` and `345.52` do not
+reproduce on this source (`100 °F → 37.77777777777783 °C`, `100 km/h →
+62.1371192237334 mph`). The surviving defect was floating-point residue from
+converting every temperature through Kelvin (`32 °F → 5.68434188608e-14 °C`,
+`100 °C → 211.99999999999994 °F`). Temperature now uses the defining two-point
+relations (`32 °F = 0 °C`, `212 °F = 100 °C`, `-459.67 °F = 0 K`), so the
+scaling points are exact while `-40`, decimals, aliases, whitespace and the
+absolute-zero rejection keep their behaviour.
+
+**C - `web_open`.** Outbound fetching works: `https://pypi.org/project/requests/`
+returned 20 000 characters of `text/html` in 95 ms, `https://pypi.org/pypi/requests/json`
+in 19 ms and `https://registry.npmjs.org/left-pad` in 77 ms, both through the
+tool itself and through the built tool loop. `192.0.2.1`, loopback ports,
+`.invalid` hosts and a 404 are refused with reasons. `api.github.com`,
+`github.com` and `example.com` fail in Node in 15-40 ms with
+`ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE` (the sandbox terminates TLS with a CA
+that Node's bundled store does not contain; `curl`, which uses the system
+store, gets 200). That is an environment restriction, not the reported
+12-second timeout and not an application defect.
+
+**D - files.** `files_analyze` existed only as a catalog entry; it is now
+implemented: structure (lines, characters, CSV columns/data rows, JSON
+top-level shape), literal case-insensitive keyword matches, a bounded excerpt,
+and refusals for a foreign conversation, an empty or oversized question. A real
+4 MiB+1 upload previously crashed inside the base64 validation regular
+expression (`Maximum call stack size exceeded`, HTTP 500); validation is now
+linear and canonical, and the response is `400` with a reason. Upload →
+`files_read`/`files_analyze` was verified through the built backend's tool loop
+with exact CSV contents; an unknown file ID fails the call instead of inventing
+content; empty, unsupported and oversized uploads are refused.
+
+**E - diagnostics.** `diagnostics_check` now returns a per-claim `verified`
+map (reachability, authentication, model listing, inference, streaming,
+native tool calling, reasoning-effort parameter and template), the streaming
+evidence exactly as recorded, and an explicit `notVerifiedByThisCheck` list for
+proxy forwarding, browser rendering and actual tool execution. The summary
+states what was verified in this session and never reports a bare "passed";
+tests pin the cases where inference succeeds but streaming or tool calling were
+never verified.
+
+### Decisions and Lessons
+
+- Upstream event delivery, proxy forwarding and browser rendering stay three
+  separate claims. The probe records wire evidence; it does not claim the other
+  two, and the UI says so next to the badge.
+- A capability gate must not silently destroy a user preference. Keep the
+  preference, gate the request, and explain the gap in the transcript.
+- Multi-megabyte input must not go through a backtracking regular expression:
+  the failure mode is a stack overflow surfaced as HTTP 500, not a slow path.
+- Temperature scales have exact defining points; a single shared offset through
+  Kelvin is numerically worse than the pairwise relations even when both are
+  mathematically equivalent.
+- A scripted model proves the tool loop and the honest data flow, not real
+  model behaviour. Those claims remain blocked until credentials exist.
+
+### Local Verification (2026-10-25)
+
+- `npm ci`: exit 0, 287 packages.
+- `npm run check` (typecheck + lint + tests): exit 0; 52 files / 551 tests.
+- `npm run build`: exit 0 (client entry 310.00 kB / 94.61 kB gzip; bundled
+  server 5.7 MB).
+- `node tools/integration-check.mjs`: 50/50 checks, including the new
+  incremental-stream timing, real uploads, real `web_open`, per-conversion tool
+  results and the claim-separated diagnostics.
+- `git diff --check`: clean.
+- Browser E2E was **NOT RUN** locally: the Playwright Chromium download fails
+  with `ECONNRESET` (browser CDN unreachable). The two new browser specs must
+  be judged by hosted CI, not by this environment.
+- Live model inference and live tool calling were **BLOCKED**: no endpoint or
+  credential was provided.
+
+### Version Decision
+
+Prepare `0.1.0-beta2`, not `dev8`: semver orders `dev8` below the published
+`beta1`, so a `dev` label would misdescribe a candidate built on top of it.
+`package.json`, `package-lock.json`, `shared/version.ts`, this entry and
+`docs/release-notes/0.1.0-beta2.md` were updated together; no release policy was
+relaxed and no tag, release or publication was created.

@@ -205,8 +205,11 @@ export function useChat(): ChatController {
       const capabilities = state.capabilities[profile.id];
 
       // Streaming is only requested when this session verified it. The proxy
-      // verifies it again and enforces it server side.
-      const wantsStream = Boolean(profile.defaultParams.stream && capabilities?.streamingVerified);
+      // verifies it again and enforces it server side. A saved preference that
+      // this session cannot honor is reported instead of silently ignored.
+      const streamRequested = Boolean(profile.defaultParams.stream);
+      const wantsStream = Boolean(streamRequested && capabilities?.streamingVerified);
+      const streamUnverified = streamRequested && !capabilities?.streamingVerified;
       const configuredTools = profile.tools as ToolProfileSettings | undefined;
       const toolsSelected = Boolean(configuredTools?.enabled && effectiveToolSelection(configuredTools, conversationSettings).length > 0);
       const toolCallingVerified = capabilities?.toolCalling?.status === 'supported_verified';
@@ -330,6 +333,7 @@ export function useChat(): ChatController {
           usage: usage && Object.keys(usage).length > 0 ? usage : undefined,
           transport: result.streamed ? 'stream' : 'complete',
           streamFellBack,
+          streamUnverified: streamUnverified || undefined,
           toolNote,
           errorKind: undefined,
           errorMessage: undefined,
@@ -350,6 +354,7 @@ export function useChat(): ChatController {
           errorHint: aborted ? undefined : apiError?.hint,
           transport: receivedDelta ? 'stream' : undefined,
           streamFellBack,
+          streamUnverified: streamUnverified || undefined,
           toolNote,
         });
       } finally {

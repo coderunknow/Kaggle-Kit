@@ -24,7 +24,7 @@ browser  ──same origin──▶  local proxy backend  ──HTTP──▶  l
                             • verifies streaming support
 ```
 
-## v0.1.0-beta1 candidate status
+## v0.1.0-beta2 candidate status
 
 Guided connection setup, Basic/Advanced settings, an explicit reviewed
 keyless built-in grant, a **model catalog** (Qwen3.8-27B, Raon-1 mini
@@ -214,7 +214,7 @@ Provider availability, account terms and fees are separate from the local
 checks.
 
 See [docs/chat-interface.md](docs/chat-interface.md) and [docs/security.md](docs/security.md)
-for details, and [docs/release-notes/0.1.0-beta1.md](docs/release-notes/0.1.0-beta1.md)
+for details, and [docs/release-notes/0.1.0-beta2.md](docs/release-notes/0.1.0-beta2.md)
 for this beta candidate's changes and verification limits.
 
 ## Security model

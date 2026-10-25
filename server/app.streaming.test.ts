@@ -233,6 +233,72 @@ describe('the streaming lifecycle of the proxy', () => {
       request.end(payload);
     });
 
+  /** Collect the proxied stream with the arrival time of every chunk. */
+  const readStreamTimed = (
+    model: string,
+    timeoutMs = 20_000,
+  ) => new Promise<{ text: string; status: number; chunks: Array<{ at: number; text: string }> }>((resolve, reject) => {
+    const payload = JSON.stringify({
+      baseUrl: upstream.url,
+      apiKey: API_KEY,
+      model,
+      messages: [{ role: 'user', content: 'hi' }],
+      params: { stream: true, maxTokens: 64 },
+      timeoutMs,
+    });
+    const startedAt = Date.now();
+    const request = http.request(
+      `${baseUrl}/api/proxy/chat`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      },
+      (response) => {
+        let text = '';
+        const chunks: Array<{ at: number; text: string }> = [];
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          text += chunk;
+          chunks.push({ at: Date.now() - startedAt, text: chunk });
+        });
+        response.on('end', () => resolve({ text, status: response.statusCode ?? 0, chunks }));
+        response.on('error', reject);
+      },
+    );
+    request.on('error', reject);
+    request.end(payload);
+  });
+
+  it('forwards chunks to the client while the answer is still being generated', async () => {
+    await probe('slow-model');
+    const result = await readStreamTimed('slow-model');
+
+    expect(result.status).toBe(200);
+    expect(result.text).toContain('[DONE]');
+    // The mock writes 40 frames 20 ms apart; a proxy that buffered the body
+    // would deliver one chunk at the end instead.
+    expect(result.chunks.length).toBeGreaterThan(3);
+    const first = result.chunks[0]!;
+    const last = result.chunks[result.chunks.length - 1]!;
+    expect(first.text).not.toContain('[DONE]');
+    expect(first.at).toBeLessThan(last.at - 200);
+
+    // Ordered, complete and not duplicated: the mock writes the counter
+    // values 1..40 as single digits, in order.
+    const sequence = [...result.text.matchAll(/"content":"(\d)"/g)].map((match) => match[1]).join('');
+    expect(sequence).toBe(Array.from({ length: 40 }, (_, index) => String((index + 1) % 10)).join(''));
+  });
+
+  it('reports a proxy timeout as a timeout instead of a user cancellation', async () => {
+    await probe('slow-model');
+    const result = await readStreamTimed('slow-model', 300);
+
+    expect(result.text).toContain('timeout');
+    expect(result.text).toContain('incomplete');
+    expect(result.text).not.toContain('The request was cancelled.');
+    expect(result.text).not.toContain('[DONE]');
+  });
+
   it('delivers the complete stream including the termination marker', async () => {
     await probe('mock-model');
     const before = upstream.streams.length;

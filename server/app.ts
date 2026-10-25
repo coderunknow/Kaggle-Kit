@@ -467,8 +467,15 @@ export function createApp(options: AppOptions = {}): App {
     // request body was received completely.
     const stopWatching = watchForDisconnect(response, () => controller.abort());
 
-    // A stream that never ends must not hold the connection forever.
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // A stream that never ends must not hold the connection forever. The
+    // flag keeps a proxy-side timeout apart from a user cancellation: both
+    // abort the same controller, but reporting a timeout as "cancelled"
+    // would hide why the answer stopped.
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -491,7 +498,14 @@ export function createApp(options: AppOptions = {}): App {
       clearTimeout(timeout);
       stopWatching();
       if (controller.signal.aborted) {
-        throw new HttpError(499, 'The client cancelled the request.');
+        throw timedOut
+          ? new HttpError(
+            504,
+            `The endpoint did not answer the streaming request within ${Math.round(timeoutMs / 1000)} seconds.`,
+            'timeout',
+            'Raise the request timeout, or turn streaming off for this endpoint.',
+          )
+          : new HttpError(499, 'The client cancelled the request.');
       }
       throw new HttpError(
         502,
@@ -565,15 +579,18 @@ export function createApp(options: AppOptions = {}): App {
       logger.warn('The streaming upstream connection failed', {
         message: error instanceof Error ? error.message : String(error),
         aborted,
+        timedOut,
       });
 
       if (!response.writableEnded) {
         response.write(
           `data: ${JSON.stringify({
             error: {
-              message: aborted
-                ? 'The request was cancelled.'
-                : 'The upstream connection failed while the answer was streamed.',
+              message: timedOut
+                ? `The generation exceeded the ${Math.round(timeoutMs / 1000)}-second request timeout. The answer is incomplete.`
+                : aborted
+                  ? 'The request was cancelled.'
+                  : 'The upstream connection failed while the answer was streamed.',
             },
           })}\n\n`,
         );
@@ -629,12 +646,19 @@ function readTarget(body: Record<string, unknown>): { baseUrl: string; apiKey?: 
 
 function decodeUpload(encoded: string): Buffer {
   const maximumEncodedLength = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
-  if (!encoded || encoded.length > maximumEncodedLength || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+  // No monolithic regular expression here: a backtracking validation over a
+  // multi-megabyte payload overflows the stack (HTTP 500) instead of refusing
+  // it. Re-encoding is a linear canonicality check that also rejects every
+  // non-base64 character, because `Buffer.from` silently skips them.
+  if (!encoded || encoded.length > maximumEncodedLength || encoded.length % 4 !== 0) {
     throw new FileProcessingError('The upload payload is not valid base64 or exceeds the upload limit.');
   }
   const bytes = Buffer.from(encoded, 'base64');
-  if (bytes.byteLength > MAX_UPLOAD_BYTES || bytes.toString('base64') !== encoded) {
-    throw new FileProcessingError('The upload payload is not canonical base64 or exceeds the 4 MiB limit.');
+  if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+    throw new FileProcessingError('The upload payload exceeds the 4 MiB limit.');
+  }
+  if (bytes.toString('base64') !== encoded) {
+    throw new FileProcessingError('The upload payload is not canonical base64.');
   }
   return bytes;
 }

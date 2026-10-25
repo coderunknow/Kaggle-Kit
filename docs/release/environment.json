@@ -38,7 +38,14 @@
     "2026-10-24 GitHub PR run 40064511238 on exact code SHA 6c0d6cfe08bec53edf459c4e180e33d2cf1d27b4: all five CI jobs passed (Browser E2E, Docker sandbox, notebook/release tools, typecheck/lint/test/build/integration, Windows launcher); push run 40064507267 also passed all five; CodeRabbit passed",
     "2026-10-24 PR #21 review state: Kilo Code Review ACTION_REQUIRED because review account has insufficient credits; Copilot said insufficient quota; neither is approval. PR is OPEN/Ready, review decision empty, merge state UNSTABLE",
     "2026-10-24 exact documentation/evidence HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: final local release dry-run exited 0; typecheck/lint/Vitest/notebook/tools checks, production build, 33/33 mock integration, staging, manifest/checksums, staged and simulated downloaded-asset validation passed; no tag/release/upload",
-    "2026-10-24 GitHub PR run 40064899655 on exact HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: all five jobs passed (Browser E2E 57s, Docker 19s, notebook 23s, typecheck/lint/test/build 53s, Windows 56s); push run 40064896180 also passed all five; CodeRabbit passed"
+    "2026-10-24 GitHub PR run 40064899655 on exact HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: all five jobs passed (Browser E2E 57s, Docker 19s, notebook 23s, typecheck/lint/test/build 53s, Windows 56s); push run 40064896180 also passed all five; CodeRabbit passed",
+    "2026-10-25 beta2 candidate, Arena sandbox Linux x86_64; Node.js v22.22.3, npm 10.9.8; npm ci exit 0 with 287 packages",
+    "2026-10-25 beta2 candidate: npm run check (typecheck + lint + Vitest) exit 0; 52 files / 551 tests passed",
+    "2026-10-25 beta2 candidate: npm run build exit 0; client entry 310.00 kB / 94.61 kB gzip, bundled server 5.7 MB",
+    "2026-10-25 beta2 candidate: node tools/integration-check.mjs 50/50 checks passed; streaming chunks observed at 66, 126, 186, 247, 306, 367 ms; real CSV upload -> files_read/files_analyze; real web_open against pypi.org; calculator_convert 0 / 37.7777777778 / 62.1371192237 in tool traces; diagnostics claim separation",
+    "2026-10-25 beta2 regression sensitivity: disabling the delta flush fails src/components/App.streaming.real.test.tsx; restoring the pre-fix base64 regex fails the oversized-upload test with HTTP 500",
+    "2026-10-25 web_open evidence: pypi.org project page (text/html, 20000 chars, 95 ms), pypi.org JSON (19 ms), registry.npmjs.org/left-pad (77 ms), registry.npmjs.org/-/ping (47 ms); blocked: .invalid host, loopback port 8080, 192.0.2.1, files.pythonhosted.org 404",
+    "2026-10-25 git diff --check: clean"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
@@ -62,6 +69,10 @@
     "2026-10-24 local Playwright was not rerun; the prior local attempt was blocked before assertions by missing Chromium. Exact-head hosted Browser E2E passed in PR run 40064511238",
     "2026-10-24 merge policy remains unverified: main API says protected=false and ruleset list is empty, but branch-protection detail API returns 403; do not infer that policy permits merge. No human approval exists and quota-bound Kilo review is ACTION_REQUIRED",
     "2026-10-24 no live model inference, Kaggle deployment/tunnel, external MCP/HTTP provider, tag, release, asset/package publication, deployment or merge. Confirmed no remote v0.1.0-beta1 tag and gh release view returned not found",
-    "2026-10-24 exact HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: Kilo Code Review ACTION_REQUIRED because review account had insufficient credits; no human approval exists, PR #21 merge state UNSTABLE, and branch-protection detail inaccessible (HTTP 403). No merge attempted"
+    "2026-10-24 exact HEAD e50c4198aba81ea2c99fde141c30e19865f45d18: Kilo Code Review ACTION_REQUIRED because review account had insufficient credits; no human approval exists, PR #21 merge state UNSTABLE, and branch-protection detail inaccessible (HTTP 403). No merge attempted",
+    "2026-10-25 beta2 candidate: no live model endpoint or credential exists; live inference, live tool calling, real-model streaming render and model prose about tool results are BLOCKED and not represented as passed",
+    "2026-10-25 beta2 candidate: local browser E2E NOT RUN; npx playwright install chromium failed with ECONNRESET because the browser CDN is unreachable. The two new browser specs require hosted CI",
+    "2026-10-25 beta2 candidate: Docker-backed code_execute and the Windows launcher were not run locally; local release dry-run was not run; no tag, release or publication",
+    "2026-10-25 environment restriction: api.github.com, github.com and example.com fail from Node with ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE in this sandbox (system-CA curl returns 200); this is not the reported 12-second web_open timeout"
   ]
 }

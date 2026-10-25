@@ -109,34 +109,65 @@ const server = http.createServer((request, response) => {
       );
       const isProbe = toolNames.has('kaggle_kit_capability_probe');
 
-      // A tool result ends the scripted round trip.
+      const transcript = messages
+        .map((message) => (typeof message.content === 'string' ? message.content : ''))
+        .join('\n');
+
+      // A tool result normally ends the scripted round trip. The uploaded-file
+      // flow is the one exception: it lists the vault, then reads the file the
+      // user just uploaded, so the browser E2E exercises a real two-step loop.
+      let scriptedCall = null;
+      let scriptedFinishReason = 'tool_calls';
       if (lastMessage.role === 'tool') {
-        sendJson(response, 200, {
-          id: 'chatcmpl-mock',
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: MODEL_ID,
-          choices: [{
-            index: 0,
-            message: {
-              role: 'assistant',
-              content: isProbe ? 'KAGGLE_KIT_TOOL_PROBE_OK' : `Tool result received: ${prompt.slice(0, 300)}`,
-            },
-            finish_reason: 'stop',
-          }],
-          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
-        });
-        return;
+        const wanted = /analyze my uploaded file/i.test(transcript)
+          ? 'files_analyze'
+          : /read my uploaded file/i.test(transcript)
+            ? 'files_read'
+            : null;
+        const listedId = /"id":"([0-9a-f-]{36})"/.exec(transcript)?.[1];
+        const alreadyReturnedFile = /Uploaded file: budget\.csv/.test(transcript);
+        if (wanted && listedId && !alreadyReturnedFile && toolNames.has(wanted)) {
+          scriptedCall = {
+            name: wanted,
+            arguments: JSON.stringify(
+              wanted === 'files_analyze'
+                ? { file_id: listedId, question: 'Which department has the highest amount?' }
+                : { file_id: listedId },
+            ),
+          };
+        } else {
+          sendJson(response, 200, {
+            id: 'chatcmpl-mock',
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: MODEL_ID,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: isProbe ? 'KAGGLE_KIT_TOOL_PROBE_OK' : `Tool result received: ${prompt.slice(0, 300)}`,
+              },
+              finish_reason: 'stop',
+            }],
+            usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+          });
+          return;
+        }
       }
 
       // Deterministic native tool calls, selected by the offered functions.
-      let scriptedCall = null;
-      let scriptedFinishReason = 'tool_calls';
-      if (toolNames.size > 0) {
+      if (!scriptedCall && toolNames.size > 0) {
         const inconsistent = /inconsistent calculate:\s*(.+)/i.exec(prompt);
         const calculate = /calculate:\s*(.+)/i.exec(prompt);
+        const readFile = /read file:\s*(\S+)/i.exec(prompt);
+        const analyzeFile = /analyze file:\s*(\S+)\s*::\s*([\s\S]+)/i.exec(prompt);
+        const openUrl = /open url:\s*(\S+)/i.exec(prompt);
+        const diagnostics = /^diagnostics:/i.test(prompt);
+        const convert = /convert:\s*(-?[\d.]+(?:e[+-]?\d+)?)\s+(\S+)\s+(?:to|in|->)\s+(\S+)/i.exec(prompt);
         const runCode = /run code:\s*([\s\S]+)/i.exec(prompt);
-        if (inconsistent && toolNames.has('calculator_calculate')) {
+        if ((/read my uploaded file/i.test(prompt) || /analyze my uploaded file/i.test(prompt)) && toolNames.has('files_list')) {
+          scriptedCall = { name: 'files_list', arguments: '{}' };
+        } else if (inconsistent && toolNames.has('calculator_calculate')) {
           // A protocol-violating response: valid tool-call data but the wrong
           // finish_reason. Used by the integration check to prove the bounded
           // corrective recovery of the tool loop against the built bundle.
@@ -144,8 +175,24 @@ const server = http.createServer((request, response) => {
           scriptedFinishReason = 'stop';
         } else if (calculate && toolNames.has('calculator_calculate')) {
           scriptedCall = { name: 'calculator_calculate', arguments: JSON.stringify({ expression: calculate[1].trim() }) };
+        } else if (diagnostics && toolNames.has('diagnostics_check')) {
+          scriptedCall = { name: 'diagnostics_check', arguments: '{}' };
+        } else if (convert && toolNames.has('calculator_convert')) {
+          scriptedCall = {
+            name: 'calculator_convert',
+            arguments: JSON.stringify({ value: Number(convert[1]), from: convert[2], to: convert[3] }),
+          };
         } else if (runCode && toolNames.has('code_execute')) {
           scriptedCall = { name: 'code_execute', arguments: JSON.stringify({ language: 'python', code: runCode[1].trim() }) };
+        } else if (readFile && toolNames.has('files_read')) {
+          scriptedCall = { name: 'files_read', arguments: JSON.stringify({ file_id: readFile[1].trim() }) };
+        } else if (analyzeFile && toolNames.has('files_analyze')) {
+          scriptedCall = {
+            name: 'files_analyze',
+            arguments: JSON.stringify({ file_id: analyzeFile[1].trim(), question: analyzeFile[2].trim() }),
+          };
+        } else if (openUrl && toolNames.has('web_open')) {
+          scriptedCall = { name: 'web_open', arguments: JSON.stringify({ url: openUrl[1].trim() }) };
         } else if (isProbe) {
           scriptedCall = { name: 'kaggle_kit_capability_probe', arguments: '{}' };
         }
@@ -206,7 +253,12 @@ const server = http.createServer((request, response) => {
             `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'thinking' } }] })}\n\n`,
           );
         }
-        const chunks = ['This ', 'is ', 'a ', 'mock ', 'answer.'];
+        // The browser end-to-end test asks for a slower cadence so a
+        // partially rendered answer can be observed deterministically.
+        const slow = /^stream slowly:/i.test(prompt);
+        const chunks = slow
+          ? ['This ', 'is ', 'a ', 'slow ', 'streamed ', 'answer.']
+          : ['This ', 'is ', 'a ', 'mock ', 'answer.'];
         let index = 0;
         const timer = setInterval(() => {
           if (index < chunks.length) {
@@ -219,7 +271,7 @@ const server = http.createServer((request, response) => {
           clearInterval(timer);
           response.write('data: [DONE]\n\n');
           response.end();
-        }, 60);
+        }, slow ? 200 : 60);
         request.on('aborted', () => clearInterval(timer));
         response.on('close', () => clearInterval(timer));
         return;

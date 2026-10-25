@@ -155,4 +155,39 @@ describe('deterministic calculator tools', () => {
     expect(convert(0, 'kelvin', 'fahrenheit').value).toBe(-459.67);
     expect(() => convert(-459.670001, 'fahrenheit', 'kelvin')).toThrow(/absolute zero/i);
   });
+
+  it('uses the defining two-point temperature relations exactly', () => {
+    // These are exact by definition of the scales, not by floating point luck:
+    // 32 °F = 0 °C, 212 °F = 100 °C, 100 °C = 212 °F, -459.67 °F = 0 K.
+    expect(convert(32, 'fahrenheit', 'celsius').value).toBe(0);
+    expect(convert(32, 'F', 'C').display).toBe('0');
+    expect(convert(212, 'fahrenheit', 'celsius').value).toBe(100);
+    expect(convert(212, 'fahrenheit', 'celsius').display).toBe('100');
+    expect(convert(100, 'celsius', 'fahrenheit').value).toBe(212);
+    expect(convert(0, 'celsius', 'fahrenheit').value).toBe(32);
+    expect(convert(100, 'fahrenheit', 'celsius').value).toBeCloseTo((100 - 32) * 5 / 9, 12);
+    expect(convert(100, 'fahrenheit', 'celsius').display).toBe('37.7777777778');
+    expect(convert(-459.67, 'fahrenheit', 'kelvin').value).toBe(0);
+    expect(convert(0, 'kelvin', 'fahrenheit').value).toBe(-459.67);
+    expect(convert(0, 'kelvin', 'celsius').value).toBe(-273.15);
+    expect(convert(-273.15, 'celsius', 'kelvin').value).toBe(0);
+  });
+
+  it('round trips every dimension with justified floating-point tolerances', () => {
+    // Temperature uses absolute tolerance: 0.1 °C is a meaningful bound for a
+    // double-precision offset conversion; relative tolerance would be wrong
+    // near the zero crossing (-40 °C).
+    for (const value of [-40, -17.5, 0, 21.3, 98.6, 212]) {
+      const fahrenheit = convert(value, 'celsius', 'fahrenheit').value;
+      expect(convert(fahrenheit, 'fahrenheit', 'celsius').value).toBeCloseTo(value, 9);
+      const kelvin = convert(value, 'celsius', 'kelvin').value;
+      expect(convert(kelvin, 'kelvin', 'celsius').value).toBeCloseTo(value, 9);
+      const backFromF = convert(convert(value, 'celsius', 'fahrenheit').value, 'fahrenheit', 'kelvin').value;
+      expect(convert(backFromF, 'kelvin', 'celsius').value).toBeCloseTo(value, 9);
+    }
+    expectRelativeClose(convert(convert(100, 'km/h', 'mph').value, 'mph', 'km/h').value, 100);
+    expectRelativeClose(convert(convert(1, 'mile', 'km').value, 'km', 'mile').value, 1);
+    expectRelativeClose(convert(convert(2.5, 'kg', 'lb').value, 'lb', 'kg').value, 2.5);
+    expectRelativeClose(convert(convert(3.75, 'gal', 'l').value, 'l', 'gal').value, 3.75);
+  });
 });
