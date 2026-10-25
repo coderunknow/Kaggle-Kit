@@ -38,11 +38,20 @@ reviews:
     # review instead of silently stopping after five reviewed commits.
     auto_pause_after_reviewed_commits: 0
   path_filters:
-    # `**/*` alone does not override CodeRabbit's default ignored paths, so the
-    # lockfile is added with its exact default pattern (minus the `!`) to force
-    # it into review scope: dependency changes are part of this project's
-    # release evidence.
-    - "**/*"
+    # Scope is defined by exclusions only, on purpose.
+    #
+    # A positive pattern narrows the review to what it matches, and a broad one
+    # is not a safe stand-in for "everything": generic minimatch does not match
+    # a dot-prefixed path segment with a wildcard unless `dot` is enabled, and
+    # CodeRabbit does not document which options it uses. `**/*` therefore may
+    # not cover `.github/workflows/**` or `.coderabbit.yaml`, which would drop
+    # CI and review-configuration changes from review silently. With no
+    # positive pattern, every file stays eligible.
+    #
+    # The one entry below is CodeRabbit's exact default-ignore pattern for the
+    # npm lockfile without its leading `!`. Exact default overrides are exempt
+    # from narrowing the scope, so this only re-enables the lockfile, whose
+    # dependency changes are part of this project's release evidence.
     - "**/package-lock.json"
   finishing_touches:
     docstrings:

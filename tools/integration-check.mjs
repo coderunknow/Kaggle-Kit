@@ -828,11 +828,21 @@ async function main() {
       });
       const refusedBody = await refused.json();
       const refusedTrace = refusedBody.toolTrace?.find((entry) => entry.toolName === 'web_open');
+      // The exact policy message is pinned, and the transport message is
+      // excluded. A connection error also contains no "refused" wording, but a
+      // loose /refus/i match would accept any future message that happens to
+      // carry the word; pinning both sides keeps a transport failure from ever
+      // standing in for a policy refusal.
+      const policyRefusal = 'Private, link-local, loopback, and reserved IP addresses are refused.';
+      const transportFailure = 'The public web destination could not be reached.';
+      const refusedContent = String(refusedBody.content);
       assert(
-        `web_open refuses a ${destination.name} destination without contacting it`,
+        `web_open refuses a ${destination.name} destination by policy without contacting it`,
         refused.status === 200 &&
           refusedTrace?.status === 'failed' &&
-          /refus/i.test(String(refusedBody.content)),
+          refusedContent.includes(policyRefusal) &&
+          !refusedContent.includes(transportFailure) &&
+          !/could not be reached/i.test(refusedContent),
         `HTTP ${refused.status}: ${JSON.stringify(refusedBody).slice(0, 300)}`,
       );
     }

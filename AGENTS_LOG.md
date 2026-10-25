@@ -2466,10 +2466,97 @@ After the corrected configuration loaded in CodeRabbit's in-progress review for 
 
 The job names above are the display names reported by the API for this head, not the names from an older run. The `Browser end-to-end` job runs `npm run test:e2e` (Playwright, seven specs) and exits non-zero on any failure, so its success is the first verification of the new browser assertions (the fixture's extracted length and the `marketing,800` row) — those specs had never been executed locally in this environment. Limitation: the per-job log files are served from `productionresultssa4.blob.core.windows.net`, which this sandbox cannot reach, so the conclusions above are job-level results and the per-assertion output was not read.
 
-**Review on PR #26.** No independent review is available, and none is claimed. Kilo Code Review reports `action_required` with "Review could not start because the account has insufficient credits" and zero annotations. GitHub Copilot submitted a `COMMENTED` review whose entire body is "unable to review this pull request because the user who requested the review has insufficient remaining quota" — no findings, no inline comments. CodeRabbit's status for `5c66841` is `success` with the description "Review skipped: manual review required for this OSS repository", which is a skip and is not counted as a review. `reviewDecision` is empty. The substitute is the local evidence plus the mutation checks recorded in the previous entry; the pull request states plainly that the change is unreviewed by a second party.
+**Review on PR #26.** No independent review is available, and none is claimed. Kilo Code Review reports `action_required` with "Review could not start because the account has insufficient credits" and zero annotations. GitHub Copilot submitted a `COMMENTED` review whose entire body is "unable to review this pull request because the user who requested the review has insufficient remaining quota" — no findings, no inline comments. CodeRabbit's status for `5c66841` is `success` with the description "Review skipped: manual review required for this OSS repository", which indicates that the review was skipped and is not counted as a review. `reviewDecision` is empty. The substitute is the local evidence plus the mutation checks recorded in the previous entry; the pull request states plainly that the change is unreviewed by a second party.
 
-**Branch protection: not applied.** The solo-maintainer policy (pull request required, required approvals `0`, the five status checks above, conversation resolution required, force-push and deletion forbidden, no auto-merge) was attempted with `PUT /repos/coderunknow/Kaggle-Kit/branches/main/protection`. The API answered `403 Resource not accessible by integration`; the response header `X-Accepted-Github-Permissions: administration=write` (and `administration=read` on the `GET`) with an empty `X-OAuth-Scopes` shows the credential lacks the Administration permission for this repository. The state was re-read afterwards and is unchanged: `GET /branches/main` → `protected: false`, `GET /rulesets` → `[]`, `GET /rules/branches/main` → `[]`. `main` is therefore still unprotected, and this task does not claim otherwise. The maintainer can apply the same policy by hand: repository Settings → Branches → Add branch protection rule for `main`, tick "Require a pull request before merging" with required approvals `0`, "Require status checks to pass before merging" with the five job names listed above (strict/up-to-date branch enabled), "Require conversation resolution before merging", and leave "Allow force pushes" and "Allow deletions" unticked; or send the same JSON body documented in PR #26 with a token that has Administration write.
+**Branch protection: not applied.** The solo-maintainer policy (pull request required, required approvals `0`, the five status checks above, conversation resolution required, force-push and deletion forbidden, no auto-merge) was attempted with `PUT /repos/coderunknow/Kaggle-Kit/branches/main/protection`. The API answered `403 Resource not accessible by integration`; the response header `X-Accepted-Github-Permissions: administration=write` (and `administration=read` on the `GET`) with an empty `X-OAuth-Scopes` shows the credential lacks the Administration permission for this repository. The state was re-read afterward and is unchanged: `GET /branches/main` → `protected: false`, `GET /rulesets` → `[]`, `GET /rules/branches/main` → `[]`. `main` is therefore still unprotected, and this task does not claim otherwise. The maintainer can apply the same policy by hand: repository Settings → Branches → Add branch protection rule for `main`, tick "Require a pull request before merging" with required approvals `0`, "Require status checks to pass before merging" with the five job names listed above (strict/up-to-date branch enabled), "Require conversation resolution before merging", and leave "Allow force pushes" and "Allow deletions" unticked; or send the same JSON body documented in PR #26 with a token that has Administration write.
 
 **Environment note.** A local, untracked `.git/hooks/commit-msg` in this sandbox appends `Co-authored-by: arena-agent <…>` to every commit. It is not part of the repository and adds no content, and the already-pushed commit was not rewritten to remove it, because rewriting published history is out of scope for this task.
 
 **Safety.** No merge, tag, release, asset upload, publication, deployment, force-push or history rewrite; PR #24 and PR #25 remain closed and untouched, and no review thread was resolved or dismissed.
+
+## 2026-10-25 – CodeRabbit audit of PR #26 and the response to it
+
+**Task.** The maintainer asked to wait for CodeRabbit's review to finish and
+then continue fixing whatever it reported. This entry records the review, the
+verification of each finding, what was changed, what was declined, and one
+in-place correction made inside the two previous entries.
+
+**Review received.** CodeRabbit submitted review `5642712311` on commit
+`68f96e2` at `2026-10-25T10:18:49Z` with state `COMMENTED`. The review profile
+was `assertive` and the run id was
+`55fd83fb-b112-4514-af80-f83d3ad8cd93`. It carried **no inline comments**. The
+review body held 16 grouped "additional comments"; 13 of them are `LGTM!`
+(`shared/api/stream.ts`, `server/app.ts`, `src/lib/gateway.ts`,
+`server/tools/calculator.ts`, `storage.test.ts`, `e2e/app.spec.ts`,
+`files.test.ts`, the beta2 release note, `DESIGN_LOG.md`, among others), and
+three are substantive. The repository status went from `pending` ("Review in
+progress", 10:11:49Z) to `success` at 10:19:02Z, so this review is a real
+review, not a skip. Kilo Code Review still reports `action_required`
+(`insufficient credits`), Qodo reports that its trial has ended, and GitHub
+Copilot reports `insufficient remaining quota` with zero comments; no second
+party reviewed the change and none is claimed here.
+
+**Finding 1 – accepted, and it found a real defect.**
+`tools/test_review_config.py:153-163` argued that generic minimatch excludes
+dot-prefixed paths by default while CodeRabbit does not document the matcher
+options used for `path_filters`, which made the then-current configuration
+undecidable. The finding was checked against npm `minimatch` directly:
+with `dot: false`, `**/*` matches **neither** `.github/workflows/ci.yml` **nor**
+`.coderabbit.yaml`, while `.github/workflows/**` and
+`{.github/workflows/**,package.json}` match under both `dot` modes. The
+previous `path_filters` list began with `**/*`, which means CI-workflow and
+review-configuration changes could have been silently dropped from review
+scope. The fix does not try to pick a matcher option: positive patterns are
+removed entirely and review scope is now defined by exclusions only, with the
+one documented exact default override that re-enables the npm lockfile,
+`**/package-lock.json`. No positive pattern means no narrowing, whatever
+matcher CodeRabbit uses. `tools/test_review_config.py` gained four guards:
+`test_no_filter_narrows_the_review_scope` (no filter may match ordinary source,
+documentation or workflow paths), `test_no_broad_include_is_used_as_a_stand_in_for_everything`
+(`**/*`, `**`, `*`, `*/**`, `**/**` are rejected), and
+`test_dot_prefixed_paths_are_reached_by_literal_segments` (the dot directory and
+the review-config file are named literally, and both are shown to match). The
+test count in this file went from 10 to 13, and the tools suite from 50 to 53.
+
+**Finding 2 – accepted as an assertion, declined as a code change.**
+`tools/integration-check.mjs:831-835` reported that the connection-error false
+positive is prevented. That describes existing correct behaviour rather than a
+defect: `server/tools/web.ts:186` maps transport errors to
+`The public web destination could not be reached.` with kind `provider`, and the
+policy branches at lines 96, 99 and 102 emit their own `… refused.` messages, so
+an `ECONNREFUSED` can never satisfy the old `/refus/i` check by accident. The
+loose regex was nevertheless tightened: the test now pins the exact policy
+message `Private, link-local, loopback, and reserved IP addresses are refused.`
+and asserts that `The public web destination could not be reached.` and the
+phrase `could not be reached` are absent, so a future transport failure cannot
+stand in for a policy refusal. No refusal logic in `web.ts` was rewritten.
+
+**Finding 3 – applied as wording only, with disclosure.**
+`AGENTS_LOG.md:2469` was a "Minor / unverified finding" asking for `which is a
+skip` → `which indicates that the review was skipped` and `afterwards` →
+`afterward` to satisfy an American-English check. No American-English linter
+exists in this repository (the only `afterwards` hit outside the logs is in
+`dist/`), so the item is cosmetic. It was applied anyway, because the
+replacement wording is more precise. `afterward` was used in `DESIGN_LOG.md`
+line ~2946 as well, for consistency.
+
+**Append-only exception, disclosed.** The two previous entries of this log and
+one entry of `DESIGN_LOG.md` are append-only, and this change edits text inside
+them: `AGENTS_LOG.md` had the two phrases above replaced, and `DESIGN_LOG.md`
+had `afterwards` replaced with `afterward` in the JSON-repair note. No line was
+added to or removed from either log by those edits (`git diff --numstat`:
+`2 2 AGENTS_LOG.md`, `1 1 DESIGN_LOG.md`), the meaning is unchanged, and the
+edits are recorded here so the histories stay auditable. From this entry
+forward, append-only applies again without exception.
+
+**Mutation check.** Restoring `- "**/*"` to `path_filters` fails both
+`test_no_broad_include_is_used_as_a_stand_in_for_everything`
+(`'**/*' unexpectedly found`) and `test_no_filter_narrows_the_review_scope`
+(`path filter '**/*' narrows the review scope because it matches
+'server/app.ts'`), and reverting the file restores 13/13 passing. A guard that
+cannot fail was not added.
+
+**Safety.** No merge, tag, release, asset upload, publication, deployment,
+force-push or history rewrite. No review thread was resolved or dismissed. The
+two commits already pushed (`5c66841`, `68f96e2`) were not amended, because CI
+runs and the pull-request body reference both; this response is a new commit.

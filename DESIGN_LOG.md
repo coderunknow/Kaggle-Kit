@@ -2943,7 +2943,7 @@ allowance exhausted).
 - A user preference may be gated but must stay reversible: disabling the
   control for an unverified preference traps the user in the notice.
 - Bounded output has to be bounded before serialization. Truncating a JSON
-  string afterwards produces invalid JSON and loses the field the model asked
+  string afterward produces invalid JSON and loses the field the model asked
   for.
 - Skipped checks are reported, not counted, and never silently dropped.
 
@@ -3334,3 +3334,68 @@ Close the correctness gap behind the beta2 streaming-error classification: the b
 - `**/*` in `path_filters` is not a lockfile override, and a comma-joined `path` is not a glob. Both were fixed at the source of truth (default patterns, minimatch) and pinned by a test that fails on the exact regression.
 - Green status checks are not review evidence. Kilo has no credits, Copilot has no quota, and CodeRabbit's last reviewed SHA was `38c536b04`; `843a43b` carries a *skipped* review reported as `success`. This work therefore claims no independent review, and the branch-protection policy for this repository must not require approvals that a single maintainer cannot obtain.
 - The merge bookkeeping of PR #24 is explained by ancestry, not by timestamps: its head was already in `main` when #25 landed, and its own "merge" produced no commit and no tree change. Recorded in `AGENTS_LOG.md` with the evidence and the parts that remain unknown.
+
+## 2026-10-25 – Review scope is defined by exclusions only
+
+### Context
+
+`reviews.path_filters` in `.coderabbit.yaml` had started with the positive glob
+`**/*`, added so that the npm lockfile would not stay excluded by CodeRabbit's
+default `!**/package-lock.json`. CodeRabbit's audit of commit `68f96e2`
+(`tools/test_review_config.py:153-163`) pointed out that generic minimatch
+excludes dot-prefixed paths by default and that CodeRabbit's documentation does
+not state which matcher options it applies to `path_filters`, so the effect of
+that glob could not be decided from the documentation.
+
+### What the matcher actually does
+
+Checked against npm `minimatch` directly, in both `dot` modes:
+
+- `**/*` with `dot: false` matches **neither** `.github/workflows/ci.yml` **nor**
+  `.coderabbit.yaml`.
+- `**/*` with `dot: true` matches both.
+- `.github/workflows/**` and `{.github/workflows/**,package.json}` match
+  `.github/workflows/ci.yml` under both modes, and `**/package-lock.json`
+  matches `package-lock.json` under both.
+
+So a positive `**/*` is either redundant or harmful depending on an option that
+the documentation never states. The two outcomes are "reviewed as intended" and
+"CI workflows and the review configuration itself are silently dropped from
+review scope", and the configuration cannot tell which one it gets.
+
+### Decision
+
+Positive patterns are removed from `path_filters`. The list now holds a single
+entry, `**/package-lock.json`, which is an exact default override and therefore
+exempt from narrowing, and review scope is otherwise defined by exclusions only.
+With no positive pattern there is nothing to narrow, so the matcher's `dot`
+option no longer changes which files are reviewed.
+
+### Rejected alternatives
+
+- **Add the dot directories explicitly** (`.github/**`, `.coderabbit.yaml`,
+  …). This only works if positive patterns behave as an allow-list over an
+  unknown default, and it needs maintenance for every new dot directory. It also
+  cannot be verified without the same matcher knowledge the finding says is
+  missing.
+- **Switch to `dot: true`**. Not exposed by CodeRabbit's configuration schema.
+- **Keep `**/*` and document the risk.** The configuration would still narrow
+  review on the matcher's default options, and the only mitigation would be a
+  comment nobody reads at review time.
+
+### Tests
+
+`tools/test_review_config.py` gained three guards that make the class of defect
+fail loudly rather than silently: no filter may match ordinary source,
+documentation or workflow paths; no broad include (`**/*`, `**`, `*`, `*/**`,
+`**/**`) may appear in the list; and the dot directory plus the review-config
+file must be named literally in the instruction globs and must be shown to
+match. Restoring `- "**/*"` fails two of them, so the guards are not vacuous.
+
+### Lesson
+
+"Add a broad glob so nothing is missed" is not a safe default when the matcher
+is undocumented: a broad positive pattern in an allow-list-shaped field is a
+filter, and filters fail closed. Prefer the narrowest mechanism whose semantics
+are documented — here, no positive pattern at all plus one exact default
+override.

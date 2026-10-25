@@ -10,6 +10,12 @@ effect:
    `!**/package-lock.json`. A broad include such as `**/*` does not override a
    default: the exact default pattern has to be repeated without the leading
    `!`.
+3. A positive `path_filters` pattern narrows the review to what it matches.
+   `**/*` is therefore not a safe stand-in for "everything": with generic
+   minimatch options it does not match a dot-prefixed segment such as
+   `.github/workflows/**` or `.coderabbit.yaml`, and CodeRabbit does not
+   document which matcher options it uses. Review scope is defined by
+   exclusions only, plus exact default overrides.
 
 Reference: https://docs.coderabbit.ai/configuration/path-instructions and
 https://docs.coderabbit.ai/reference/configuration (checked 2026-10-25).
@@ -185,9 +191,7 @@ class ReviewConfigTests(unittest.TestCase):
             self.assertFalse(glob_matches(broken, path), f"{broken!r} unexpectedly matches {path!r}")
 
     def test_lockfile_is_kept_in_review_scope(self) -> None:
-        # `**/*` is broad and does not override a default ignore; the exact
-        # default pattern without `!` is the documented override.
-        self.assertIn("**/*", self.filters)
+        # The exact default pattern without `!` is the documented override.
         self.assertIn("**/package-lock.json", self.filters)
         self.assertTrue(glob_matches("**/package-lock.json", "package-lock.json"))
 
@@ -196,6 +200,43 @@ class ReviewConfigTests(unittest.TestCase):
         # disappear from review without any error being reported.
         for entry in self.filters:
             self.assertFalse(entry.startswith("!"), f"exclusion added to the review scope: {entry!r}")
+
+    def test_no_filter_narrows_the_review_scope(self) -> None:
+        # A positive pattern restricts review to what it matches. Every filter
+        # here is an exact default override, so none of them may match ordinary
+        # source, documentation or workflow files.
+        for entry in self.filters:
+            for path in (
+                "server/app.ts",
+                "src/lib/gateway.ts",
+                "AGENTS_LOG.md",
+                "docs/release-notes/0.1.0-beta2.md",
+                ".github/workflows/ci.yml",
+            ):
+                self.assertFalse(
+                    glob_matches(entry, path),
+                    f"path filter {entry!r} narrows the review scope because it matches {path!r}",
+                )
+
+    def test_no_broad_include_is_used_as_a_stand_in_for_everything(self) -> None:
+        # `**/*` does not match dot-prefixed paths under minimatch defaults, so
+        # it silently drops `.github/**` and `.coderabbit.yaml` from review.
+        for entry in self.filters:
+            self.assertNotIn(
+                entry,
+                {"**/*", "**", "*", "*/**", "**/**"},
+                f"broad include {entry!r} can exclude dot-prefixed paths from review",
+            )
+
+    def test_dot_prefixed_paths_are_reached_by_literal_segments(self) -> None:
+        # The workflow instruction block targets a dot directory, so it must name
+        # that directory literally rather than rely on a wildcard matching it.
+        workflow_glob = next(glob for glob in self.instructions if "workflows/**" in glob)
+        self.assertIn(".github/workflows/**", workflow_glob)
+        # And the file that configures the review itself must be reachable.
+        self.assertIn(".coderabbit.yaml", self.instructions)
+        self.assertTrue(glob_matches(".coderabbit.yaml", ".coderabbit.yaml"))
+        self.assertTrue(glob_matches(workflow_glob, ".github/workflows/ci.yml"))
 
     def test_review_pause_is_disabled(self) -> None:
         match = re.search(r"^\s*auto_pause_after_reviewed_commits:\s*(\d+)", self.text, re.MULTILINE)
