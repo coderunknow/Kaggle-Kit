@@ -2142,3 +2142,19 @@ Docker, no Playwright browser, no browser-CDN access, no model credentials.
 **Boundary confirmation.** No merge, tag, release, publish, deploy or workflow
 dispatch was performed. Only the existing branch `arena/352dba56-kaggle-kit` is
 pushed; the pull request is for review only.
+
+### Addendum - hosted CI on the beta2 candidate (2026-10-25)
+
+- Head `9b5e9c48a350248a3ad754956c3ee0f01351b864`: CI run `40156351115`
+  (pull_request) and `40156348998` (push) passed all five jobs — typecheck,
+  lint, test and build; real-Docker sandbox integration; notebook tests;
+  Windows launcher; and browser end-to-end.
+- The browser job executed seven Chromium specs against the built application,
+  including the new visible-incremental-rendering spec and the
+  `upload → files_list → files_read` spec. The first browser run
+  (`40156158148`, head `9a3f20f`) failed only because the tool timeline is a
+  collapsed `<details>` element; the test now opens it. No application code
+  changed for that failure.
+- Local browser execution remains impossible in the sandbox (Chromium download
+  `ECONNRESET`); the hosted browser job is the evidence. Live model inference
+  and live tool calling remain **BLOCKED**: no endpoint or credential.

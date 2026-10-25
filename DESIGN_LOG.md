@@ -2822,3 +2822,22 @@ Prepare `0.1.0-beta2`, not `dev8`: semver orders `dev8` below the published
 `package.json`, `package-lock.json`, `shared/version.ts`, this entry and
 `docs/release-notes/0.1.0-beta2.md` were updated together; no release policy was
 relaxed and no tag, release or publication was created.
+
+### Addendum - hosted CI on the exact candidate head (2026-10-25)
+
+Hosted CI on `9b5e9c48a350248a3ad754956c3ee0f01351b864` (PR run `40156351115`,
+push run `40156348998`) passed all five jobs: typecheck/lint/test/build, the
+real-Docker sandbox integration, the notebook tests, the Windows launcher and
+the browser end-to-end job. The browser job ran seven Chromium specs against
+the built application, including the two added here: visible incremental
+rendering (partial text present while the generation is still running) and
+`upload → files_list → files_read` against the real file vault. This replaces
+the local "browser not run" statement with evidence from a provisioning CI
+runner; the local sandbox still cannot download Chromium.
+
+The first browser run on `9a3f20f3458abba5d256542f24edc82aeeb7b591` failed for
+a test-only reason: the upload round trip completed and `files_read` resolved
+in the tool timeline, but the timeline's `<details>` element starts collapsed,
+so the strong text was hidden. The test now opens the timeline before reading
+it; no application code changed for that failure. Live-model checks remain
+**BLOCKED** because no endpoint or credential exists.

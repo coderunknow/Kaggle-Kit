@@ -45,7 +45,9 @@
     "2026-10-25 beta2 candidate: node tools/integration-check.mjs 50/50 checks passed; streaming chunks observed at 66, 126, 186, 247, 306, 367 ms; real CSV upload -> files_read/files_analyze; real web_open against pypi.org; calculator_convert 0 / 37.7777777778 / 62.1371192237 in tool traces; diagnostics claim separation",
     "2026-10-25 beta2 regression sensitivity: disabling the delta flush fails src/components/App.streaming.real.test.tsx; restoring the pre-fix base64 regex fails the oversized-upload test with HTTP 500",
     "2026-10-25 web_open evidence: pypi.org project page (text/html, 20000 chars, 95 ms), pypi.org JSON (19 ms), registry.npmjs.org/left-pad (77 ms), registry.npmjs.org/-/ping (47 ms); blocked: .invalid host, loopback port 8080, 192.0.2.1, files.pythonhosted.org 404",
-    "2026-10-25 git diff --check: clean"
+    "2026-10-25 git diff --check: clean",
+    "2026-10-25 GitHub CI run 40156351115 (PR) and 40156348998 (push) on exact head 9b5e9c48a350248a3ad754956c3ee0f01351b864: all five jobs passed (Browser E2E with seven Chromium specs including incremental rendering and upload -> files_list -> files_read, Docker sandbox, notebook tests, typecheck/lint/test/build, Windows launcher)",
+    "2026-10-25 first browser run 40156158148 on 9a3f20f3458abba5d256542f24edc82aeeb7b591: 6/7 specs passed; the upload spec failed only because the collapsed <details> tool timeline hid the resolved files_read text. Test fixed in 9b5e9c4; no application change"
   ],
   "notTested": [
     "Spark-X2.6-4B on Kaggle GPU T4 x2 is implemented but NOT live-verified: no Kaggle GPU session was available, so neither the pinned GGUF download/verification, the b11719 CUDA server start, the real completion, the auth gate against the real server, the tunnel, nor the thinking levels were exercised against a model. docs/kaggle-deployment.md section 9.1/12 is the operator procedure",
