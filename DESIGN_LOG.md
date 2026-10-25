@@ -3202,3 +3202,30 @@ could execute because Playwright Chromium is absent at
 `command -v docker` found no Docker executable; Windows launcher and live-model
 checks are not available locally. The hosted CI runs for the remediation head
 must be checked after push; none is claimed here.
+
+## 2026-10-25 - Hosted CI evidence for remediation code commit 6601004
+
+### User Intent
+
+Record the actual GitHub Actions result for the remediation code commit after
+it had been pushed, without claiming that a later evidence-only commit had
+already been tested.
+
+### Implementation History
+
+Verified `gh api repos/coderunknow/Kaggle-Kit/actions/runs/40166459556`:
+`event=push`, `status=completed`, `conclusion=success`,
+`head_sha=6601004246372777bf7aa75b354194ffb915b06f`, branch
+`arena/b965bb05-kaggle-kit`. Queried the run's jobs separately; all five
+concluded `success`: `typecheck, lint, test and build`, `Browser end-to-end`,
+`docker sandbox integration`, `notebook tests`, and `windows launcher`.
+`docs/release/environment.json` records that exact SHA/run pairing.
+
+### Decisions & Lessons
+
+This run is evidence for code commit `6601004`, not for the following
+documentation-only evidence commit. The latter receives its own CI run after
+push and is checked separately; no circular or parent-SHA substitution is
+used. The PR #24 branch was not changed by this push; the session branch is
+`arena/b965bb05-kaggle-kit` and the live PR still pointed to
+`arena/352dba56-kaggle-kit` at the time checked.

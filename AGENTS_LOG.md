@@ -2365,3 +2365,14 @@ release, deployment, thread resolution or approval is requested.
 - Code-under-test SHA and hosted CI run IDs for the new commit are recorded
   only after that commit is pushed and its runs are observed. No human review,
   approval, merge, tag, release, deployment or publication is claimed.
+
+## 2026-10-25 - Hosted CI verified for remediation code SHA 6601004
+
+- GitHub Actions push run `40166459556` reports exact `head_sha`
+  `6601004246372777bf7aa75b354194ffb915b06f`, branch
+  `arena/b965bb05-kaggle-kit`, status completed, conclusion success.
+- Its five jobs all succeeded: typecheck/lint/test/build, Browser end-to-end,
+  Docker sandbox integration, notebook/release-tool tests, and Windows
+  launcher. This code-SHA/run mapping is recorded in `docs/release/environment.json`.
+- The next commit is documentation/evidence-only and is checked separately;
+  no later-head CI is inferred from this run.
